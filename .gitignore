@@ -33,6 +33,9 @@ central-server/data/firmware/
 central-server/data/*.jsonl
 relay-server/data/*.jsonl
 
+# Example / local dump data
+example/data/
+
 # Environment & local secrets
 .env
 .env.local
