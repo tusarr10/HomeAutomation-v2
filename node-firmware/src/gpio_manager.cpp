@@ -275,7 +275,7 @@ void GpioManager::toJson(JsonArray& arr) {
 #elif defined(TARGET_ESP01_PCF8574)
 #include "gpio_manager.h"
 #include "storage_manager.h"
-#include "pcf8574_driver.h"
+#include "drivers/pcf8574_driver.h"
 
 GpioManager::GpioManager() : _stateCallback(nullptr), _channelCount(8) {
     // Default 8 channels for PCF8574T I2C Expander (P0 to P7 -> Pins 100 to 107)
@@ -601,7 +601,7 @@ uint8_t GpioManager::getPcfOutputByte() const {
 #elif defined(TARGET_NODEMCU_PCF8574)
 #include "gpio_manager.h"
 #include "storage_manager.h"
-#include "pcf8574_driver.h"
+#include "drivers/pcf8574_driver.h"
 
 GpioManager::GpioManager() : _stateCallback(nullptr), _nextId(1) {}
 

@@ -2,8 +2,6 @@
 #define GPIO_MANAGER_H
 
 #if defined(TARGET_ESP01_1M)
-#ifndef GPIO_MANAGER_H
-#define GPIO_MANAGER_H
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -54,12 +52,8 @@ private:
     void saveStates();
     void saveConfiguration();
 };
-
-#endif // GPIO_MANAGER_H
 
 #elif defined(TARGET_ESP01_PCF8574)
-#ifndef GPIO_MANAGER_H
-#define GPIO_MANAGER_H
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -87,6 +81,10 @@ public:
     bool begin();
     void loop();
 
+    bool isPcfDetected() const;
+    uint8_t getPcfAddress() const;
+    uint8_t getPcfOutputByte() const;
+
     bool setState(uint8_t id, bool logicalState);
     bool toggle(uint8_t id);
     bool pulse(uint8_t id, unsigned long durationMs);
@@ -100,10 +98,6 @@ public:
     void registerStateChangeCallback(GpioStateChangeCallback cb) { _stateCallback = cb; }
     void toJson(JsonArray& arr);
 
-    bool isPcfDetected() const;
-    uint8_t getPcfAddress() const;
-    uint8_t getPcfOutputByte() const;
-
 private:
     GpioManager();
     GpioStateChangeCallback _stateCallback;
@@ -115,11 +109,7 @@ private:
     void saveConfiguration();
 };
 
-#endif // GPIO_MANAGER_H
-
 #elif defined(TARGET_NODEMCU_PCF8574)
-#ifndef GPIO_MANAGER_H
-#define GPIO_MANAGER_H
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -193,11 +183,7 @@ private:
     void saveToStorage();
 };
 
-#endif // GPIO_MANAGER_H
-
 #else
-#ifndef GPIO_MANAGER_H
-#define GPIO_MANAGER_H
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -266,8 +252,6 @@ private:
     void loadFromStorage();
     void saveToStorage();
 };
-
-#endif // GPIO_MANAGER_H
 
 #endif
 

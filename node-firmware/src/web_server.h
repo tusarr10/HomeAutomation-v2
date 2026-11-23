@@ -2,8 +2,6 @@
 #define WEB_SERVER_H
 
 #if defined(TARGET_ESP01_1M) || defined(TARGET_ESP01_PCF8574)
-#ifndef WEB_SERVER_H
-#define WEB_SERVER_H
 
 #include <Arduino.h>
 #include <ESP8266WebServer.h>
@@ -50,11 +48,7 @@ private:
     void serveEmbeddedDashboard();
 };
 
-#endif // WEB_SERVER_H
-
 #else
-#ifndef WEB_SERVER_H
-#define WEB_SERVER_H
 
 #include <Arduino.h>
 #include <ESP8266WebServer.h>
@@ -111,8 +105,6 @@ private:
     // Embedded Fallback Web Assets in PROGMEM
     void serveEmbeddedDashboard();
 };
-
-#endif // WEB_SERVER_H
 
 #endif
 

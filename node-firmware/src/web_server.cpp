@@ -1042,7 +1042,7 @@ void WebServerManager::serveEmbeddedDashboard() {
 #include "automation.h"
 #include "ota_manager.h"
 #include "receiver_client.h"
-#include "pcf8574_driver.h"
+#include "drivers/pcf8574_driver.h"
 #include <Wire.h>
 #include <LittleFS.h>
 
@@ -2352,21 +2352,16 @@ bool WebServerManager::handleFileRead(String path) {
     else if (path.endsWith(".png")) contentType = "image/png";
     else if (path.endsWith(".ico")) contentType = "image/x-icon";
 
-    auto applyCacheHeaders = [this, &path]() {
-        if (path.endsWith(".css") || path.endsWith(".js") || path.endsWith(".png") || path.endsWith(".ico")) {
-            _server.sendHeader(F("Cache-Control"), F("public, max-age=86400, immutable"));
-        } else if (path.endsWith(".html")) {
-            _server.sendHeader(F("Cache-Control"), F("public, max-age=600, must-revalidate"));
-        } else {
-            _server.sendHeader(F("Cache-Control"), F("no-cache"));
-        }
+    auto applyCacheHeaders = [this]() {
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
+        _server.sendHeader(F("Pragma"), F("no-cache"));
+        _server.sendHeader(F("Expires"), F("0"));
     };
 
-    // Check gzip compressed version first
+    // Check gzip compressed version first (streamFile adds Content-Encoding: gzip automatically if filename ends in .gz)
     String pathWithGz = path + ".gz";
     if (LittleFS.exists(pathWithGz)) {
         File file = LittleFS.open(pathWithGz, "r");
-        _server.sendHeader(F("Content-Encoding"), F("gzip"));
         applyCacheHeaders();
         _server.streamFile(file, contentType);
         file.close();
@@ -3676,21 +3671,16 @@ bool WebServerManager::handleFileRead(String path) {
     else if (path.endsWith(".png")) contentType = "image/png";
     else if (path.endsWith(".ico")) contentType = "image/x-icon";
 
-    auto applyCacheHeaders = [this, &path]() {
-        if (path.endsWith(".css") || path.endsWith(".js") || path.endsWith(".png") || path.endsWith(".ico")) {
-            _server.sendHeader(F("Cache-Control"), F("public, max-age=86400, immutable"));
-        } else if (path.endsWith(".html")) {
-            _server.sendHeader(F("Cache-Control"), F("public, max-age=600, must-revalidate"));
-        } else {
-            _server.sendHeader(F("Cache-Control"), F("no-cache"));
-        }
+    auto applyCacheHeaders = [this]() {
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
+        _server.sendHeader(F("Pragma"), F("no-cache"));
+        _server.sendHeader(F("Expires"), F("0"));
     };
 
-    // Check gzip compressed version first
+    // Check gzip compressed version first (streamFile adds Content-Encoding: gzip automatically if filename ends in .gz)
     String pathWithGz = path + ".gz";
     if (LittleFS.exists(pathWithGz)) {
         File file = LittleFS.open(pathWithGz, "r");
-        _server.sendHeader(F("Content-Encoding"), F("gzip"));
         applyCacheHeaders();
         _server.streamFile(file, contentType);
         file.close();

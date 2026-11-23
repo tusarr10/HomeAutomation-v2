@@ -1,5 +1,6 @@
 #if defined(TARGET_ESP01_1M)
 #include "storage_manager.h"
+#include "wifi_manager.h"
 #include <EEPROM.h>
 
 #define CONFIG_MAGIC 0xA55A
@@ -25,7 +26,8 @@ void StorageManager::setDefaultConfig() {
 
     _cfg.wifiMode = 2; // AP + ROUTER
     _cfg.wifiConfigured = false;
-    strncpy(_cfg.apSsid, DEFAULT_AP_SSID, sizeof(_cfg.apSsid) - 1);
+    String defAp = WifiManager::getDefaultApSsid();
+    strncpy(_cfg.apSsid, defAp.c_str(), sizeof(_cfg.apSsid) - 1);
     strncpy(_cfg.apPass, DEFAULT_AP_PASS, sizeof(_cfg.apPass) - 1);
 
     _cfg.rcvrEnabled = false;
@@ -54,6 +56,13 @@ void StorageManager::loadFromEeprom() {
     if (_cfg.magic != CONFIG_MAGIC || _cfg.version != CONFIG_VERSION) {
         Serial.println(F("[STORAGE] EEPROM uninitialized or corrupt. Writing factory defaults..."));
         setDefaultConfig();
+        saveToEeprom();
+    } else if (strlen(_cfg.apSsid) == 0 ||
+               strcmp(_cfg.apSsid, DEFAULT_AP_SSID) == 0 ||
+               strcmp(_cfg.apSsid, "SmartHome-ESP01") == 0 ||
+               strcmp(_cfg.apSsid, "SmartHome-Setup") == 0) {
+        String defAp = WifiManager::getDefaultApSsid();
+        strncpy(_cfg.apSsid, defAp.c_str(), sizeof(_cfg.apSsid) - 1);
         saveToEeprom();
     }
 }
@@ -195,6 +204,7 @@ bool StorageManager::saveJsonFile(const char* path, const JsonDocument& doc) {
 
 #elif defined(TARGET_ESP01_PCF8574)
 #include "storage_manager.h"
+#include "wifi_manager.h"
 #include <EEPROM.h>
 
 #define CONFIG_MAGIC 0xA55C
@@ -220,7 +230,8 @@ void StorageManager::setDefaultConfig() {
 
     _cfg.wifiMode = 2; // AP + ROUTER
     _cfg.wifiConfigured = false;
-    strncpy(_cfg.apSsid, DEFAULT_AP_SSID, sizeof(_cfg.apSsid) - 1);
+    String defAp = WifiManager::getDefaultApSsid();
+    strncpy(_cfg.apSsid, defAp.c_str(), sizeof(_cfg.apSsid) - 1);
     strncpy(_cfg.apPass, DEFAULT_AP_PASS, sizeof(_cfg.apPass) - 1);
 
     _cfg.rcvrEnabled = false;
@@ -251,6 +262,13 @@ void StorageManager::loadFromEeprom() {
         setDefaultConfig();
         saveToEeprom();
         return;
+    } else if (strlen(_cfg.apSsid) == 0 ||
+               strcmp(_cfg.apSsid, DEFAULT_AP_SSID) == 0 ||
+               strcmp(_cfg.apSsid, "SmartHome-ESP01-PCF8574") == 0 ||
+               strcmp(_cfg.apSsid, "SmartHome-Setup") == 0) {
+        String defAp = WifiManager::getDefaultApSsid();
+        strncpy(_cfg.apSsid, defAp.c_str(), sizeof(_cfg.apSsid) - 1);
+        saveToEeprom();
     }
 
     // Sanitize credentials to ensure defaults always hold if corrupted

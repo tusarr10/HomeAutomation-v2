@@ -3,9 +3,6 @@
 
 #if defined(TARGET_ESP01_1M) || defined(TARGET_ESP01_PCF8574)
 
-#ifndef AUTH_MANAGER_H
-#define AUTH_MANAGER_H
-
 #include <Arduino.h>
 #include <ESP8266WebServer.h>
 #include <ArduinoJson.h>
@@ -48,13 +45,7 @@ private:
     void saveToStorage();
 };
 
-#endif // AUTH_MANAGER_H
-
-
 #else
-
-#ifndef AUTH_MANAGER_H
-#define AUTH_MANAGER_H
 
 #include <Arduino.h>
 #include <ESP8266WebServer.h>
@@ -96,9 +87,6 @@ private:
     void saveToStorage();
 };
 
-#endif // AUTH_MANAGER_H
-
-
-#endif
+#endif // TARGET_ESP01_1M || TARGET_ESP01_PCF8574
 
 #endif // AUTH_MANAGER_H

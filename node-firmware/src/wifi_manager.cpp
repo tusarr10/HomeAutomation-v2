@@ -3,6 +3,17 @@
 #include "storage_manager.h"
 #include "automation.h"
 
+String WifiManager::getDefaultApSsid() {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char suffix[5];
+    snprintf(suffix, sizeof(suffix), "%02X%02X", mac[4], mac[5]);
+    if (mac[4] == 0 && mac[5] == 0 && mac[0] == 0 && mac[1] == 0) {
+        snprintf(suffix, sizeof(suffix), "%04X", (uint16_t)(ESP.getChipId() & 0xFFFF));
+    }
+    return String(F(DEFAULT_AP_SSID)) + F("-") + String(suffix);
+}
+
 WifiManager::WifiManager()
     : _apActive(false),
       _isConnecting(false),
@@ -10,7 +21,7 @@ WifiManager::WifiManager()
       _lastWatchdogCheck(0),
       _wifiConnectedTime(0) {
     _config.mode = WIFI_MODE_AP_ROUTER;
-    _config.apSsid = DEFAULT_AP_SSID;
+    _config.apSsid = getDefaultApSsid();
     _config.apPassword = DEFAULT_AP_PASS;
     _config.staSsid = "";
     _config.staPassword = "";
@@ -33,6 +44,7 @@ bool WifiManager::begin() {
 
     WiFi.persistent(false);
     WiFi.disconnect(true);
+    WiFi.setSleepMode(WIFI_NONE_SLEEP);
     delay(100);
 
     Serial.printf("[WIFI] Initializing Wi-Fi. Mode: %u, Configured: %s\n",
@@ -259,13 +271,19 @@ void WifiManager::setMode(uint8_t mode) {
 }
 
 void WifiManager::setApConfig(const String& ssid, const String& password) {
-    if (ssid.length() > 0) {
+    if (ssid.length() > 0 &&
+        !ssid.equalsIgnoreCase("SmartHome-ESP01") &&
+        !ssid.equalsIgnoreCase("SmartHome-ESP01-PCF8574") &&
+        !ssid.equalsIgnoreCase("SmartHome-Setup") &&
+        ssid != DEFAULT_AP_SSID) {
         _config.apSsid = ssid;
-        _config.apPassword = password;
-        saveToStorage();
-        if (_apActive) {
-            startAP(); // Re-apply with new settings
-        }
+    } else {
+        _config.apSsid = getDefaultApSsid();
+    }
+    _config.apPassword = password;
+    saveToStorage();
+    if (_apActive) {
+        startAP(); // Re-apply with new settings
     }
 }
 
@@ -344,6 +362,8 @@ void WifiManager::getStatusJson(JsonObject& obj) {
 
 void WifiManager::resetWifiCredentials() {
     Serial.println(F("[WIFI] Clearing saved Wi-Fi credentials..."));
+    _config.apSsid = getDefaultApSsid();
+    _config.apPassword = DEFAULT_AP_PASS;
     _config.staSsid = "";
     _config.staPassword = "";
     _config.isConfigured = false;
@@ -366,7 +386,13 @@ void WifiManager::loadFromStorage() {
     if (StorageManager::getInstance().loadJsonFile(FILE_WIFI_CONFIG, doc)) {
         _config.mode = doc["mode"] | (uint8_t)WIFI_MODE_AP_ROUTER;
         _config.apSsid = doc["apSsid"].as<String>();
-        if (_config.apSsid.length() == 0) _config.apSsid = DEFAULT_AP_SSID;
+        if (_config.apSsid.length() == 0 ||
+            _config.apSsid.equalsIgnoreCase("SmartHome-ESP01") ||
+            _config.apSsid.equalsIgnoreCase("SmartHome-ESP01-PCF8574") ||
+            _config.apSsid.equalsIgnoreCase("SmartHome-Setup") ||
+            _config.apSsid == DEFAULT_AP_SSID) {
+            _config.apSsid = getDefaultApSsid();
+        }
         _config.apPassword = doc["apPassword"].as<String>();
         _config.staSsid = doc["staSsid"].as<String>();
         _config.staPassword = doc["staPassword"].as<String>();
@@ -406,6 +432,17 @@ void WifiManager::saveToStorage() {
 #include "automation.h"
 #include <algorithm>
 
+String WifiManager::getDefaultApSsid() {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char suffix[5];
+    snprintf(suffix, sizeof(suffix), "%02X%02X", mac[4], mac[5]);
+    if (mac[4] == 0 && mac[5] == 0 && mac[0] == 0 && mac[1] == 0) {
+        snprintf(suffix, sizeof(suffix), "%04X", (uint16_t)(ESP.getChipId() & 0xFFFF));
+    }
+    return String(F(DEFAULT_AP_SSID)) + F("-") + String(suffix);
+}
+
 WifiManager::WifiManager()
     : _apActive(false),
       _isConnecting(false),
@@ -413,7 +450,7 @@ WifiManager::WifiManager()
       _lastWatchdogCheck(0),
       _wifiConnectedTime(0) {
     _config.mode = WIFI_MODE_AP_ROUTER;
-    _config.apSsid = DEFAULT_AP_SSID;
+    _config.apSsid = getDefaultApSsid();
     _config.apPassword = DEFAULT_AP_PASS;
     _config.staSsid = "";
     _config.staPassword = "";
@@ -438,6 +475,7 @@ bool WifiManager::begin() {
     WiFi.setAutoConnect(false);
     WiFi.setAutoReconnect(false);
     WiFi.disconnect(true);
+    WiFi.setSleepMode(WIFI_NONE_SLEEP);
     delay(100);
 
     Serial.printf("[WIFI] Initializing Wi-Fi. Mode: %u, Configured: %s\n",
@@ -697,13 +735,18 @@ void WifiManager::setMode(uint8_t mode) {
 }
 
 void WifiManager::setApConfig(const String& ssid, const String& password) {
-    if (ssid.length() > 0) {
+    if (ssid.length() > 0 &&
+        !ssid.equalsIgnoreCase("SmartHome-NodeMCU-PCF8574") &&
+        !ssid.equalsIgnoreCase("SmartHome-Setup") &&
+        ssid != DEFAULT_AP_SSID) {
         _config.apSsid = ssid;
-        _config.apPassword = password;
-        saveToStorage();
-        if (_apActive) {
-            startAP(); // Re-apply with new settings
-        }
+    } else {
+        _config.apSsid = getDefaultApSsid();
+    }
+    _config.apPassword = password;
+    saveToStorage();
+    if (_apActive) {
+        startAP(); // Re-apply with new settings
     }
 }
 
@@ -782,6 +825,8 @@ void WifiManager::getStatusJson(JsonObject& obj) {
 
 void WifiManager::resetWifiCredentials() {
     Serial.println(F("[WIFI] Clearing saved Wi-Fi credentials..."));
+    _config.apSsid = getDefaultApSsid();
+    _config.apPassword = DEFAULT_AP_PASS;
     _config.staSsid = "";
     _config.staPassword = "";
     _config.isConfigured = false;
@@ -804,7 +849,12 @@ void WifiManager::loadFromStorage() {
     if (StorageManager::getInstance().loadJsonFile(FILE_WIFI_CONFIG, doc)) {
         _config.mode = doc["mode"] | (uint8_t)WIFI_MODE_AP_ROUTER;
         _config.apSsid = doc["apSsid"].as<String>();
-        if (_config.apSsid.length() == 0) _config.apSsid = DEFAULT_AP_SSID;
+        if (_config.apSsid.length() == 0 ||
+            _config.apSsid.equalsIgnoreCase("SmartHome-NodeMCU-PCF8574") ||
+            _config.apSsid.equalsIgnoreCase("SmartHome-Setup") ||
+            _config.apSsid == DEFAULT_AP_SSID) {
+            _config.apSsid = getDefaultApSsid();
+        }
         _config.apPassword = doc.containsKey("apPassword") ? doc["apPassword"].as<String>() : (doc.containsKey("apPass") ? doc["apPass"].as<String>() : "");
         _config.staSsid = doc["staSsid"].as<String>();
         _config.staPassword = doc.containsKey("staPassword") ? doc["staPassword"].as<String>() : (doc.containsKey("staPass") ? doc["staPass"].as<String>() : "");
@@ -845,22 +895,18 @@ void WifiManager::saveToStorage() {
 #include <algorithm>
 
 String WifiManager::getDefaultApSsid() {
-    String mac = WiFi.macAddress();
-    mac.replace(":", "");
-    mac.toUpperCase();
-    String suffix = "";
-    if (mac.length() >= 4 && !mac.startsWith("000000")) {
-        suffix = mac.substring(mac.length() - 4);
-    } else {
-        char chipBuf[10];
-        snprintf(chipBuf, sizeof(chipBuf), "%06X", (uint32_t)ESP.getChipId());
-        suffix = String(chipBuf);
-        if (suffix.length() > 4) {
-            suffix = suffix.substring(suffix.length() - 4);
-        }
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char suffix[5];
+    snprintf(suffix, sizeof(suffix), "%02X%02X", mac[4], mac[5]);
+    if (mac[4] == 0 && mac[5] == 0 && mac[0] == 0 && mac[1] == 0) {
+#if defined(ESP8266)
+        snprintf(suffix, sizeof(suffix), "%04X", (uint16_t)(ESP.getChipId() & 0xFFFF));
+#elif defined(ESP32)
+        snprintf(suffix, sizeof(suffix), "%04X", (uint16_t)(ESP.getEfuseMac() & 0xFFFF));
+#endif
     }
-    suffix.toUpperCase();
-    return String(F("SmartHome-NodeMCU-")) + suffix;
+    return String(F(DEFAULT_AP_SSID)) + F("-") + String(suffix);
 }
 
 WifiManager::WifiManager()
@@ -895,6 +941,7 @@ bool WifiManager::begin() {
     WiFi.setAutoConnect(false);
     WiFi.setAutoReconnect(false);
     WiFi.disconnect(true);
+    WiFi.setSleepMode(WIFI_NONE_SLEEP);
     delay(100);
 
     Serial.printf("[WIFI] Initializing Wi-Fi. Mode: %u, Configured: %s\n",
@@ -1154,7 +1201,11 @@ void WifiManager::setMode(uint8_t mode) {
 }
 
 void WifiManager::setApConfig(const String& ssid, const String& password) {
-    if (ssid.length() > 0 && !ssid.equalsIgnoreCase("SmartHome-NodeMCU") && !ssid.equalsIgnoreCase("SmartHome-Setup")) {
+    if (ssid.length() > 0 &&
+        !ssid.equalsIgnoreCase("SmartHome-NodeMCU") &&
+        !ssid.equalsIgnoreCase("SmartHome-Setup") &&
+        !ssid.equalsIgnoreCase("SmartHome-ESP32") &&
+        ssid != DEFAULT_AP_SSID) {
         _config.apSsid = ssid;
     } else {
         _config.apSsid = getDefaultApSsid();
@@ -1268,6 +1319,7 @@ void WifiManager::loadFromStorage() {
         if (_config.apSsid.length() == 0 || 
             _config.apSsid.equalsIgnoreCase("SmartHome-NodeMCU") || 
             _config.apSsid.equalsIgnoreCase("SmartHome-Setup") || 
+            _config.apSsid.equalsIgnoreCase("SmartHome-ESP32") || 
             _config.apSsid == DEFAULT_AP_SSID) {
             _config.apSsid = getDefaultApSsid();
         }

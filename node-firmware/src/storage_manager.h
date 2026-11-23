@@ -2,8 +2,6 @@
 #define STORAGE_MANAGER_H
 
 #if defined(TARGET_ESP01_1M)
-#ifndef STORAGE_MANAGER_H
-#define STORAGE_MANAGER_H
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -64,11 +62,7 @@ private:
     void setDefaultConfig();
 };
 
-#endif // STORAGE_MANAGER_H
-
 #elif defined(TARGET_ESP01_PCF8574)
-#ifndef STORAGE_MANAGER_H
-#define STORAGE_MANAGER_H
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -129,11 +123,7 @@ private:
     void setDefaultConfig();
 };
 
-#endif // STORAGE_MANAGER_H
-
 #else
-#ifndef STORAGE_MANAGER_H
-#define STORAGE_MANAGER_H
 
 #include <Arduino.h>
 #include <LittleFS.h>
@@ -165,8 +155,6 @@ private:
     void ensureConfigDir();
     void incrementBootCount();
 };
-
-#endif // STORAGE_MANAGER_H
 
 #endif
 

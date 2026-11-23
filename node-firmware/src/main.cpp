@@ -101,6 +101,7 @@ void setup() {
     if (WifiManager::getInstance().isSTAConnected()) {
         Serial.printf("[INIT] Home Router IP: %s\n", WiFi.localIP().toString().c_str());
     }
+    Serial.printf("[INIT] Free Heap: %u bytes\n", ESP.getFreeHeap());
 }
 
 void loop() {
@@ -114,6 +115,14 @@ void loop() {
 
     // Physical recovery reset button monitor
     checkResetButton();
+
+    if (Serial.available()) {
+        char c = Serial.read();
+        if (c == 'h' || c == 'H') {
+            Serial.printf("[HEAP] Free: %u bytes, Max Block: %u bytes, Frag: %u%%\n",
+                          ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation());
+        }
+    }
 
     yield();
 }
@@ -229,6 +238,7 @@ void setup() {
     if (WifiManager::getInstance().isSTAConnected()) {
         Serial.printf("[INIT] Home Router IP: %s\n", WiFi.localIP().toString().c_str());
     }
+    Serial.printf("[INIT] Free Heap: %u bytes\n", ESP.getFreeHeap());
 }
 
 void loop() {
@@ -242,6 +252,14 @@ void loop() {
 
     // Physical recovery reset button monitor
     checkResetButton();
+
+    if (Serial.available()) {
+        char c = Serial.read();
+        if (c == 'h' || c == 'H') {
+            Serial.printf("[HEAP] Free: %u bytes, Max Block: %u bytes, Frag: %u%%\n",
+                          ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation());
+        }
+    }
 
     yield();
 }
@@ -350,6 +368,7 @@ void setup() {
     if (WifiManager::getInstance().isSTAConnected()) {
         Serial.printf("[INIT] Home Router IP: %s\n", WiFi.localIP().toString().c_str());
     }
+    Serial.printf("[INIT] Free Heap: %u bytes\n", ESP.getFreeHeap());
 }
 
 void loop() {
@@ -363,6 +382,14 @@ void loop() {
 
     // Physical recovery reset button monitor
     checkResetButton();
+
+    if (Serial.available()) {
+        char c = Serial.read();
+        if (c == 'h' || c == 'H') {
+            Serial.printf("[HEAP] Free: %u bytes, Max Block: %u bytes, Frag: %u%%\n",
+                          ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation());
+        }
+    }
 
     yield();
 }

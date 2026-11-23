@@ -2,8 +2,6 @@
 #define OTA_MANAGER_H
 
 #if defined(TARGET_ESP01_1M) || defined(TARGET_ESP01_PCF8574)
-#ifndef OTA_MANAGER_H
-#define OTA_MANAGER_H
 
 #include <Arduino.h>
 #include <ESP8266WebServer.h>
@@ -39,11 +37,7 @@ private:
     String _targetType;
 };
 
-#endif // OTA_MANAGER_H
-
 #else
-#ifndef OTA_MANAGER_H
-#define OTA_MANAGER_H
 
 #include <Arduino.h>
 #include <ESP8266WebServer.h>
@@ -79,8 +73,6 @@ private:
     bool _updateSuccess;
     String _targetType;
 };
-
-#endif // OTA_MANAGER_H
 
 #endif
 

@@ -1112,7 +1112,7 @@ const app = {
     if (!confirm('Are you sure you want to clear saved Wi-Fi credentials? The device will start setup AP mode.')) return;
     try {
       await this.apiRequest('/api/wifi/reset', { method: 'POST' });
-      alert('Wi-Fi credentials erased. Connect to "SmartHome-Setup" hotspot at 192.168.4.1.');
+      alert('Wi-Fi credentials erased. Connect to device setup hotspot at 192.168.4.1.');
     } catch (e) {}
   },
 
