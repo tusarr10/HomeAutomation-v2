@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+package-lock.json.log
+
+# Build artifacts & libraries
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# PlatformIO & Embedded build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+*.bin
+*.elf
+*.hex
+
+# Databases & local state
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+central-server/data/fleet*.db
+central-server/data/backups/
+central-server/data/fs_backups/
+central-server/data/firmware/
+
+# Logs & runtime event dumps
+*.log
+*.jsonl
+central-server/data/*.jsonl
+relay-server/data/*.jsonl
+
+# Environment & local secrets
+.env
+.env.local
+.env.*.local
+
+# IDE, OS, and temporary files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
