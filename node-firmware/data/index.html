@@ -833,11 +833,16 @@
         <div class="form-group">
           <label for="gpio-func-select">Function Type</label>
           <select id="gpio-func-select">
-            <option value="Light">Light</option>
-            <option value="Fan">Fan</option>
-            <option value="Relay">Relay</option>
-            <option value="Pump">Water Pump</option>
-            <option value="Switch">Switch</option>
+            <option value="Light">Light (Actuator)</option>
+            <option value="Fan">Fan (Actuator)</option>
+            <option value="Relay">Relay (Actuator)</option>
+            <option value="Pump">Water Pump (Actuator)</option>
+            <option value="Switch">Switch (Actuator)</option>
+            <option value="Voltage">Voltage Sensor (A0 / ADC)</option>
+            <option value="PIR Motion">PIR Motion Detector (Sensor)</option>
+            <option value="IR Receiver">IR Remote Receiver (Sensor)</option>
+            <option value="IR Transmitter">IR Remote Blaster (Actuator)</option>
+            <option value="Door Sensor">Door / Window Sensor (Input)</option>
           </select>
         </div>
         <div class="form-group checkbox-group">

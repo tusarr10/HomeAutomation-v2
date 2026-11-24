@@ -547,6 +547,50 @@ const app = {
     let mgHtml = '';
 
     this.channels.forEach(ch => {
+      if (ch.isSensor || ch.direction === 'INPUT') {
+        const valDisplay = (ch.type === 'VOLTAGE_ADC' && ch.value !== undefined)
+          ? `${Number(ch.value).toFixed(2)} V (ADC: ${ch.rawAdc || 0})`
+          : (ch.state ? 'ACTIVE / DETECTED' : 'IDLE / CLEAR');
+
+        ovHtml += `
+          <div class="gpio-card">
+            <div class="gpio-card-top">
+              <div class="gpio-title-group">
+                <h4>${ch.name} <span class="badge badge-info" style="font-size:0.7rem; padding: 2px 6px; background: #0284c7; color:#fff; border-radius: 4px;">SENSOR: ${ch.type}</span></h4>
+                <span class="gpio-meta">${ch.room} &bull; Pin: ${ch.label} &bull; Direction: ${ch.direction}</span>
+              </div>
+              <div style="text-align: right;">
+                <span class="gpio-status-indicator on"></span>
+                <strong style="color: var(--primary); font-size: 1.1rem;">${valDisplay}</strong>
+              </div>
+            </div>
+            <div class="gpio-controls" style="margin-top: 8px;">
+              <span class="hint-text" style="font-size:0.8rem; color:var(--text-muted);">📡 Real-time Sensor Input &bull; Telemetry Stream</span>
+            </div>
+          </div>
+        `;
+
+        mgHtml += `
+          <div class="gpio-card">
+            <div class="gpio-card-top">
+              <div class="gpio-title-group">
+                <h4>${ch.name} <span class="badge badge-info" style="font-size:0.7rem; padding: 2px 6px; background: #0284c7; color:#fff; border-radius: 4px;">SENSOR: ${ch.type}</span></h4>
+                <span class="gpio-meta">Pin: <strong>${ch.label}</strong> &bull; Room: <strong>${ch.room}</strong></span>
+                <span class="gpio-meta">Direction: <strong>INPUT</strong> &bull; Unit: <strong>${ch.unit || '-'}</strong> &bull; Value: <strong>${valDisplay}</strong></span>
+              </div>
+              <div style="text-align: right;">
+                <strong style="color: var(--primary); font-size: 1.05rem;">${valDisplay}</strong>
+              </div>
+            </div>
+            <div class="gpio-controls">
+              <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
       const isOn = ch.state;
       const statusClass = isOn ? 'on' : '';
       const cardActiveClass = isOn ? 'active-on' : '';
@@ -665,7 +709,8 @@ const app = {
         { pin: 16, label: 'D0 (GPIO 16) - WAKE Pin' },
         { pin: 0, label: 'D3 (GPIO 0) - Boot Sensitive' },
         { pin: 2, label: 'D4 (GPIO 2) - Boot Sensitive' },
-        { pin: 15, label: 'D8 (GPIO 15) - Boot Sensitive' }
+        { pin: 15, label: 'D8 (GPIO 15) - Boot Sensitive' },
+        { pin: 17, label: 'A0 (ADC0) - Dedicated Analog Voltage Input (0-3.3V)' }
       ];
 
       nativePins.forEach(p => {

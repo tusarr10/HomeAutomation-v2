@@ -1303,6 +1303,68 @@ void GpioManager::toJson(JsonArray& arr) {
         obj["function"] = (ch.function.length() > 0) ? ch.function : F("Relay");
         obj["activeLow"] = ch.activeLow;
         obj["initialMode"] = ch.initialMode;
+
+        // Sensor & Actuator Direction/Type Descriptors
+        bool isSensor = (ch.pin == 17) || 
+                        ch.function.equalsIgnoreCase("Voltage") || 
+                        ch.function.equalsIgnoreCase("Sensor") || 
+                        ch.function.equalsIgnoreCase("PIR") || 
+                        ch.function.equalsIgnoreCase("Motion") || 
+                        ch.function.equalsIgnoreCase("IR Receiver") ||
+                        ch.function.equalsIgnoreCase("Door") ||
+                        ch.function.equalsIgnoreCase("Window");
+
+        const char* direction = isSensor ? "INPUT" : "OUTPUT";
+        const char* type = "RELAY";
+        const char* unit = "BOOL";
+
+        if (ch.pin == 17 || ch.function.equalsIgnoreCase("Voltage")) {
+            type = "VOLTAGE_ADC";
+            unit = "V";
+        } else if (ch.function.equalsIgnoreCase("IR Receiver")) {
+            type = "IR_RECEIVER";
+            unit = "HEX";
+        } else if (ch.function.equalsIgnoreCase("IR Transmitter")) {
+            type = "IR_TRANSMITTER";
+            unit = "HEX";
+        } else if (ch.function.equalsIgnoreCase("PIR") || ch.function.equalsIgnoreCase("Motion")) {
+            type = "PIR_MOTION";
+            unit = "STATE";
+        } else if (ch.function.equalsIgnoreCase("Door") || ch.function.equalsIgnoreCase("Window")) {
+            type = "DOOR_SENSOR";
+            unit = "STATE";
+        } else if (ch.function.equalsIgnoreCase("Light")) {
+            type = "LIGHT";
+            unit = "BOOL";
+        } else if (ch.function.equalsIgnoreCase("Fan")) {
+            type = "FAN";
+            unit = "BOOL";
+        }
+
+        obj["direction"] = direction;
+        obj["type"] = type;
+        obj["isSensor"] = isSensor;
+        obj["unit"] = unit;
+
+        JsonArray caps = obj.createNestedArray("capabilities");
+        if (isSensor) {
+            caps.add("read");
+            if (strcmp(type, "VOLTAGE_ADC") == 0) {
+                caps.add("telemetry");
+                int rawAdc = analogRead(A0);
+                float volt = (rawAdc * 3.3f) / 1024.0f;
+                obj["value"] = volt;
+                obj["rawAdc"] = rawAdc;
+            } else {
+                caps.add("event_stream");
+                obj["value"] = ch.currentState ? 1 : 0;
+            }
+        } else {
+            caps.add("write");
+            caps.add("toggle");
+            caps.add("pulse");
+            obj["value"] = ch.currentState ? 1 : 0;
+        }
     }
 }
 

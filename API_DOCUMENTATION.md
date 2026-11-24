@@ -20,7 +20,13 @@
 3. [REST API Endpoints: Complete Send & Receive Schemas](#3-rest-api-endpoints-complete-send--receive-schemas)
    - [1. Authentication & Security](#1-authentication--security)
    - [2. System Overview & Live Telemetry](#2-system-overview--live-telemetry)
-   - [3. GPIO & Relay Control](#3-gpio--relay-control)
+   - [3. GPIO, Relay & Sensor Management](#3-gpio-relay--sensor-management)
+     - [A. List All Channels & Sensors (/api/gpio)](#a-list-all-channels--sensors-apigpio)
+     - [B. Query Dedicated Sensor Feeds (/api/sensors)](#b-query-dedicated-sensor-feeds-apisensors)
+     - [C. Set Relay State / Toggle / Pulse (/api/gpio/state)](#c-set-relay-state--toggle--pulse-apigpiostate)
+     - [D. Add New Channel (Relay or Sensor) (/api/gpio)](#d-add-new-channel-relay-or-sensor-apigpio)
+     - [E. Update Channel Configuration (/api/gpio/update)](#e-update-channel-configuration-apigpioupdate)
+     - [F. Delete Channel (/api/gpio/delete)](#f-delete-channel-apigpiodelete)
    - [4. I2C Bus & PCF8574 Expander](#4-i2c-bus--pcf8574-expander)
    - [5. Remote Command Execution](#5-remote-command-execution)
    - [6. Wi-Fi Network Management](#6-wi-fi-network-management)
@@ -30,12 +36,18 @@
    - [10. LittleFS Filesystem Explorer](#10-littlefs-filesystem-explorer)
    - [11. Device Settings & Maintenance](#11-device-settings--maintenance)
 4. [Async TCP Telemetry Socket Protocol (Port 2000)](#4-async-tcp-telemetry-socket-protocol-port-2000)
+   - [Dual Outbound Arrays: Channels & Sensors](#dual-outbound-arrays-channels--sensors)
    - [Outbound Telemetry Payload (Node -> Server)](#outbound-telemetry-payload-node---server)
    - [Server Inbound Response & Remote Command Dispatch (Server -> Node)](#server-inbound-response--remote-command-dispatch-server---node)
 5. [Server Integration Implementation Examples](#5-server-integration-implementation-examples)
-   - [Python Server Client](#python-server-client)
+   - [Python Server Client (Actuators vs Sensors Auto-Handling)](#python-server-client)
    - [Node.js / Express Client](#nodejs--express-client)
    - [cURL Command Reference](#curl-command-reference)
+6. [Infrared (IR) Remote Learning & Transmission Architecture Plan](#6-infrared-ir-remote-learning--transmission-architecture-plan)
+   - [RAM & ROM Resource Impact Analysis](#ram--rom-resource-impact-analysis)
+   - [LittleFS Code Storage Schema (/config/ir_codes.json)](#littlefs-code-storage-schema-configir_codesjson)
+   - [Interactive Training / Learning Mode Handshake](#interactive-training--learning-mode-handshake)
+   - [Server Event Notification & Real-Time Key Updates](#server-event-notification--real-time-key-updates)
 
 ---
 
@@ -128,6 +140,7 @@ Central Server                                                  ESP8266 Node
 | **D3** | `0` | ⚠️ **Avoid for Relays** | **FLASH Button & Boot Strapping Pin:** Hardwired to 10k pull-up and button. Must be HIGH at boot. Optocoupler circuits cause relay lockup. |
 | **D4** | `2` | ⚠️ **Avoid for Relays** | **Onboard Blue LED:** Hardwired to 10k pull-up. Must be HIGH at boot. |
 | **D8** | `15` | ❌ **Do NOT use for Relays** | **Boot Strapping Pin:** Must be held LOW at boot. Relay loads pull it HIGH and cause boot failure. |
+| **A0** | `17` | **NO (Sensor Only)** | **Dedicated Analog Input (ADC0):** 0–3.3V range (onboard NodeMCU resistor divider; internal core range 0–1.0V). Not a digital relay output. Ideal for Voltage sensors, battery monitors, LDR, and thermistors. Firmware automatically classifies pin 17 as `direction: "INPUT"`, `type: "VOLTAGE_ADC"`, `unit: "V"` and guards against `pinMode(OUTPUT)`. |
 
 ---
 
@@ -325,9 +338,32 @@ Fetches all channels, automation rules, I2C, and receiver configurations in a si
 
 ---
 
-### 3. GPIO & Relay Control
+### 3. GPIO, Relay & Sensor Management
 
-#### A. List All Channels
+The firmware provides complete self-describing hardware abstraction. Each channel payload explicitly declares whether it is an **Actuator/Output** or a **Sensor/Input**, its hardware type, physical unit, supported capabilities, and live sampled value.
+
+#### How the Central Server Distinguishes Relays from Sensors:
+Each item in `/api/gpio` and `/api/sensors` contains:
+1. `direction`: `"OUTPUT"` (Relays, Transmitters) vs `"INPUT"` (Sensors, Demodulators).
+2. `isSensor`: Boolean flag (`false` for relays, `true` for sensors) enabling instant UI filtering.
+3. `type`: Explicit machine taxonomy:
+   - `"RELAY"`: Generic relay actuator.
+   - `"LIGHT"`: Lighting circuit actuator.
+   - `"FAN"`: Fan/motor actuator.
+   - `"IR_TRANSMITTER"`: IR blaster emitter.
+   - `"VOLTAGE_ADC"`: Real-time analog voltage sensor (ADC0 / Pin 17).
+   - `"PIR_MOTION"`: Digital passive infrared motion sensor.
+   - `"DOOR_SENSOR"`: Magnetic reed switch contact sensor.
+   - `"IR_RECEIVER"`: 38 kHz infrared demodulator receiver.
+4. `unit`: Physical unit of measurement (`"BOOL"`, `"V"`, `"STATE"`, `"HEX"`).
+5. `capabilities`: Array of sanctioned commands:
+   - Actuators: `["write", "toggle", "pulse"]`
+   - Telemetry Sensors: `["read", "telemetry"]`
+   - Event Stream Sensors: `["read", "event_stream"]`
+
+---
+
+#### A. List All Channels & Sensors
 * **Endpoint:** `GET /api/gpio`
 * **Auth Required:** No
 * **Response ("Receive") - 200 OK:**
@@ -337,7 +373,7 @@ Fetches all channels, automation rules, I2C, and receiver configurations in a si
       "id": 1,
       "pin": 100,
       "enabled": true,
-      "state": false,
+      "state": true,
       "label": "P0 (PCF8574 Relay 1)",
       "note": "I2C Expander Pin P0 (Safe isolated relay output)",
       "bootSensitive": false,
@@ -345,28 +381,109 @@ Fetches all channels, automation rules, I2C, and receiver configurations in a si
       "room": "Living Room",
       "function": "Light",
       "activeLow": true,
-      "initialMode": 0
+      "initialMode": 0,
+      "direction": "OUTPUT",
+      "type": "LIGHT",
+      "isSensor": false,
+      "unit": "BOOL",
+      "capabilities": [
+        "write",
+        "toggle",
+        "pulse"
+      ],
+      "value": 1
     },
     {
       "id": 9,
       "pin": 14,
       "enabled": true,
-      "state": true,
+      "state": false,
       "label": "D5 (GPIO14)",
       "note": "Safe SPI CLK, boot-neutral",
       "bootSensitive": false,
-      "name": "Bedroom Fan",
-      "room": "Bedroom",
-      "function": "Fan",
-      "activeLow": true,
-      "initialMode": 0
+      "name": "PIR Motion Hallway",
+      "room": "Hallway",
+      "function": "Motion",
+      "activeLow": false,
+      "initialMode": 0,
+      "direction": "INPUT",
+      "type": "PIR_MOTION",
+      "isSensor": true,
+      "unit": "STATE",
+      "capabilities": [
+        "read",
+        "event_stream"
+      ],
+      "value": 0
+    },
+    {
+      "id": 10,
+      "pin": 17,
+      "enabled": true,
+      "state": false,
+      "label": "A0 (ADC0)",
+      "note": "Dedicated Analog Voltage Input (0-3.3V / 0-1023)",
+      "bootSensitive": false,
+      "name": "AC Voltage Sensor",
+      "room": "Main DB",
+      "function": "Voltage",
+      "activeLow": false,
+      "initialMode": 0,
+      "direction": "INPUT",
+      "type": "VOLTAGE_ADC",
+      "isSensor": true,
+      "unit": "V",
+      "capabilities": [
+        "read",
+        "telemetry"
+      ],
+      "value": 2.45,
+      "rawAdc": 760
     }
   ]
   ```
 
 ---
 
-#### B. Set Relay State / Toggle / Pulse
+#### B. Query Dedicated Sensor Feeds
+For telemetry monitoring loops and sensor graphs, this endpoint returns exclusively sensor channels, automatically filtering out relay actuators. For analog pins (A0 / Pin 17), `value` and `rawAdc` are sampled live upon request.
+* **Endpoint:** `GET /api/sensors`
+* **Auth Required:** No
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "sensors": [
+      {
+        "id": 10,
+        "pin": 17,
+        "enabled": true,
+        "state": false,
+        "label": "A0 (ADC0)",
+        "note": "Dedicated Analog Voltage Input (0-3.3V / 0-1023)",
+        "bootSensitive": false,
+        "name": "AC Voltage Sensor",
+        "room": "Main DB",
+        "function": "Voltage",
+        "activeLow": false,
+        "initialMode": 0,
+        "direction": "INPUT",
+        "type": "VOLTAGE_ADC",
+        "isSensor": true,
+        "unit": "V",
+        "capabilities": [
+          "read",
+          "telemetry"
+        ],
+        "value": 2.45,
+        "rawAdc": 760
+      }
+    ]
+  }
+  ```
+
+---
+
+#### C. Set Relay State / Toggle / Pulse
 * **Endpoint:** `POST /api/gpio/state`
 * **Auth Required:** Yes
 * **Request ("Send") - Mode 1: Explicit ON / OFF:**
@@ -402,10 +519,10 @@ Fetches all channels, automation rules, I2C, and receiver configurations in a si
 
 ---
 
-#### C. Add New Channel
+#### D. Add New Channel (Relay or Sensor)
 * **Endpoint:** `POST /api/gpio`
 * **Auth Required:** Yes
-* **Request ("Send"):**
+* **Request ("Send") - Example 1: Add Relay Channel:**
   ```json
   {
     "pin": 101,
@@ -416,21 +533,44 @@ Fetches all channels, automation rules, I2C, and receiver configurations in a si
     "initialMode": 0
   }
   ```
+* **Request ("Send") - Example 2: Add Voltage Sensor (Pin 17 / A0):**
+  ```json
+  {
+    "pin": 17,
+    "name": "Mains Voltage",
+    "room": "Power Station",
+    "function": "Voltage",
+    "activeLow": false,
+    "initialMode": 0
+  }
+  ```
+* **Request ("Send") - Example 3: Add PIR Motion Sensor (Pin 14 / D5):**
+  ```json
+  {
+    "pin": 14,
+    "name": "Hallway PIR",
+    "room": "Hallway",
+    "function": "Motion",
+    "activeLow": false,
+    "initialMode": 0
+  }
+  ```
   *Field Notes:*
+  - `pin`: `0..16` for native ESP pins, `17` for A0 analog ADC, `100..107` for PCF8574 expander.
+  - `function`: Assign `"Light"`, `"Fan"`, `"Relay"` for actuators. Assign `"Voltage"`, `"Sensor"`, `"Motion"`, `"PIR"`, `"Door"`, `"IR Receiver"`, `"IR Transmitter"` for sensors/emitters.
   - `initialMode`: `0` = Restore Last State, `1` = Always Boot OFF, `2` = Always Boot ON.
-  - `activeLow`: `true` for standard active-low relay boards (LOW = Relay ON).
+  - `activeLow`: `true` for standard active-low relay modules; `false` for active-high sensors.
 * **Response ("Receive") - 200 OK:**
   ```json
   {
     "success": true,
-    "message": "GPIO channel created",
-    "id": 2
+    "message": "GPIO channel added"
   }
   ```
 
 ---
 
-#### D. Update Channel Configuration
+#### E. Update Channel Configuration
 * **Endpoint:** `POST /api/gpio/update`
 * **Auth Required:** Yes
 * **Request ("Send"):**
@@ -455,7 +595,7 @@ Fetches all channels, automation rules, I2C, and receiver configurations in a si
 
 ---
 
-#### E. Delete Channel
+#### F. Delete Channel
 * **Endpoint:** `POST /api/gpio/delete`
 * **Auth Required:** Yes
 * **Request ("Send"):**
@@ -1006,7 +1146,7 @@ When your central server receives the telemetry line, it can reply with a standa
 
 ## 5. Server Integration Implementation Examples
 
-### Python Server Client
+### Python Server Client (Actuators vs Sensors Auto-Handling)
 
 ```python
 import requests
@@ -1023,28 +1163,37 @@ headers = {
 status = requests.get(f"http://{NODE_IP}/api/status").json()
 print(f"Node: {status['deviceName']} (Heap Free: {status['freeHeap']} bytes)")
 
-# 2. Turn ON PCF8574 Relay 1 (Channel 1, Pin 100)
-resp = requests.post(
-    f"http://{NODE_IP}/api/gpio/state",
-    json={"id": 1, "state": True, "action": "setState"},
-    headers=headers
-)
-print("Relay 1 ON:", resp.json())
+# 2. Query all channels & categorize actuators vs sensors automatically
+channels = requests.get(f"http://{NODE_IP}/api/gpio").json()
+actuators = [ch for ch in channels if not ch.get("isSensor", False)]
+sensors = [ch for ch in channels if ch.get("isSensor", False)]
 
-# 3. Toggle Relay 2 (Channel 2, Pin 101)
-resp = requests.post(
-    f"http://{NODE_IP}/api/gpio/state",
-    json={"id": 2, "action": "toggle"},
-    headers=headers
-)
-print("Relay 2 Toggled:", resp.json())
+print(f"\nDiscovered {len(actuators)} Actuator(s) and {len(sensors)} Sensor(s):")
 
-# 4. Pulse Relay 3 for 500ms
-requests.post(
-    f"http://{NODE_IP}/api/gpio/state",
-    json={"id": 3, "action": "pulse", "duration": 500},
-    headers=headers
-)
+for act in actuators:
+    print(f"  [ACTUATOR] ID {act['id']}: {act['name']} ({act['type']}) -> State: {'ON' if act['state'] else 'OFF'} | Caps: {act['capabilities']}")
+
+for sen in sensors:
+    print(f"  [SENSOR]   ID {sen['id']}: {sen['name']} ({sen['type']}) -> Reading: {sen.get('value')} {sen.get('unit')}")
+
+# 3. Control an Actuator (Relay 1, Pin 100)
+if actuators:
+    target_id = actuators[0]["id"]
+    resp = requests.post(
+        f"http://{NODE_IP}/api/gpio/state",
+        json={"id": target_id, "state": True, "action": "setState"},
+        headers=headers
+    )
+    print(f"\nSet Actuator {target_id} ON:", resp.json())
+
+# 4. Dedicated Telemetry Read: Query pure sensor telemetry
+sensor_data = requests.get(f"http://{NODE_IP}/api/sensors").json()
+print("\nLive Sensor Telemetry:")
+for s in sensor_data.get("sensors", []):
+    if s["type"] == "VOLTAGE_ADC":
+        print(f"  Mains Voltage: {s['value']:.2f} V (Raw ADC: {s['rawAdc']})")
+    elif s["type"] == "PIR_MOTION":
+        print(f"  Motion Detected: {bool(s['value'])}")
 ```
 
 ---
@@ -1122,3 +1271,181 @@ curl -X POST http://192.168.1.28/api/i2c/auto-channels \
 curl -X POST http://192.168.1.28/api/system/reboot \
   -H "X-Server-Key: abcdefgh12345678"
 ```
+
+
+---
+
+## 6. Infrared (IR) Remote Learning & Transmission Architecture Plan
+
+This section provides the implementation blueprint and resource analysis for adding Infrared Remote Control capabilities (Receive, Learn, Store in LittleFS, and Transmit) to the node.
+
+### RAM & ROM Resource Impact Analysis
+
+| Component | RAM Footprint (SRAM) | ROM Footprint (Flash) | Notes |
+| :--- | :---: | :---: | :--- |
+| **IRremoteESP8266 Core** | ~1,200 bytes | ~28 KB (protocols selectively compiled) | Only compile target protocols (`NEC`, `RC5`, `SONY`, `SAMSUNG`) to save Flash. |
+| **IR Receiver Buffer (`kCaptureBufferSize`)** | 400 bytes | 0 bytes | Stores raw mark/space timings in circular ring buffer. |
+| **LittleFS IR Database (`/config/ir_codes.json`)** | 0 bytes static (parsed into temporary heap on demand) | ~4 KB LittleFS file space | Easily stores 50+ remote controls with 20 buttons each. |
+| **Available Node Resources** | **~18.5 KB Free Heap** | **~1,867 KB Free LittleFS** | **100% Feasible:** Less than 7% of free heap and 0.2% of free flash used. |
+
+---
+
+### LittleFS Code Storage Schema (`/config/ir_codes.json`)
+
+All learned remote controls and individual button codes are persisted directly to LittleFS in JSON format:
+
+```json
+{
+  "remotes": [
+    {
+      "id": "rem-tv-samsung",
+      "name": "Living Room Samsung TV",
+      "deviceType": "TV",
+      "txPin": 12,
+      "rxPin": 14,
+      "buttons": [
+        {
+          "name": "POWER",
+          "protocol": "SAMSUNG",
+          "bits": 32,
+          "hexCode": "0xE0E040BF",
+          "repeat": 1,
+          "description": "Toggle Power"
+        },
+        {
+          "name": "VOL_UP",
+          "protocol": "SAMSUNG",
+          "bits": 32,
+          "hexCode": "0xE0E0E01F",
+          "repeat": 0,
+          "description": "Increase Volume"
+        },
+        {
+          "name": "VOL_DOWN",
+          "protocol": "SAMSUNG",
+          "bits": 32,
+          "hexCode": "0xE0E0D02F",
+          "repeat": 0,
+          "description": "Decrease Volume"
+        }
+      ]
+    },
+    {
+      "id": "rem-fan-orient",
+      "name": "Ceiling Fan Remote",
+      "deviceType": "FAN",
+      "txPin": 12,
+      "rxPin": 14,
+      "buttons": [
+        {
+          "name": "SPEED_1",
+          "protocol": "NEC",
+          "bits": 32,
+          "hexCode": "0x00FF807F",
+          "repeat": 0,
+          "description": "Fan Speed 1"
+        },
+        {
+          "name": "SPEED_2",
+          "protocol": "NEC",
+          "bits": 32,
+          "hexCode": "0x00FF40BF",
+          "repeat": 0,
+          "description": "Fan Speed 2"
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+### Interactive Training / Learning Mode Handshake
+
+```
+Central Server                                           ESP8266 Node (Pin 14: IR RX)
+      │                                                              │
+      │  1. POST /api/ir/learn/start                                 │
+      │     Body: {"timeoutSec": 20}                                 │
+      ├─────────────────────────────────────────────────────────────►│
+      │                                                              │ (Enables IRrecv interrupt)
+      │  2. 200 OK: {"listening": true, "timeoutSec": 20}            │
+      │◄─────────────────────────────────────────────────────────────┤
+      │                                                              │
+      │                     [ USER PRESSES REMOTE BUTTON ]           │
+      │                     (e.g., TV Remote 'Power' Button)         │
+      │                                     │                        │
+      │                                     ▼                        │
+      │                              Demodulated burst               │
+      │                              decoded: NEC 0xE0E040BF         │
+      │                                                              │
+      │  3. GET /api/ir/learn/status (or auto-push event)            │
+      │◄─────────────────────────────────────────────────────────────┤
+      │     Response:                                                │
+      │     {"captured": true, "protocol": "NEC",                    │
+      │      "hexCode": "0xE0E040BF", "bits": 32}                    │
+      │                                                              │
+      │  4. POST /api/ir/buttons                                     │
+      │     Body: {"remoteId": "rem-tv-samsung",                     │
+      │            "name": "POWER", "hexCode": "0xE0E040BF",         │
+      │            "protocol": "NEC", "bits": 32}                    │
+      ├─────────────────────────────────────────────────────────────►│
+      │                                                              │ (Persists code to
+      │  5. 200 OK: {"success": true, "message": "Key stored"}       │  /config/ir_codes.json)
+      │◄─────────────────────────────────────────────────────────────┤
+```
+
+---
+
+### Server Event Notification & Real-Time Key Updates
+
+Once trained, the node can operate in continuous **Background Listening Mode**:
+1. When a user presses any physical remote control in the room, the node intercepts the burst.
+2. The node matches the captured hex code against its LittleFS database (`/config/ir_codes.json`).
+3. If matched, the node immediately sends a real-time event packet over the **Async TCP Socket (Port 2000)**:
+   ```json
+   {
+     "nodeId": "NODE-8C4F00565D72",
+     "eventType": "ir_remote_event",
+     "remoteId": "rem-tv-samsung",
+     "button": "POWER",
+     "protocol": "SAMSUNG",
+     "hexCode": "0xE0E040BF",
+     "timestamp": "2026-11-25 00:40:12"
+   }
+   ```
+4. Your Central Server can immediately update its UI (e.g., mark TV as toggled) or trigger coordinated smart home automation rules (e.g., dimming living room lights when TV Power is pressed).
+
+---
+
+### Transmitting IR Signals via Server REST API
+
+To blast an IR command from your server or automation system:
+
+* **Endpoint:** `POST /api/ir/transmit`
+* **Auth Required:** Yes (`X-Server-Key`)
+* **Request ("Send") - By Stored Name:**
+  ```json
+  {
+    "remoteId": "rem-tv-samsung",
+    "button": "POWER"
+  }
+  ```
+* **Request ("Send") - By Direct Hex Code:**
+  ```json
+  {
+    "pin": 12,
+    "protocol": "NEC",
+    "hexCode": "0xE0E040BF",
+    "bits": 32,
+    "repeat": 1
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "IR signal transmitted successfully"
+  }
+  ```

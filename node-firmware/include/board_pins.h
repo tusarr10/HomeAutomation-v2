@@ -233,7 +233,8 @@ static const PinSafetyInfo PIN_SAFETY_MAP[] = {
     { RX,  "RX (GPIO3)",   true,  true,  "UART0 RX, serial debug input" },
     { TX,  "TX (GPIO1)",   true,  true,  "UART0 TX, serial debug output (HIGH at boot)" },
     { SD2, "SD2 (GPIO9)",  true,  true,  "Flash IO SD2 (usable in DIO/DOUT mode)" },
-    { SD3, "SD3 (GPIO10)", true,  true,  "Flash IO SD3 (usable in DIO/DOUT mode)" }
+    { SD3, "SD3 (GPIO10)", true,  true,  "Flash IO SD3 (usable in DIO/DOUT mode)" },
+    { 17,  "A0 (ADC0)",   true,  false, "Dedicated Analog Voltage Input (0-3.3V / 0-1023)" },
 };
 
 #endif

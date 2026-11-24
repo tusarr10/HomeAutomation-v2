@@ -1658,11 +1658,29 @@ void WebServerManager::registerApiRoutes() {
     // === GPIO / RELAY MANAGEMENT ===
     _server.on("/api/gpio", HTTP_GET, [this]() {
         _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
-        DynamicJsonDocument doc(3072);
+        DynamicJsonDocument doc(4096);
         JsonArray arr = doc.to<JsonArray>();
         GpioManager::getInstance().toJson(arr);
         String out;
         serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/sensors", HTTP_GET, [this]() {
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
+        DynamicJsonDocument doc(4096);
+        JsonArray allCh = doc.createNestedArray("all");
+        GpioManager::getInstance().toJson(allCh);
+
+        DynamicJsonDocument resp(2048);
+        JsonArray arr = resp.createNestedArray("sensors");
+        for (JsonObject ch : allCh) {
+            if (ch["isSensor"] | false) {
+                arr.add(ch);
+            }
+        }
+        String out;
+        serializeJson(resp, out);
         _server.send(200, "application/json", out);
     });
 
@@ -3121,11 +3139,29 @@ void WebServerManager::registerApiRoutes() {
     // === GPIO / RELAY MANAGEMENT ===
     _server.on("/api/gpio", HTTP_GET, [this]() {
         _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
-        DynamicJsonDocument doc(3072);
+        DynamicJsonDocument doc(4096);
         JsonArray arr = doc.to<JsonArray>();
         GpioManager::getInstance().toJson(arr);
         String out;
         serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/sensors", HTTP_GET, [this]() {
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
+        DynamicJsonDocument doc(4096);
+        JsonArray allCh = doc.createNestedArray("all");
+        GpioManager::getInstance().toJson(allCh);
+
+        DynamicJsonDocument resp(2048);
+        JsonArray arr = resp.createNestedArray("sensors");
+        for (JsonObject ch : allCh) {
+            if (ch["isSensor"] | false) {
+                arr.add(ch);
+            }
+        }
+        String out;
+        serializeJson(resp, out);
         _server.send(200, "application/json", out);
     });
 

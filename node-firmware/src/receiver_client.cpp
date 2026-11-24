@@ -227,6 +227,23 @@ void ReceiverClient::fillTelemetryDoc(DynamicJsonDocument& doc, const char* even
     JsonArray gpios = doc.createNestedArray("channels");
     GpioManager::getInstance().toJson(gpios);
 
+    // Dedicated Sensors Array (for pure inputs)
+    JsonArray sensors = doc.createNestedArray("sensors");
+    for (JsonObject chObj : gpios) {
+        if (chObj["isSensor"] | false) {
+            JsonObject s = sensors.createNestedObject();
+            s["id"] = chObj["id"];
+            s["pin"] = chObj["pin"];
+            s["name"] = chObj["name"];
+            s["room"] = chObj["room"];
+            s["direction"] = "INPUT";
+            s["type"] = chObj["type"];
+            s["unit"] = chObj["unit"];
+            s["value"] = chObj["value"];
+            if (chObj.containsKey("rawAdc")) s["rawAdc"] = chObj["rawAdc"];
+        }
+    }
+
     // Application-Level Command Acknowledgements
     if (_ackCount > 0) {
         JsonArray acks = doc.createNestedArray("acks");
@@ -679,6 +696,23 @@ void ReceiverClient::fillTelemetryDoc(DynamicJsonDocument& doc, const char* even
     JsonArray gpios = doc.createNestedArray("channels");
     GpioManager::getInstance().toJson(gpios);
 
+    // Dedicated Sensors Array (for pure inputs)
+    JsonArray sensors = doc.createNestedArray("sensors");
+    for (JsonObject chObj : gpios) {
+        if (chObj["isSensor"] | false) {
+            JsonObject s = sensors.createNestedObject();
+            s["id"] = chObj["id"];
+            s["pin"] = chObj["pin"];
+            s["name"] = chObj["name"];
+            s["room"] = chObj["room"];
+            s["direction"] = "INPUT";
+            s["type"] = chObj["type"];
+            s["unit"] = chObj["unit"];
+            s["value"] = chObj["value"];
+            if (chObj.containsKey("rawAdc")) s["rawAdc"] = chObj["rawAdc"];
+        }
+    }
+
     // Application-Level Command Acknowledgements
     if (_ackCount > 0) {
         JsonArray acks = doc.createNestedArray("acks");
@@ -1129,6 +1163,23 @@ void ReceiverClient::fillTelemetryDoc(DynamicJsonDocument& doc, const char* even
     // Channels payload
     JsonArray gpios = doc.createNestedArray("channels");
     GpioManager::getInstance().toJson(gpios);
+
+    // Dedicated Sensors Array (for pure inputs)
+    JsonArray sensors = doc.createNestedArray("sensors");
+    for (JsonObject chObj : gpios) {
+        if (chObj["isSensor"] | false) {
+            JsonObject s = sensors.createNestedObject();
+            s["id"] = chObj["id"];
+            s["pin"] = chObj["pin"];
+            s["name"] = chObj["name"];
+            s["room"] = chObj["room"];
+            s["direction"] = "INPUT";
+            s["type"] = chObj["type"];
+            s["unit"] = chObj["unit"];
+            s["value"] = chObj["value"];
+            if (chObj.containsKey("rawAdc")) s["rawAdc"] = chObj["rawAdc"];
+        }
+    }
 
     // Application-Level Command Acknowledgements
     if (_ackCount > 0) {
