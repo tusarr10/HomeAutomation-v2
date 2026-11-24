@@ -52,7 +52,10 @@ const app = {
         // Tab specific loading
         if (targetId === 'tab-logs') this.loadLogs();
         if (targetId === 'tab-wifi') { this.switchTab('tab-settings'); }
-        if (targetId === 'tab-settings') { this.loadSettings(); this.loadWifiStatus(); this.loadI2cSettings(); this.renderSettingsGpioTable(); }
+        if (targetId === 'tab-settings') {
+          this.renderSettingsGpioTable();
+          this.loadSettingsTab();
+        }
         if (targetId === 'tab-sysinfo') this.loadStatus();
         if (targetId === 'tab-gpio') { this.loadGpios(); }
         if (targetId === 'tab-sensors') { this.loadGpios(); this.loadIrStatus(); this.loadIrRemotes(); }
@@ -349,7 +352,7 @@ const app = {
   startDashboard() {
     this.refreshAll();
     if (this.refreshTimer) clearInterval(this.refreshTimer);
-    this.refreshTimer = setInterval(() => this.pollStatus(), 3000);
+    this.refreshTimer = setInterval(() => this.pollStatus(), 4000);
   },
 
   refreshAll() {
@@ -362,13 +365,17 @@ const app = {
   },
 
   async pollStatus() {
+    if (document.hidden) return;
     try {
       const res = await this.apiRequest('/api/status');
       if (res.ok) {
         const data = await res.json();
         this.renderStatus(data);
-        // Also fetch latest GPIO states to reflect instant hardware changes
-        this.loadGpios(true);
+        const activeTab = document.querySelector('.nav-tab.active');
+        const activeTabId = activeTab ? activeTab.getAttribute('data-tab') : '';
+        if (activeTabId === 'tab-gpio' || activeTabId === 'tab-sensors' || activeTabId === 'tab-overview') {
+          await this.loadGpios(true);
+        }
       }
     } catch (e) {}
   },
@@ -857,6 +864,7 @@ const app = {
   renderSettingsGpioTable() {
     const tbody = document.getElementById('settings-gpio-tbody');
     if (!tbody) return;
+    if (tbody.contains(document.activeElement)) return;
 
     if (!this.channels || this.channels.length === 0) {
       tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding: 18px; color: var(--text-muted);">No GPIO channels configured yet. Click <strong>➕ Add GPIO Channel</strong> or <strong>⚡ Add 8 PCF Relays</strong> above.</td></tr>`;
@@ -1036,7 +1044,10 @@ const app = {
   },
 
   openAddGpioModal() {
-    document.getElementById('gpio-edit-id').value = '';
+    const editIdEl = document.getElementById('gpio-edit-id');
+    if (editIdEl) editIdEl.value = '';
+    const form = document.getElementById('gpio-form');
+    if (form) form.reset();
     document.getElementById('gpio-modal-title').innerText = 'Add New GPIO Channel';
     document.getElementById('gpio-pin-group').style.display = 'block';
     document.getElementById('gpio-name-input').value = '';
@@ -1102,7 +1113,8 @@ const app = {
   },
 
   async saveGpioChannel() {
-    const editId = document.getElementById('gpio-edit-id').value;
+    const editIdInput = document.getElementById('gpio-edit-id');
+    const editId = editIdInput ? editIdInput.value.trim() : '';
     const pin = parseInt(document.getElementById('gpio-pin-select').value);
     const name = document.getElementById('gpio-name-input').value.trim();
     const room = document.getElementById('gpio-room-input').value.trim();
@@ -1120,7 +1132,7 @@ const app = {
 
     try {
       let res;
-      if (editId) {
+      if (editId && editId !== '') {
         payload.id = parseInt(editId);
         payload.enabled = true;
         res = await this.apiRequest('/api/gpio/update', {
@@ -1140,12 +1152,13 @@ const app = {
       const data = await res.json();
       if (data.success) {
         this.closeModal('gpio-modal');
-        this.loadGpios();
+        this.showToast(data.message || (editId ? 'Channel updated!' : 'Channel added!'));
+        await this.loadGpios();
       } else {
         alert(data.error || 'Failed to save channel');
       }
     } catch (e) {
-      alert('Error saving GPIO channel');
+      alert('Error saving GPIO channel: ' + e.message);
     }
   },
 
@@ -1583,16 +1596,27 @@ const app = {
   },
 
   // ==== SETTINGS ====
-  async loadSettings() {
-    this.loadReceiverSettings();
+  async loadSettingsTab() {
     try {
+      await this.loadSettings();
+      await this.loadWifiStatus();
+      await this.loadI2cSettings();
+    } catch (e) {
+      console.warn('Error loading settings tab:', e);
+    }
+  },
+
+  async loadSettings() {
+    try {
+      await this.loadReceiverSettings();
       const res = await this.apiRequest('/api/settings');
       if (res.ok) {
         const data = await res.json();
-        document.getElementById('settings-device-name').value = data.deviceName || '';
-        document.getElementById('settings-ap-ssid').value = data.apSsid || '';
-        document.getElementById('settings-ap-pass').value = data.apPass || '';
-        document.getElementById('settings-tz').value = data.timezoneOffset || '0';
+        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+        setVal('settings-device-name', data.deviceName || '');
+        setVal('settings-ap-ssid', data.apSsid || '');
+        setVal('settings-ap-pass', data.apPass || '');
+        setVal('settings-tz', data.timezoneOffset !== undefined ? data.timezoneOffset : '0');
       }
     } catch (e) {}
   },
@@ -2052,7 +2076,14 @@ const app = {
   },
 
   closeModal(id) {
-    document.getElementById(id).classList.add('hidden');
+    const el = document.getElementById(id);
+    if (el) el.classList.add('hidden');
+    if (id === 'gpio-modal') {
+      const editIdEl = document.getElementById('gpio-edit-id');
+      if (editIdEl) editIdEl.value = '';
+      const form = document.getElementById('gpio-form');
+      if (form) form.reset();
+    }
   },
 
   // ==== I2C EXPANDER & DUAL-AUTH PAIRING ====

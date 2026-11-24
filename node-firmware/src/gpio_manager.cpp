@@ -1466,7 +1466,18 @@ void GpioManager::loadFromStorage() {
 void GpioManager::saveToStorage() {
     DynamicJsonDocument doc(4096);
     JsonArray arr = doc.to<JsonArray>();
-    toJson(arr);
+    for (const auto& ch : _channels) {
+        JsonObject obj = arr.createNestedObject();
+        obj["id"] = ch.id;
+        obj["pin"] = ch.pin;
+        obj["name"] = ch.name;
+        obj["room"] = ch.room;
+        obj["function"] = ch.function;
+        obj["activeLow"] = ch.activeLow;
+        obj["initialMode"] = ch.initialMode;
+        obj["enabled"] = ch.enabled;
+        obj["state"] = ch.currentState;
+    }
     StorageManager::getInstance().saveJsonFile(FILE_GPIO_CONFIG, doc);
 }
 
@@ -1489,7 +1500,6 @@ bool GpioManager::fromJson(JsonArray& arr) {
         ch.currentState = obj.containsKey("state") ? obj["state"].as<bool>() : false;
         ch.pulseEndTime = 0;
 
-        pinMode(ch.pin, OUTPUT);
         applyPhysicalPin(ch);
 
         if (ch.id > maxId) maxId = ch.id;
