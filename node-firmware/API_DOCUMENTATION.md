@@ -192,9 +192,16 @@ Central Server                                                  ESP8266 Node
 
 ---
 
-#### C. Pair Node with Central Server
-* **Endpoint:** `POST /api/auth/pair`
-* **Auth Required:** No (if node is currently unpaired) / Yes (if re-pairing an already paired node)
+#### C. Check / Pair Node with Central Server
+* **Query Pairing Status (`GET /api/auth/pair`):**
+  ```json
+  {
+    "paired": true,
+    "adminUser": "admin"
+  }
+  ```
+* **Set Pairing Key (`POST /api/auth/pair`):**
+* **Auth Required:** No (if node is currently unpaired and `adminPassword` is supplied) / Yes (if already paired)
 * **Request ("Send"):**
   ```json
   {
@@ -206,7 +213,6 @@ Central Server                                                  ESP8266 Node
   ```json
   {
     "success": true,
-    "paired": true,
     "message": "Device successfully paired to Central Server"
   }
   ```
@@ -304,18 +310,30 @@ Central Server                                                  ESP8266 Node
 
 ---
 
-#### B. Aggregated Full Node State (`/api/all`)
-Fetches all channels, automation rules, I2C, and receiver configurations in a single round-trip.
+#### B. REST API Endpoint Catalog (`/api/all`)
+Self-discovery endpoint returning the full catalog of supported REST API routes, HTTP methods, authentication requirements, and sample request bodies stored in `PROGMEM`.
 * **Endpoint:** `GET /api/all`
 * **Auth Required:** No
 * **Response ("Receive") - 200 OK:**
   ```json
   {
-    "status": { "...system status object..." },
-    "gpio": [ "...channels array..." ],
-    "automation": [ "...rules array..." ],
-    "receiver": { "...receiver config..." },
-    "i2c": { "...i2c config..." }
+    "title": "SmartHome ESP8266 REST API Catalog",
+    "version": "1.6.0",
+    "endpoints": [
+      {
+        "method": "GET",
+        "path": "/api/gpio",
+        "auth": false,
+        "description": "List all relays, sensors, IR pins, and states"
+      },
+      {
+        "method": "POST",
+        "path": "/api/ir/transmit",
+        "auth": true,
+        "description": "Blast saved remote button or direct protocol/hexCode",
+        "body": { "remoteName": "...", "buttonName": "..." }
+      }
+    ]
   }
   ```
 
@@ -556,10 +574,10 @@ For telemetry monitoring loops and sensor graphs, this endpoint returns exclusiv
   }
   ```
   *Field Notes:*
-  - `pin`: `0..16` for native ESP pins, `17` for A0 analog ADC, `100..107` for PCF8574 expander.
-  - `function`: Assign `"Light"`, `"Fan"`, `"Relay"` for actuators. Assign `"Voltage"`, `"Sensor"`, `"Motion"`, `"PIR"`, `"Door"`, `"IR Receiver"`, `"IR Transmitter"` for sensors/emitters.
+  - `pin`: `0..16` for native ESP pins, `17` for `A0` analog ADC, `100..107` for PCF8574 expander.
+  - `function`: Assign `"Light"`, `"Fan"`, `"Relay"`, `"Pump"`, or `"Switch"` for relay actuators. Assign `"Voltage"`, `"PIR Motion"`, `"Door Sensor"`, `"IR Receiver"`, or `"IR Transmitter"` for sensors and IR hardware (case-insensitive substring matching also supports `"Sensor"`, `"Motion"`, `"PIR"`, `"Door"`, `"Window"`).
   - `initialMode`: `0` = Restore Last State, `1` = Always Boot OFF, `2` = Always Boot ON.
-  - `activeLow`: `true` for standard active-low relay modules; `false` for active-high sensors.
+  - `activeLow`: `true` for standard active-low relay modules; `false` for active-high sensors / IR transmitters.
 * **Response ("Receive") - 200 OK:**
   ```json
   {
@@ -1292,66 +1310,39 @@ This section provides the implementation blueprint and resource analysis for add
 
 ### LittleFS Code Storage Schema (`/config/ir_codes.json`)
 
-All learned remote controls and individual button codes are persisted directly to LittleFS in JSON format:
+All learned remote controls and individual button codes are persisted directly to LittleFS in JSON format (`/config/ir_codes.json`):
 
 ```json
 {
   "remotes": [
     {
-      "id": "rem-tv-samsung",
       "name": "Living Room Samsung TV",
-      "deviceType": "TV",
-      "txPin": 12,
-      "rxPin": 14,
       "buttons": [
         {
-          "name": "POWER",
+          "name": "Power",
           "protocol": "SAMSUNG",
-          "bits": 32,
           "hexCode": "0xE0E040BF",
-          "repeat": 1,
-          "description": "Toggle Power"
+          "bits": 32,
+          "repeat": 1
         },
         {
-          "name": "VOL_UP",
+          "name": "Vol+",
           "protocol": "SAMSUNG",
-          "bits": 32,
           "hexCode": "0xE0E0E01F",
-          "repeat": 0,
-          "description": "Increase Volume"
-        },
-        {
-          "name": "VOL_DOWN",
-          "protocol": "SAMSUNG",
           "bits": 32,
-          "hexCode": "0xE0E0D02F",
-          "repeat": 0,
-          "description": "Decrease Volume"
+          "repeat": 0
         }
       ]
     },
     {
-      "id": "rem-fan-orient",
-      "name": "Ceiling Fan Remote",
-      "deviceType": "FAN",
-      "txPin": 12,
-      "rxPin": 14,
+      "name": "Ceiling Fan",
       "buttons": [
         {
-          "name": "SPEED_1",
+          "name": "Speed 1",
           "protocol": "NEC",
-          "bits": 32,
           "hexCode": "0x00FF807F",
-          "repeat": 0,
-          "description": "Fan Speed 1"
-        },
-        {
-          "name": "SPEED_2",
-          "protocol": "NEC",
           "bits": 32,
-          "hexCode": "0x00FF40BF",
-          "repeat": 0,
-          "description": "Fan Speed 2"
+          "repeat": 0
         }
       ]
     }
@@ -1359,89 +1350,172 @@ All learned remote controls and individual button codes are persisted directly t
 }
 ```
 
----
-
 ### Interactive Training / Learning Mode Handshake
 
-```
-Central Server                                           ESP8266 Node (Pin 14: IR RX)
+```text
+Central Server / UI                                      ESP8266 Node (e.g., Pin 14 / D5 IR RX)
       │                                                              │
-      │  1. POST /api/ir/learn/start                                 │
-      │     Body: {"timeoutSec": 20}                                 │
-      ├─────────────────────────────────────────────────────────────►│
-      │                                                              │ (Enables IRrecv interrupt)
-      │  2. 200 OK: {"listening": true, "timeoutSec": 20}            │
+      │  1. POST /api/ir/train/start                                 │
+      │     Body: {"timeoutSec": 25}                                 │
+      ├─────────────────────────────────────────────────────────────►│ (Opens learning window)
+      │  2. 200 OK: {"success": true, "message": "Listening..."}     │
       │◄─────────────────────────────────────────────────────────────┤
       │                                                              │
       │                     [ USER PRESSES REMOTE BUTTON ]           │
-      │                     (e.g., TV Remote 'Power' Button)         │
-      │                                     │                        │
-      │                                     ▼                        │
-      │                              Demodulated burst               │
-      │                              decoded: NEC 0xE0E040BF         │
+      │                     e.g. LG TV 'Power' -> NEC 0x20DF10EF     │
       │                                                              │
-      │  3. GET /api/ir/learn/status (or auto-push event)            │
-      │◄─────────────────────────────────────────────────────────────┤
-      │     Response:                                                │
-      │     {"captured": true, "protocol": "NEC",                    │
-      │      "hexCode": "0xE0E040BF", "bits": 32}                    │
-      │                                                              │
-      │  4. POST /api/ir/buttons                                     │
-      │     Body: {"remoteId": "rem-tv-samsung",                     │
-      │            "name": "POWER", "hexCode": "0xE0E040BF",         │
-      │            "protocol": "NEC", "bits": 32}                    │
+      │  3. GET /api/ir/train/result (poll every ~700ms)             │
       ├─────────────────────────────────────────────────────────────►│
-      │                                                              │ (Persists code to
-      │  5. 200 OK: {"success": true, "message": "Key stored"}       │  /config/ir_codes.json)
+      │  4. 200 OK: {"isTraining":false,"captured":true,             │
+      │              "protocol":"NEC","hexCode":"0x20DF10EF",        │
+      │              "bits":32,"ageMs":420}                          │
+      │◄─────────────────────────────────────────────────────────────┤
+      │                                                              │
+      │  5. POST /api/ir/remotes/save                                │
+      │     Body: {"remoteName":"LG TV","buttonName":"Power",        │
+      │            "protocol":"NEC","hexCode":"0x20DF10EF",          │
+      │            "bits":32,"repeat":0}                             │
+      ├─────────────────────────────────────────────────────────────►│ (Persists to
+      │  6. 200 OK: {"success": true, "message": "Remote button saved"} /config/ir_codes.json)
       │◄─────────────────────────────────────────────────────────────┤
 ```
 
 ---
 
-### Server Event Notification & Real-Time Key Updates
+### 6.3 IR Remote Control API Reference (Implemented & Live Verified)
 
-Once trained, the node can operate in continuous **Background Listening Mode**:
-1. When a user presses any physical remote control in the room, the node intercepts the burst.
-2. The node matches the captured hex code against its LittleFS database (`/config/ir_codes.json`).
-3. If matched, the node immediately sends a real-time event packet over the **Async TCP Socket (Port 2000)**:
-   ```json
-   {
-     "nodeId": "NODE-8C4F00565D72",
-     "eventType": "ir_remote_event",
-     "remoteId": "rem-tv-samsung",
-     "button": "POWER",
-     "protocol": "SAMSUNG",
-     "hexCode": "0xE0E040BF",
-     "timestamp": "2026-11-25 00:40:12"
-   }
-   ```
-4. Your Central Server can immediately update its UI (e.g., mark TV as toggled) or trigger coordinated smart home automation rules (e.g., dimming living room lights when TV Power is pressed).
+The NodeMCU firmware incorporates a complete Infrared Subsystem using `IRremoteESP8266`. All endpoints below are active and live-tested.
 
----
-
-### Transmitting IR Signals via Server REST API
-
-To blast an IR command from your server or automation system:
-
-* **Endpoint:** `POST /api/ir/transmit`
-* **Auth Required:** Yes (`X-Server-Key`)
-* **Request ("Send") - By Stored Name:**
+#### 1. Get IR Subsystem Status
+* **Endpoint:** `GET /api/ir/status`
+* **Auth Required:** Optional (public read)
+* **Response ("Receive") - 200 OK:**
   ```json
   {
-    "remoteId": "rem-tv-samsung",
-    "button": "POWER"
+    "rxPin": 14,
+    "txPin": 13,
+    "isReceiverActive": true,
+    "isTransmitterActive": true,
+    "isTraining": false,
+    "trainingSuccess": false
   }
   ```
-* **Request ("Send") - By Direct Hex Code:**
+
+#### 2. Start IR Training / Learning Mode
+* **Endpoint:** `POST /api/ir/train/start`
+* **Auth Required:** Yes (`Authorization: Basic ...` / Session Cookie / `X-Server-Key`)
+* **Request ("Send"):**
   ```json
   {
-    "pin": 12,
+    "timeoutSec": 25
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Listening for IR remote signal... Point remote at sensor and press button."
+  }
+  ```
+
+#### 3. Stop IR Training
+* **Endpoint:** `POST /api/ir/train/stop`
+* **Auth Required:** Yes
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "IR training stopped"
+  }
+  ```
+
+#### 4. Poll Training Result / Captured Signal
+* **Endpoint:** `GET /api/ir/train/result`
+* **Auth Required:** Optional
+* **Response ("Receive") - Captured (200 OK):**
+  ```json
+  {
+    "captured": true,
     "protocol": "NEC",
-    "hexCode": "0xE0E040BF",
+    "hexCode": "0x20DF10EF",
     "bits": 32,
-    "repeat": 1
+    "ageMs": 1420
   }
   ```
+* **Response ("Receive") - Nothing captured yet (200 OK):**
+  ```json
+  {
+    "captured": false,
+    "isTraining": true
+  }
+  ```
+
+#### 5. Save Learned Remote Key to Database
+* **Endpoint:** `POST /api/ir/remotes/save`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "remoteName": "LG TV",
+    "buttonName": "Power",
+    "protocol": "NEC",
+    "hexCode": "0x20DF10EF",
+    "bits": 32,
+    "repeat": 0
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Remote button saved successfully"
+  }
+  ```
+
+#### 6. Get All Saved Remotes & Buttons Catalog
+* **Endpoint:** `GET /api/ir/remotes`
+* **Auth Required:** Optional
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "remotes": [
+      {
+        "name": "LG TV",
+        "buttons": [
+          {
+            "name": "Power",
+            "protocol": "NEC",
+            "hexCode": "0x20DF10EF",
+            "bits": 32,
+            "repeat": 0
+          }
+        ]
+      }
+    ]
+  }
+  ```
+
+#### 7. Transmit / Blast IR Signal
+* **Endpoint:** `POST /api/ir/transmit`
+* **Auth Required:** Yes
+* **Option A: Transmit by Saved Name:**
+  ```json
+  {
+    "remoteName": "LG TV",
+    "buttonName": "Power"
+  }
+  ```
+* **Option B: Transmit by Direct Protocol & Hex Code:**
+  ```json
+  {
+    "pin": 13,
+    "protocol": "NEC",
+    "hexCode": "0x20DF10EF",
+    "bits": 32,
+    "repeat": 0
+  }
+  ```
+  *(Note: Either `"hexCode"` or `"code"` is accepted).*
 * **Response ("Receive") - 200 OK:**
   ```json
   {
@@ -1449,3 +1523,42 @@ To blast an IR command from your server or automation system:
     "message": "IR signal transmitted successfully"
   }
   ```
+
+#### 8. Delete a Remote or Button
+* **Endpoint:** `POST /api/ir/remotes/delete`
+* **Auth Required:** Yes
+* **Request ("Send") - Delete single button:**
+  ```json
+  {
+    "remoteName": "LG TV",
+    "buttonName": "Power"
+  }
+  ```
+* **Request ("Send") - Delete entire remote:**
+  ```json
+  {
+    "remoteName": "LG TV"
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Button deleted"
+  }
+  ```
+
+---
+
+### 6.4 Web UI Dynamic Function-Specific Cards
+
+The Web Dashboard (`/` and `app.js`) inspects the `type` and `direction` metadata for each GPIO channel and automatically renders specialized UI cards:
+
+| Pin Function / Type | Direction | UI Experience Rendered |
+| :--- | :---: | :--- |
+| **`IR Receiver`** (`IR_RECEIVER`) | `INPUT` | Displays **Receiver Active / Idle** status indicator, live demodulator preview with last intercepted code (`Protocol`, `0xHEX`, `Bits`), a **[ 🎯 Train / Learn Key ]** button with modal countdown timer, and a **[ 📋 View Saved Keys ]** catalog button. |
+| **`IR Transmitter`** (`IR_TRANSMITTER`) | `OUTPUT` | Renders a grid of **Quick-Blast Remote Action Buttons** for all stored keys (e.g. `[ 🚀 TV: Power ]`, `[ 🚀 Fan: Speed 1 ]`) + manual protocol/hex code blaster modal with bit selection. |
+| **`PIR Motion`** (`PIR_MOTION`) | `INPUT` | Renders a real-time motion sensor badge (**🚶 MOTION DETECTED** vs **🟢 IDLE / SECURE**) with live state changes. |
+| **`Door / Window`** (`DOOR_SENSOR`) | `INPUT` | Renders a contact sensor badge (**🚪 CONTACT OPEN** vs **🔒 SECURE / CLOSED**). |
+| **`Voltage ADC`** (`VOLTAGE_ADC`) | `INPUT` | Live calibrated voltage display (`2.45 V`, raw ADC `760/1023`, live sample button). |
+| **`Relay / Actuator`** (`RELAY`) | `OUTPUT` | Toggle power switch, ON/OFF buttons, and timed pulse trigger button. |

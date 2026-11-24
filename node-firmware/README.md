@@ -29,8 +29,10 @@ node-firmware/
 │   ├── automation.h
 │   ├── ota_manager.cpp          # Dual-slot web OTA & ArduinoOTA
 │   ├── ota_manager.h
-│   ├── gpio_manager.cpp         # Physical & PCF8574 virtual pin controller
+│   ├── gpio_manager.cpp         # Physical & PCF8574 virtual pin controller & sensor classification
 │   ├── gpio_manager.h
+│   ├── ir_manager.cpp           # 38kHz IR remote learner, transmitter & LittleFS key database
+│   ├── ir_manager.h
 │   └── drivers/
 │       ├── pcf8574_driver.cpp   # PCF8574 8-channel I2C expander driver
 │       └── pcf8574_driver.h
@@ -61,7 +63,9 @@ node-firmware/
 
 Every target connects seamlessly to the **Relay Server** (`relay-server/`) using the standardized Newline-Delimited JSON (NDJSON) over TCP port `2000` or HTTP POST `/api/node/telemetry`.
 
-Detailed protocol documentation: **[RELAY_INTEGRATION.md](file:///d:/ai/HomeAutomation%20v2/node-firmware/RELAY_INTEGRATION.md)**.
+Detailed protocol & REST API documentation:
+- **[API_DOCUMENTATION.md](API_DOCUMENTATION.md)** — Complete REST endpoints (`/api/all` catalog, relays, sensors, IR remotes, I2C, OTA, LittleFS) & TCP Port `2000` schemas.
+- **[RELAY_INTEGRATION.md](RELAY_INTEGRATION.md)** — Relay server integration notes.
 
 ---
 
@@ -69,4 +73,4 @@ Detailed protocol documentation: **[RELAY_INTEGRATION.md](file:///d:/ai/HomeAuto
 - **1MB Flash OTA Budget**: `esp01_1m` and `esp01_pcf8574` preserve strict `< 440 KB` binary sizes to guarantee dual-slot wireless OTA updates.
 - **Factory Reset Safeguard**: On ESP-01 targets, the physical factory reset button is disabled (`255`) to prevent relay coil drops on GPIO 0 from triggering accidental factory wipes.
 - **Floating Point Linker Stripping**: `scripts/strip_floats.py` eliminates 16.8 KB of unneeded libc float tables on 1MB flash targets.
-- **Web UI & REST APIs**: Completely untouched and identical to the original codebase.
+- **Web UI & REST APIs**: Full 57-endpoint REST API (`/api/all` discovery catalog), dedicated **Relays / Outputs** and **Sensors & Remotes** tabs, IR Remote learner/blaster, and A0 Voltage ADC telemetry.

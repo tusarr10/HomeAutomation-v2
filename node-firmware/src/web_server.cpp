@@ -1516,42 +1516,8 @@ void WebServerManager::registerApiRoutes() {
 
     // === API DISCOVERY & CATALOG ===
     _server.on("/api/all", HTTP_GET, [this]() {
-        static const char API_CATALOG_JSON[] PROGMEM = R"rawliteral({
-  "title": "SmartHome ESP8266 REST API Catalog",
-  "version": "1.6.0",
-  "endpoints": [
-    {"method":"POST","path":"/api/auth/login","auth":false,"description":"Authenticate admin session","body":{"username":"admin","password":"..."}},
-    {"method":"GET","path":"/api/auth/check","auth":false,"description":"Check active authentication status"},
-    {"method":"POST","path":"/api/auth/logout","auth":false,"description":"Invalidate session token"},
-    {"method":"GET","path":"/api/status","auth":false,"description":"System metrics (uptime, heap, flash, Wi-Fi, time)"},
-    {"method":"GET","path":"/api/all","auth":false,"description":"Self-discovery API endpoint catalog"},
-    {"method":"GET","path":"/api/receiver","auth":false,"description":"Get central receiver / multi-node telemetry config and status"},
-    {"method":"POST","path":"/api/receiver","auth":true,"description":"Configure central receiver / multi-node settings"},
-    {"method":"POST","path":"/api/receiver/test","auth":true,"description":"Ping / test connection to central receiver"},
-    {"method":"POST","path":"/api/receiver/push","auth":true,"description":"Trigger immediate telemetry push to central receiver"},
-    {"method":"GET","path":"/api/wifi/status","auth":false,"description":"Current Wi-Fi network status"},
-    {"method":"GET","path":"/api/wifi/scan","auth":true,"description":"Scan nearby 2.4GHz Wi-Fi networks"},
-    {"method":"POST","path":"/api/wifi/connect","auth":true,"description":"Save router credentials and connect","body":{"ssid":"...","password":"..."}},
-    {"method":"POST","path":"/api/wifi/mode","auth":true,"description":"Set Wi-Fi mode (0=AP, 1=Router, 2=AP+Router)","body":{"mode":2}},
-    {"method":"POST","path":"/api/wifi/reset","auth":true,"description":"Erase Wi-Fi credentials and start setup AP"},
-    {"method":"GET","path":"/api/gpio","auth":false,"description":"List all configured GPIO channels and states"},
-    {"method":"POST","path":"/api/gpio","auth":true,"description":"Add new GPIO output channel","body":{"pin":5,"name":"...","room":"...","function":"Relay","activeLow":true,"initialMode":0}},
-    {"method":"POST","path":"/api/gpio/update","auth":true,"description":"Update GPIO channel parameters","body":{"id":1,"name":"...","room":"...","function":"Relay","activeLow":true,"initialMode":0,"enabled":true}},
-    {"method":"POST","path":"/api/gpio/delete","auth":true,"description":"Delete GPIO channel","body":{"id":1}},
-    {"method":"POST","path":"/api/gpio/state","auth":true,"description":"Control GPIO output","body":{"id":1,"state":true,"action":"toggle|pulse","duration":500}},
-    {"method":"GET","path":"/api/automation","auth":false,"description":"List all configured automation rules"},
-    {"method":"POST","path":"/api/automation","auth":true,"description":"Add automation rule","body":{"name":"...","type":0,"sourceGpioId":0,"targetGpioId":1,"condState":true,"targetState":false,"param1":300}},
-    {"method":"POST","path":"/api/automation/toggle","auth":true,"description":"Enable/disable rule","body":{"id":1}},
-    {"method":"POST","path":"/api/automation/delete","auth":true,"description":"Delete automation rule","body":{"id":1}},
-    {"method":"GET","path":"/api/settings","auth":false,"description":"Get device settings and timezone"},
-    {"method":"POST","path":"/api/settings","auth":true,"description":"Save device name, AP credentials, and timezone","body":{"deviceName":"...","apSsid":"...","apPass":"...","timezoneOffset":19800}},
-    {"method":"POST","path":"/api/settings/password","auth":true,"description":"Change admin password","body":{"currentPassword":"...","newPassword":"..."}},
-    {"method":"GET","path":"/api/logs","auth":false,"description":"Fetch recent system logs"},
-    {"method":"POST","path":"/api/system/reboot","auth":true,"description":"Soft reboot microcontroller"},
-    {"method":"POST","path":"/api/system/factory-reset","auth":true,"description":"Wipe configurations and reboot into factory defaults"},
-    {"method":"POST","path":"/api/ota/upload","auth":true,"description":"Multipart firmware upload (.bin)"}
-  ]
-})rawliteral";
+        extern const char API_CATALOG_JSON[];
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
         _server.send_P(200, "application/json", API_CATALOG_JSON);
     });
 
@@ -3147,42 +3113,8 @@ void WebServerManager::registerApiRoutes() {
 
     // === API DISCOVERY & CATALOG ===
     _server.on("/api/all", HTTP_GET, [this]() {
-        static const char API_CATALOG_JSON[] PROGMEM = R"rawliteral({
-  "title": "SmartHome ESP8266 REST API Catalog",
-  "version": "1.6.0",
-  "endpoints": [
-    {"method":"POST","path":"/api/auth/login","auth":false,"description":"Authenticate admin session","body":{"username":"admin","password":"..."}},
-    {"method":"GET","path":"/api/auth/check","auth":false,"description":"Check active authentication status"},
-    {"method":"POST","path":"/api/auth/logout","auth":false,"description":"Invalidate session token"},
-    {"method":"GET","path":"/api/status","auth":false,"description":"System metrics (uptime, heap, flash, Wi-Fi, time)"},
-    {"method":"GET","path":"/api/all","auth":false,"description":"Self-discovery API endpoint catalog"},
-    {"method":"GET","path":"/api/receiver","auth":false,"description":"Get central receiver / multi-node telemetry config and status"},
-    {"method":"POST","path":"/api/receiver","auth":true,"description":"Configure central receiver / multi-node settings"},
-    {"method":"POST","path":"/api/receiver/test","auth":true,"description":"Ping / test connection to central receiver"},
-    {"method":"POST","path":"/api/receiver/push","auth":true,"description":"Trigger immediate telemetry push to central receiver"},
-    {"method":"GET","path":"/api/wifi/status","auth":false,"description":"Current Wi-Fi network status"},
-    {"method":"GET","path":"/api/wifi/scan","auth":true,"description":"Scan nearby 2.4GHz Wi-Fi networks"},
-    {"method":"POST","path":"/api/wifi/connect","auth":true,"description":"Save router credentials and connect","body":{"ssid":"...","password":"..."}},
-    {"method":"POST","path":"/api/wifi/mode","auth":true,"description":"Set Wi-Fi mode (0=AP, 1=Router, 2=AP+Router)","body":{"mode":2}},
-    {"method":"POST","path":"/api/wifi/reset","auth":true,"description":"Erase Wi-Fi credentials and start setup AP"},
-    {"method":"GET","path":"/api/gpio","auth":false,"description":"List all configured GPIO channels and states"},
-    {"method":"POST","path":"/api/gpio","auth":true,"description":"Add new GPIO output channel","body":{"pin":5,"name":"...","room":"...","function":"Relay","activeLow":true,"initialMode":0}},
-    {"method":"POST","path":"/api/gpio/update","auth":true,"description":"Update GPIO channel parameters","body":{"id":1,"name":"...","room":"...","function":"Relay","activeLow":true,"initialMode":0,"enabled":true}},
-    {"method":"POST","path":"/api/gpio/delete","auth":true,"description":"Delete GPIO channel","body":{"id":1}},
-    {"method":"POST","path":"/api/gpio/state","auth":true,"description":"Control GPIO output","body":{"id":1,"state":true,"action":"toggle|pulse","duration":500}},
-    {"method":"GET","path":"/api/automation","auth":false,"description":"List all configured automation rules"},
-    {"method":"POST","path":"/api/automation","auth":true,"description":"Add automation rule","body":{"name":"...","type":0,"sourceGpioId":0,"targetGpioId":1,"condState":true,"targetState":false,"param1":300}},
-    {"method":"POST","path":"/api/automation/toggle","auth":true,"description":"Enable/disable rule","body":{"id":1}},
-    {"method":"POST","path":"/api/automation/delete","auth":true,"description":"Delete automation rule","body":{"id":1}},
-    {"method":"GET","path":"/api/settings","auth":false,"description":"Get device settings and timezone"},
-    {"method":"POST","path":"/api/settings","auth":true,"description":"Save device name, AP credentials, and timezone","body":{"deviceName":"...","apSsid":"...","apPass":"...","timezoneOffset":19800}},
-    {"method":"POST","path":"/api/settings/password","auth":true,"description":"Change admin password","body":{"currentPassword":"...","newPassword":"..."}},
-    {"method":"GET","path":"/api/logs","auth":false,"description":"Fetch recent system logs"},
-    {"method":"POST","path":"/api/system/reboot","auth":true,"description":"Soft reboot microcontroller"},
-    {"method":"POST","path":"/api/system/factory-reset","auth":true,"description":"Wipe configurations and reboot into factory defaults"},
-    {"method":"POST","path":"/api/ota/upload","auth":true,"description":"Multipart firmware upload (.bin)"}
-  ]
-})rawliteral";
+        extern const char API_CATALOG_JSON[];
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
         _server.send_P(200, "application/json", API_CATALOG_JSON);
     });
 
@@ -4356,4 +4288,70 @@ void WebServerManager::serveEmbeddedDashboard() {
     _server.send(200, "text/html; charset=UTF-8", html);
 }
 
+#endif
+
+#if !defined(TARGET_ESP01_1M) && !defined(TARGET_ESP01_PCF8574)
+extern const char API_CATALOG_JSON[] PROGMEM = R"rawliteral({
+  "title": "SmartHome ESP8266 REST API Catalog",
+  "version": "1.6.0",
+  "endpoints": [
+    {"method":"POST","path":"/api/auth/login","auth":false,"description":"Authenticate admin or paired server key","body":{"username":"admin","password":"..."}},
+    {"method":"GET","path":"/api/auth/check","auth":false,"description":"Check active authentication and pairing status"},
+    {"method":"POST","path":"/api/auth/logout","auth":false,"description":"Invalidate session token"},
+    {"method":"GET","path":"/api/auth/pair","auth":false,"description":"Get Central Server pairing status and admin username"},
+    {"method":"POST","path":"/api/auth/pair","auth":true,"description":"Provision server pairing key (accepts adminPassword if unauthenticated)","body":{"serverKey":"...","adminPassword":"..."}},
+    {"method":"POST","path":"/api/auth/unpair","auth":true,"description":"Revoke server pairing key"},
+    {"method":"GET","path":"/api/status","auth":false,"description":"System diagnostics (uptime, heap, flash, Wi-Fi, I2C, time)"},
+    {"method":"GET","path":"/api/all","auth":false,"description":"Self-discovery REST API endpoint catalog"},
+    {"method":"GET","path":"/api/logs","auth":false,"description":"Fetch circular RAM system logs"},
+    {"method":"GET","path":"/api/wifi/status","auth":false,"description":"Current Wi-Fi network, IP mode, and RSSI status"},
+    {"method":"GET","path":"/api/wifi/scan","auth":true,"description":"Scan nearby 2.4GHz Wi-Fi networks"},
+    {"method":"POST","path":"/api/wifi/connect","auth":true,"description":"Save router credentials and IP settings","body":{"ssid":"...","password":"...","useStaticIp":false}},
+    {"method":"POST","path":"/api/wifi/ip","auth":true,"description":"Configure DHCP vs Static IP settings","body":{"useStaticIp":true,"staticIp":"...","staticGateway":"...","staticSubnet":"255.255.255.0","staticDns1":"8.8.8.8","staticDns2":"1.1.1.1"}},
+    {"method":"POST","path":"/api/wifi/mode","auth":true,"description":"Set Wi-Fi mode (0=AP, 1=Router, 2=AP+Router)","body":{"mode":2}},
+    {"method":"POST","path":"/api/wifi/reset","auth":true,"description":"Erase Wi-Fi credentials and start setup AP"},
+    {"method":"GET","path":"/api/gpio","auth":false,"description":"List all relays, sensors, IR pins, and states"},
+    {"method":"GET","path":"/api/sensors","auth":false,"description":"List only input sensors with live ADC/sensor values"},
+    {"method":"POST","path":"/api/gpio","auth":true,"description":"Add relay output, sensor input, or IR pin","body":{"pin":5,"name":"...","room":"...","function":"Relay|Light|Fan|Voltage|PIR Motion|Door Sensor|IR Receiver|IR Transmitter","activeLow":true,"initialMode":0}},
+    {"method":"POST","path":"/api/gpio/update","auth":true,"description":"Update channel configuration","body":{"id":1,"name":"...","room":"...","function":"Relay","activeLow":true,"initialMode":0,"enabled":true}},
+    {"method":"POST","path":"/api/gpio/delete","auth":true,"description":"Delete GPIO channel","body":{"id":1}},
+    {"method":"POST","path":"/api/gpio/state","auth":true,"description":"Control GPIO output","body":{"id":1,"state":true,"action":"setState|toggle|pulse","duration":500}},
+    {"method":"POST","path":"/api/commands/execute","auth":true,"description":"Unified command dispatcher (setState, toggle, pulse, reboot, readInfo, syncConfig)","body":{"commandId":"...","action":"setState","id":1,"state":true}},
+    {"method":"GET","path":"/api/i2c","auth":false,"description":"Get I2C bus and PCF8574 expander status"},
+    {"method":"POST","path":"/api/i2c","auth":true,"description":"Configure I2C pins, PCF8574 address, and enable state","body":{"enabled":true,"sdaPin":4,"sclPin":5,"address":32,"reboot":false}},
+    {"method":"POST","path":"/api/i2c/auto-channels","auth":true,"description":"Auto-populate 8 PCF8574 relay channels (P0-P7 / pins 100-107)"},
+    {"method":"GET","path":"/api/i2c/scan","auth":false,"description":"Scan I2C bus for connected devices"},
+    {"method":"GET","path":"/api/ir/status","auth":false,"description":"Get IR RX/TX pin state, training state, and last captured code"},
+    {"method":"POST","path":"/api/ir/train/start","auth":true,"description":"Start IR remote signal learning window","body":{"timeoutSec":25}},
+    {"method":"POST","path":"/api/ir/train/stop","auth":true,"description":"Stop IR learning mode"},
+    {"method":"GET","path":"/api/ir/train/result","auth":false,"description":"Poll latest captured IR remote signal"},
+    {"method":"POST","path":"/api/ir/transmit","auth":true,"description":"Blast saved remote button or direct protocol/hexCode","body":{"remoteName":"...","buttonName":"..."}},
+    {"method":"GET","path":"/api/ir/remotes","auth":false,"description":"List saved IR remotes and buttons from LittleFS"},
+    {"method":"POST","path":"/api/ir/remotes/save","auth":true,"description":"Save IR button code to /config/ir_codes.json","body":{"remoteName":"...","buttonName":"...","protocol":"NEC","hexCode":"0x20DF10EF","bits":32,"repeat":0}},
+    {"method":"POST","path":"/api/ir/remotes/delete","auth":true,"description":"Delete a saved IR button or entire remote","body":{"remoteName":"...","buttonName":"..."}},
+    {"method":"GET","path":"/api/automation","auth":false,"description":"List all configured automation rules"},
+    {"method":"POST","path":"/api/automation","auth":true,"description":"Add automation rule","body":{"name":"...","type":0,"sourceGpioId":0,"targetGpioId":1,"condState":true,"targetState":false,"param1":300}},
+    {"method":"POST","path":"/api/automation/toggle","auth":true,"description":"Enable/disable rule","body":{"id":1}},
+    {"method":"POST","path":"/api/automation/delete","auth":true,"description":"Delete automation rule","body":{"id":1}},
+    {"method":"GET","path":"/api/settings","auth":false,"description":"Get device name, AP SSID, and timezone"},
+    {"method":"POST","path":"/api/settings","auth":true,"description":"Save device name, AP credentials, and timezone","body":{"deviceName":"...","apSsid":"...","apPass":"...","timezoneOffset":19800}},
+    {"method":"POST","path":"/api/settings/password","auth":true,"description":"Change admin password","body":{"currentPassword":"...","newPassword":"..."}},
+    {"method":"POST","path":"/api/settings/ntp-sync","auth":true,"description":"Force NTP time synchronization"},
+    {"method":"GET","path":"/api/receiver","auth":false,"description":"Get central receiver telemetry config and counters"},
+    {"method":"POST","path":"/api/receiver","auth":true,"description":"Configure central receiver telemetry client"},
+    {"method":"POST","path":"/api/receiver/test","auth":true,"description":"Test connection to central receiver"},
+    {"method":"POST","path":"/api/receiver/push","auth":true,"description":"Trigger immediate telemetry push"},
+    {"method":"POST","path":"/api/system/reboot","auth":true,"description":"Soft reboot microcontroller"},
+    {"method":"POST","path":"/api/system/factory-reset","auth":true,"description":"Wipe configurations and reboot into factory defaults"},
+    {"method":"POST","path":"/api/ota/upload","auth":true,"description":"Multipart firmware or LittleFS upload (.bin)"},
+    {"method":"GET","path":"/api/firmware/download","auth":true,"description":"Download running flash firmware binary (.bin)"},
+    {"method":"GET","path":"/api/backup/download","auth":true,"description":"Download full JSON configuration backup"},
+    {"method":"POST","path":"/api/backup/restore","auth":true,"description":"Restore full JSON configuration backup"},
+    {"method":"GET","path":"/api/fs/list","auth":true,"description":"List files and sizes in LittleFS"},
+    {"method":"GET","path":"/api/fs/download","auth":true,"description":"Download file from LittleFS (?path=/...)"},
+    {"method":"POST","path":"/api/fs/upload","auth":true,"description":"Multipart upload file into LittleFS"},
+    {"method":"POST","path":"/api/fs/delete","auth":true,"description":"Delete file from LittleFS","body":{"path":"/config/..."}},
+    {"method":"POST","path":"/api/fs/rename","auth":true,"description":"Rename file in LittleFS","body":{"oldPath":"/a.json","newPath":"/b.json"}}
+  ]
+})rawliteral";
 #endif

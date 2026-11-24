@@ -10,9 +10,9 @@
 
 | Phase | Category | Total Tasks | Completed | In Progress | Pending | Status |
 |:---:|:---|:---:|:---:|:---:|:---:|:---:|
-| **P0** | Critical Wire Protocol & Compilation Parity | 4 | 0 | 0 | 4 | ⚠️ Action Required (Firmware) |
+| **P0** | Critical Wire Protocol & Compilation Parity | 4 | 2 | 0 | 2 | 🟡 Partially Ready (Firmware) |
 | **P1** | Security, Dual-Auth & Server Pairing | 3 | 3 | 0 | 0 | 🟢 Complete & Verified |
-| **P2** | Analog RMS Voltage & Sensor Modes | 3 | 1 | 0 | 2 | 🟡 Partially Ready (Firmware) |
+| **P2** | Analog RMS Voltage & Sensor Modes | 3 | 2 | 0 | 1 | 🟡 Partially Ready (Firmware) |
 | **P3** | Central Server Frontend & Fleet Tools | 3 | 3 | 0 | 0 | 🟢 Complete & Verified |
 
 ---
@@ -21,33 +21,11 @@
 
 These tasks resolve immediate compilation inconsistencies and fill communication gaps between Central Server and Node Firmware.
 
-- [ ] **Task 0.1: Fix Target Preprocessor Directives for Default 4MB Build**
-  * **Files Affected:**  
-    * `node-firmware/src/web_server.cpp` (Line 1036)  
-    * `node-firmware/src/main.cpp` (Line 182)  
-    * `node-firmware/src/gpio_manager.cpp` (Line 601)  
-    * `node-firmware/src/wifi_manager.cpp` (Line 429)  
-    * `node-firmware/src/wifi_manager.h` (Line 83)  
-    * `node-firmware/src/gpio_manager.h` (Line 112)  
-  * **Problem:** `platformio.ini` sets `-D TARGET_ESP8266_4M=1` for the default environment (`esp8266_4m`), but source files check `#elif defined(TARGET_NODEMCU_PCF8574)`. When compiling for `esp8266_4m`, the entire implementation is excluded.  
-  * **Action:** Update preprocessor checks to:
-    ```cpp
-    #elif defined(TARGET_NODEMCU_PCF8574) || defined(TARGET_ESP8266_4M)
-    ```
+- [x] **Task 0.1: Default 4MB Build (`TARGET_ESP8266_4M`) Support** *(Completed & Verified Live)*
+  * Active `#else` fallback branch in `main.cpp`, `web_server.cpp`, `gpio_manager.cpp`, `wifi_manager.cpp`, and `receiver_client.cpp` compiles cleanly for `esp8266_4m` and runs on physical NodeMCU hardware (`192.168.1.28`).
 
-- [ ] **Task 0.2: Enable `IrManager` in NodeMCU 4MB `setup()` and `loop()`**
-  * **File Affected:** `node-firmware/src/main.cpp` (Lines 285–305)
-  * **Problem:** `IrManager::getInstance().begin()` and `IrManager::getInstance().loop()` are currently only called inside the ESP-01 preprocessor branch. The standard NodeMCU 4MB build does not initialize the IR transceiver.
-  * **Action:**
-    1. In `setup()` under `TARGET_NODEMCU_PCF8574 / TARGET_ESP8266_4M`:
-       ```cpp
-       // 10. Initialize Infrared Remote Engine
-       IrManager::getInstance().begin();
-       ```
-    2. In `loop()` under `TARGET_NODEMCU_PCF8574 / TARGET_ESP8266_4M`:
-       ```cpp
-       IrManager::getInstance().loop();
-       ```
+- [x] **Task 0.2: Enable `IrManager` in NodeMCU 4MB `setup()` and `loop()`** *(Completed & Verified)*
+  * Added `#include "ir_manager.h"`, `IrManager::getInstance().begin()`, and `IrManager::getInstance().loop()` in the `esp8266_4m` / `nodemcu_pcf8574` sections of `node-firmware/src/main.cpp`.
 
 - [ ] **Task 0.3: Implement `action: "send_ir"` in Node Remote Command Parsers**
   * **Files Affected:**  
@@ -120,9 +98,9 @@ These tasks resolve immediate compilation inconsistencies and fill communication
     2. Compute root-mean-square: $V_{RMS} = \sqrt{\frac{1}{N}\sum (V_i - V_{mid})^2} \times \text{calibrationFactor}$.
     3. Prevents zero-crossing noise and reports stable AC mains voltage (e.g., ~230V AC).
 
-- [ ] **Task 2.3: Support Digital Input Sensor Modes (`INPUT` & `INPUT_PULLUP`)**
+- [x] **Task 2.3: Support Digital Input Sensor Modes (`INPUT` & `INPUT_PULLUP`)** *(Completed & Verified)*
   * **File Affected:** `node-firmware/src/gpio_manager.cpp`
-  * **Action:** Allow pins configured with `function: "Sensor"` or `pin_mode: "SENSOR_INPUT"` to initialize with `pinMode(pin, INPUT_PULLUP)` instead of forcing `OUTPUT`.
+  * **Implementation:** Added `classifyChannel()` and guarded `applyPhysicalPin()` so sensors (`Voltage`, `IR Receiver`, `PIR Motion`, `Door Sensor`, generic `Sensor`) initialize as `INPUT` (`A0`) or `INPUT_PULLUP` (digital inputs) and are never driven as digital `OUTPUT`.
 
 ---
 

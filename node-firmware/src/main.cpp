@@ -190,6 +190,7 @@ void loop() {
 #include "ota_manager.h"
 #include "web_server.h"
 #include "receiver_client.h"
+#include "ir_manager.h"
 #if FEATURE_PCF8574
 #include "drivers/pcf8574_driver.h"
 #endif
@@ -286,6 +287,9 @@ void setup() {
     // 9. Initialize Embedded Web Server & REST API
     WebServerManager::getInstance().begin();
 
+    // 10. Initialize Infrared Remote Engine
+    IrManager::getInstance().begin();
+
     Serial.println(F("[INIT] SmartHome Controller is fully ready!"));
     Serial.printf ("[INIT] Setup Access Point IP: %s (SSID: %s)\n",
                    WiFi.softAPIP().toString().c_str(),
@@ -301,6 +305,7 @@ void loop() {
     WifiManager::getInstance().loop();
     WebServerManager::getInstance().loop();
     GpioManager::getInstance().loop();
+    IrManager::getInstance().loop();
     AutomationEngine::getInstance().loop();
     ReceiverClient::getInstance().loop();
     OtaManager::getInstance().loop();
@@ -374,6 +379,7 @@ void loop() {
 #include "ota_manager.h"
 #include "web_server.h"
 #include "receiver_client.h"
+#include "ir_manager.h"
 #if FEATURE_PCF8574
 #include "drivers/pcf8574_driver.h"
 #endif
@@ -463,6 +469,9 @@ void setup() {
     // 9. Initialize Embedded Web Server & REST API
     WebServerManager::getInstance().begin();
 
+    // 10. Initialize Infrared Remote Engine
+    IrManager::getInstance().begin();
+
     Serial.println(F("[INIT] SmartHome Controller is fully ready!"));
     Serial.printf ("[INIT] Setup Access Point IP: %s (SSID: %s)\n",
                    WiFi.softAPIP().toString().c_str(),
@@ -478,6 +487,7 @@ void loop() {
     WifiManager::getInstance().loop();
     WebServerManager::getInstance().loop();
     GpioManager::getInstance().loop();
+    IrManager::getInstance().loop();
     AutomationEngine::getInstance().loop();
     ReceiverClient::getInstance().loop();
     OtaManager::getInstance().loop();

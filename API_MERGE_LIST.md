@@ -42,10 +42,10 @@ The SmartHome ecosystem relies on a hybrid communication model designed for sub-
 | **1** | HTTP | Central Server / UI | Node | `POST /api/auth/login` | Session token generation | `nodeManager.authenticateNode()` | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
 | **2** | HTTP | Central Server / UI | Node | `GET /api/auth/check` | Validate active authentication | *Internal verification* | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
 | **3** | HTTP | Central Server / UI | Node | `POST /api/auth/logout` | Revoke session token | *Session lifecycle* | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
-| **4** | HTTP | Central Server | Node | `POST /api/auth/pair` | Provision immutable server pairing key | Node onboarding flow | `AuthManager::setServerPairingKey()` | 🟡 **Needs CS Hook** |
-| **5** | HTTP | Central Server | Node | `POST /api/auth/unpair` | Clear server pairing key | Node decommissioning | `AuthManager::clearServerPairingKey()` | 🟡 **Needs CS Hook** |
+| **4** | HTTP | Central Server | Node | `GET / POST /api/auth/pair` | Query pairing status / provision server pairing key | Node onboarding flow | `AuthManager::setServerPairingKey()` | 🟢 **Matched** |
+| **5** | HTTP | Central Server | Node | `POST /api/auth/unpair` | Clear server pairing key | Node decommissioning | `AuthManager::clearServerPairingKey()` | 🟢 **Matched** |
 | **6** | HTTP | Central Server / UI | Node | `GET /api/status` | Microcontroller health, heap, uptime, RSSI, PCF8574 | `GET /api/v1/nodes/:id` / Poller | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
-| **7** | HTTP | Node | Client | `GET /api/all` | Self-discovery API catalog | *Developer Discovery* | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
+| **7** | HTTP | Node | Client | `GET /api/all` | Self-discovery API catalog (all 57 REST endpoints) | *Developer Discovery* | `API_CATALOG_JSON` (`PROGMEM`) | 🟢 **Matched** |
 | **8** | HTTP | Central Server / UI | Node | `GET /api/logs` | Fetch circular in-memory diagnostic logs | `GET /api/v1/nodes/:id/logs` | `Logger::toJson()` | 🟢 **Matched** |
 | **9** | HTTP | Central Server / UI | Node | `GET /api/gpio` | Query full channel matrix & states | `GET /api/v1/nodes/:id/pins` | `GpioManager::toJson()` | 🟢 **Matched** |
 | **10** | HTTP | Central Server / UI | Node | `GET /api/sensors` | Filtered list of pure input sensors | Poller / UI Sensor Cards | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
