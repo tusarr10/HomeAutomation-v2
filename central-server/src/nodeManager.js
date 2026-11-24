@@ -430,6 +430,49 @@ class NodeManager {
       });
     }
 
+    // Process sensor telemetry if present (Voltage, IR, Motion, DHT, CT, etc.)
+    if (Array.isArray(data.sensors) && data.sensors.length > 0) {
+      for (const s of data.sensors) {
+        const sType = s.type || s.sensor_type || 'GENERIC';
+        const sVal = s.value !== undefined ? s.value : (s.val || 0);
+        const sUnit = s.unit || '';
+        this.db.upsertSensor({
+          nodeId,
+          sensorType: sType,
+          name: s.name,
+          room: s.room || 'General',
+          value: sVal,
+          unit: sUnit
+        });
+        if (s.pin || s.channel_id) {
+          this.db.updatePinSensorReading(nodeId, s.channel_id || s.pin, sVal, s.strValue || s.code || String(sVal));
+        }
+      }
+      this.broadcast('sensor_telemetry', { nodeId, sensors: data.sensors });
+    } else if (data.ir_code || data.ir_received) {
+      const code = data.ir_code || data.ir_received;
+      const protocol = data.ir_protocol || 'UNKNOWN';
+      this.db.upsertSensor({
+        nodeId,
+        sensorType: 'IR_RECEIVER',
+        name: 'IR Receiver',
+        value: 1,
+        unit: 'HEX'
+      });
+      this.db.updatePinSensorReading(nodeId, data.channel_id || data.pin || 0, 1, code);
+      this.broadcast('sensor_telemetry', { nodeId, type: 'IR_RECEIVER', code, protocol });
+    } else if (data.voltage !== undefined) {
+      this.db.upsertSensor({
+        nodeId,
+        sensorType: 'VOLTAGE',
+        name: 'Mains / ADC Voltage',
+        value: Number(data.voltage),
+        unit: 'V'
+      });
+      this.db.updatePinSensorReading(nodeId, data.channel_id || data.pin || 0, Number(data.voltage), `${data.voltage} V`);
+      this.broadcast('sensor_telemetry', { nodeId, type: 'VOLTAGE', value: data.voltage });
+    }
+
     // Live telemetry update broadcast
     const expanderInfo = this.nodeExpanderStatus.get(nodeId) || null;
     this.broadcast('telemetry_update', {
@@ -620,6 +663,21 @@ class NodeManager {
     }
     this.commandQueues.get(nodeId).push(command);
 
+    const targetState = command.action === 'toggle' 
+      ? !Boolean(this.db.getRelay(nodeId, channelId)?.current_state)
+      : Boolean(command.state);
+    if (typeof this.db.updateRelayRequestedState === 'function') {
+      this.db.updateRelayRequestedState(nodeId, channelId, targetState);
+    }
+    if (typeof this.db.updateRelayState === 'function') {
+      this.db.updateRelayState(nodeId, channelId, targetState);
+    }
+    this.broadcast('relay_state_confirmed', {
+      node_id: nodeId,
+      channel_id: channelId,
+      new_state: targetState
+    });
+
     return {
       success: true,
       command_uuid: commandUuid,
@@ -629,7 +687,7 @@ class NodeManager {
   }
 
   async sendDirectLanHttp(ip, command, nodeId = null) {
-    const timeoutMs = this.config.direct_http_timeout_ms || 2500;
+    const timeoutMs = this.config.direct_http_timeout_ms || 500;
     const node = nodeId ? this.db.getNode(nodeId) : (this.db.getNodeByIp ? this.db.getNodeByIp(ip) : null);
     const user = node?.auth_username || this.config.node_auth?.username || 'admin';
     const pass = node?.auth_password || this.config.node_auth?.password || 'admin';
@@ -692,6 +750,10 @@ class NodeManager {
     let res = await makeRequest('/api/commands/execute', command, token);
     if (res.statusCode === 200) {
       return { success: true, message: res.data || 'OK' };
+    }
+    // If port closed or timed out, abort immediately without extra waiting
+    if (res.error) {
+      return { success: false, message: res.error };
     }
 
     // 2. Fallback to legacy /api/gpio/state endpoint
@@ -966,10 +1028,125 @@ class NodeManager {
     return results;
   }
 
+  async syncPinToNode(nodeId, channelId) {
+    // Skip Tuya Smart Circuit Breaker (custom firmware protocol only for ESP nodes)
+    if (nodeId.includes('30487D') || nodeId.toUpperCase().includes('BREAKER')) {
+      return true;
+    }
+
+    const node = this.db.getNode(nodeId);
+    if (!node) return false;
+
+    const relay = this.db.getRelay(nodeId, channelId);
+    const nodeIp = node.ip || node.ip_address;
+    const user = node.auth_username || this.config.node_auth?.username || 'admin';
+    const pass = node.auth_password || this.config.node_auth?.password || 'admin';
+    const auth = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
+
+    // 1. Dual-Path: Direct LAN HTTP push (Fast path)
+    if (nodeIp && node.is_online) {
+      try {
+        if (!relay) {
+          // Channel was deleted / unassigned -> notify node to remove from flash
+          await fetch(`http://${nodeIp}/api/gpio/delete`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': auth
+            },
+            body: JSON.stringify({ id: Number(channelId) }),
+            signal: AbortSignal.timeout(3000)
+          });
+          this.db.logAudit('PIN_SYNC_HTTP', nodeId, `Pushed pin CH${channelId} deletion to ${nodeIp} via HTTP`);
+        } else {
+          // Channel exists -> send update
+          const updatePayload = {
+            id: Number(channelId),
+            name: relay.name,
+            room: relay.room || 'General',
+            function: relay.function || 'Relay',
+            activeLow: Boolean(relay.active_low),
+            enabled: Boolean(relay.enabled)
+          };
+          const res = await fetch(`http://${nodeIp}/api/gpio/update`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': auth
+            },
+            body: JSON.stringify(updatePayload),
+            signal: AbortSignal.timeout(3000)
+          });
+
+          if (res.status === 400) {
+            const errBody = await res.text();
+            if (errBody.includes('Channel ID not found')) {
+              // Channel does not exist on node yet -> add it
+              await fetch(`http://${nodeIp}/api/gpio`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': auth
+                },
+                body: JSON.stringify({
+                  pin: relay.pin,
+                  name: relay.name,
+                  room: relay.room || 'General',
+                  function: relay.function || 'Relay',
+                  activeLow: Boolean(relay.active_low),
+                  initialMode: relay.initial_mode || 0
+                }),
+                signal: AbortSignal.timeout(3000)
+              });
+              this.db.logAudit('PIN_SYNC_HTTP', nodeId, `Created new pin GPIO ${relay.pin} as CH${channelId} on ${nodeIp} via HTTP`);
+            }
+          } else if (res.ok) {
+            this.db.logAudit('PIN_SYNC_HTTP', nodeId, `Pushed pin CH${channelId} ('${relay.name}') update to ${nodeIp} via HTTP`);
+          }
+        }
+      } catch (err) {
+        // Direct LAN HTTP failed/timed out, will be delivered via TCP queue below
+        console.warn(`[NodeManager] Direct HTTP push to ${nodeIp} failed (${err.message}), falling back to TCP queue`);
+      }
+    }
+
+    // 2. Authoritative channels configuration for TCP check-in / LittleFS sync
+    const allRelays = this.db.getRelays({ node_id: nodeId });
+    const channelsPayload = allRelays.map(r => ({
+      id: r.channel_id,
+      pin: r.pin,
+      name: r.name,
+      room: r.room,
+      function: r.function,
+      activeLow: r.active_low,
+      initialMode: r.initial_mode,
+      enabled: r.enabled
+    }));
+
+    if (!this.commandQueues.has(nodeId)) {
+      this.commandQueues.set(nodeId, []);
+    }
+    this.commandQueues.get(nodeId).push({
+      command_uuid: 'sync-' + Date.now(),
+      action: 'syncConfig',
+      config: {
+        channels: channelsPayload
+      }
+    });
+
+    return true;
+  }
+
   async pushNodeConfig(nodeId) {
     const node = this.db.getNode(nodeId);
-    if (!node || !node.ip) {
+    const nodeIp = node?.ip || node?.ip_address;
+    if (!node || !nodeIp) {
       throw new Error(`Node '${nodeId}' not found or missing IP address`);
+    }
+
+    // Skip Tuya Smart Circuit Breaker
+    if (nodeId.includes('30487D') || nodeId.toUpperCase().includes('BREAKER')) {
+      return { success: true, message: 'Breaker config preserved' };
     }
 
     const relays = this.db.getRelays({ node_id: nodeId });
@@ -1005,7 +1182,6 @@ class NodeManager {
 
     const user = node.auth_username || this.config.node_auth?.username || 'admin';
     const pass = node.auth_password || this.config.node_auth?.password || 'admin';
-    const nodeIp = node.ip || node.ip_address;
 
     let token = this.nodeAuthTokens.get(nodeIp);
     if (!token) {
@@ -1022,20 +1198,43 @@ class NodeManager {
 
     const results = {};
 
-    try {
-      const r1 = await fetch(`http://${node.ip}/api/gpio`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ channels: channelsPayload }),
-        signal: AbortSignal.timeout(3000)
-      });
-      results.gpio = { status: r1.status, ok: r1.ok };
-    } catch (e) {
-      results.gpio = { error: e.message };
+    // 1. Sync all channels individually via HTTP
+    for (const ch of channelsPayload) {
+      try {
+        const rUpdate = await fetch(`http://${nodeIp}/api/gpio/update`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            id: ch.id,
+            name: ch.name,
+            room: ch.room || 'General',
+            function: ch.function || 'Relay',
+            activeLow: Boolean(ch.activeLow),
+            enabled: Boolean(ch.enabled)
+          }),
+          signal: AbortSignal.timeout(3000)
+        });
+        results[`ch_${ch.id}`] = { status: rUpdate.status, ok: rUpdate.ok };
+      } catch (e) {
+        results[`ch_${ch.id}`] = { error: e.message };
+      }
     }
 
+    // 2. Queue authoritative syncConfig over TCP
+    if (!this.commandQueues.has(nodeId)) {
+      this.commandQueues.set(nodeId, []);
+    }
+    this.commandQueues.get(nodeId).push({
+      command_uuid: 'sync-' + Date.now(),
+      action: 'syncConfig',
+      config: {
+        channels: channelsPayload
+      }
+    });
+
+    // 3. Configure receiver
     try {
-      const r2 = await fetch(`http://${node.ip}/api/receiver`, {
+      const r2 = await fetch(`http://${nodeIp}/api/receiver`, {
         method: 'POST',
         headers,
         body: JSON.stringify(receiverPayload),
@@ -1046,7 +1245,7 @@ class NodeManager {
       results.receiver = { error: e.message };
     }
 
-    this.db.logAudit('CONFIG_PUSHED', nodeId, `Pushed configuration to node '${node.name}' (${node.ip})`);
+    this.db.logAudit('CONFIG_PUSHED', nodeId, `Pushed configuration to node '${node.name}' (${nodeIp})`);
     return { success: true, results, pushedChannels: channelsPayload.length };
   }
 

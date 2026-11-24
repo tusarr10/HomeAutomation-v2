@@ -567,6 +567,14 @@ class FleetDatabase {
     try { this.db.exec(`ALTER TABLE nodes ADD COLUMN room_id INTEGER DEFAULT NULL`); } catch {}
     try { this.db.exec(`ALTER TABLE nodes ADD COLUMN assigned_at REAL DEFAULT NULL`); } catch {}
     try { this.db.exec(`ALTER TABLE relays ADD COLUMN icon TEXT DEFAULT 'light'`); } catch {}
+    try { this.db.exec(`ALTER TABLE relays ADD COLUMN pin_mode TEXT DEFAULT 'RELAY_OUTPUT'`); } catch {}
+    try { this.db.exec(`ALTER TABLE relays ADD COLUMN sensor_type TEXT DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE relays ADD COLUMN sensor_unit TEXT DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE relays ADD COLUMN sensor_config_json TEXT DEFAULT '{}'`); } catch {}
+    try { this.db.exec(`ALTER TABLE relays ADD COLUMN last_sensor_value REAL DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE relays ADD COLUMN last_sensor_str TEXT DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE sensors ADD COLUMN pin INTEGER DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE sensors ADD COLUMN config_json TEXT DEFAULT '{}'`); } catch {}
 
     this.seedDefaults();
     this.deduplicateFleetNodes();
@@ -896,15 +904,7 @@ class FleetDatabase {
         }
       }
 
-      if (activeChannelIds.length > 0) {
-        const placeholders = activeChannelIds.map(() => '?').join(',');
-        this.db.prepare(`
-          DELETE FROM relays 
-          WHERE node_id = ? AND channel_id NOT IN (${placeholders})
-        `).run(targetNodeId, ...activeChannelIds);
-      } else {
-        this.db.prepare('DELETE FROM relays WHERE node_id = ?').run(targetNodeId);
-      }
+      // Note: We do not purge channels not in activeChannelIds so user-assigned pins and sensor channels remain safe.
     }
 
     return { success: true, stateChanges, nodeId: targetNodeId };
@@ -921,15 +921,7 @@ class FleetDatabase {
       }
     }
 
-    if (activeChannelIds.length > 0) {
-      const placeholders = activeChannelIds.map(() => '?').join(',');
-      this.db.prepare(`
-        DELETE FROM relays 
-        WHERE node_id = ? AND channel_id NOT IN (${placeholders})
-      `).run(nodeId, ...activeChannelIds);
-    } else {
-      this.db.prepare('DELETE FROM relays WHERE node_id = ?').run(nodeId);
-    }
+    // Do not purge channels not in activeChannelIds to keep user-assigned custom and sensor pins safe
     return activeChannelIds.length;
   }
 
@@ -957,7 +949,7 @@ class FleetDatabase {
     const state = ch.state ? 1 : 0;
     const nowStr = new Date().toISOString();
 
-    const existingRelay = this.db.prepare('SELECT current_state, name, pin FROM relays WHERE node_id = ? AND channel_id = ?').get(nodeId, chId);
+    const existingRelay = this.db.prepare('SELECT current_state, name, room, pin, function, icon, pin_mode FROM relays WHERE node_id = ? AND channel_id = ?').get(nodeId, chId);
 
     let changed = false;
     let oldState = 0;
@@ -968,13 +960,18 @@ class FleetDatabase {
         changed = true;
         this.logRelayEvent(nodeId, chId, existingRelay.current_state, state, 'TELEMETRY_SYNC');
       }
+      const finalName = existingRelay.name || name;
+      const finalRoom = (existingRelay.room && existingRelay.room !== 'General') ? existingRelay.room : (room || 'General');
+      const finalFunc = existingRelay.function || func;
+      const finalPin = (existingRelay.pin != null && existingRelay.pin > 0) ? existingRelay.pin : pin;
+
       const updateStmt = this.db.prepare(`
         UPDATE relays SET
-          pin = ?, name = ?, room = ?, function = ?, active_low = ?, initial_mode = ?,
-          enabled = ?, current_state = ?, requested_state = ?, is_syncing = 0, last_changed_at = ?
+          pin = ?, name = ?, room = ?, function = ?,
+          current_state = ?, requested_state = ?, is_syncing = 0, last_changed_at = ?
         WHERE node_id = ? AND channel_id = ?
       `);
-      updateStmt.run(pin, name, room, func, activeLow, initialMode, enabled, state, state, nowStr, nodeId, chId);
+      updateStmt.run(finalPin, finalName, finalRoom, finalFunc, state, state, nowStr, nodeId, chId);
     } else {
       const insertStmt = this.db.prepare(`
         INSERT INTO relays (
@@ -1210,6 +1207,11 @@ class FleetDatabase {
     const name = (relayData.name || `Relay ${channelId}`).trim();
     const room = (relayData.room || 'General').trim();
     const func = (relayData.function || 'Relay').trim();
+    const icon = relayData.icon || 'light';
+    const pinMode = relayData.pin_mode || relayData.pinMode || (func === 'Relay' ? 'RELAY_OUTPUT' : 'SENSOR_INPUT');
+    const sensorType = relayData.sensor_type || relayData.sensorType || null;
+    const sensorUnit = relayData.sensor_unit || relayData.sensorUnit || null;
+    const sensorConfigJson = typeof relayData.sensor_config === 'object' ? JSON.stringify(relayData.sensor_config) : (relayData.sensor_config_json || '{}');
     const activeLow = (relayData.active_low === false || relayData.activeLow === false) ? 0 : 1;
     const initialMode = Number(relayData.initial_mode ?? relayData.initialMode ?? 0);
     const enabled = (relayData.enabled === false) ? 0 : 1;
@@ -1220,15 +1222,17 @@ class FleetDatabase {
     if (existing) {
       this.db.prepare(`
         UPDATE relays SET
-          pin = ?, name = ?, room = ?, function = ?, active_low = ?, initial_mode = ?, enabled = ?, last_changed_at = ?
+          pin = ?, name = ?, room = ?, function = ?, active_low = ?, initial_mode = ?, enabled = ?,
+          icon = ?, pin_mode = ?, sensor_type = ?, sensor_unit = ?, sensor_config_json = ?, last_changed_at = ?
         WHERE node_id = ? AND channel_id = ?
-      `).run(pin, name, room, func, activeLow, initialMode, enabled, nowStr, nodeId, channelId);
+      `).run(pin, name, room, func, activeLow, initialMode, enabled, icon, pinMode, sensorType, sensorUnit, sensorConfigJson, nowStr, nodeId, channelId);
     } else {
       this.db.prepare(`
         INSERT INTO relays (
-          node_id, channel_id, pin, name, room, function, active_low, initial_mode, enabled, current_state, requested_state, is_syncing, last_changed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)
-      `).run(nodeId, channelId, pin, name, room, func, activeLow, initialMode, enabled, nowStr);
+          node_id, channel_id, pin, name, room, function, active_low, initial_mode, enabled, current_state, requested_state, is_syncing,
+          icon, pin_mode, sensor_type, sensor_unit, sensor_config_json, last_changed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?)
+      `).run(nodeId, channelId, pin, name, room, func, activeLow, initialMode, enabled, icon, pinMode, sensorType, sensorUnit, sensorConfigJson, nowStr);
     }
 
     // Keep channels_json in nodes table in sync
@@ -1285,9 +1289,11 @@ class FleetDatabase {
 
   getRelays(filters = {}) {
     let sql = `
-      SELECT r.*, n.name AS node_name, n.is_online AS node_online, n.ip_address AS node_ip
+      SELECT r.*, n.name AS node_name, n.is_online AS node_online, n.ip_address AS node_ip,
+             n.home_id AS home_id, h.name AS home_name
       FROM relays r
       JOIN nodes n ON r.node_id = n.node_id
+      LEFT JOIN homes h ON n.home_id = h.id
       WHERE 1=1
     `;
     const params = [];
@@ -1300,6 +1306,14 @@ class FleetDatabase {
       sql += ' AND r.node_id = ?';
       params.push(filters.node_id);
     }
+    if (filters.home_id) {
+      sql += ' AND n.home_id = ?';
+      params.push(Number(filters.home_id));
+    }
+    if (filters.pin_mode) {
+      sql += ' AND r.pin_mode = ?';
+      params.push(filters.pin_mode);
+    }
     if (filters.state !== undefined) {
       sql += ' AND r.current_state = ?';
       params.push(filters.state ? 1 : 0);
@@ -1308,41 +1322,63 @@ class FleetDatabase {
     sql += ' ORDER BY r.node_id ASC, r.channel_id ASC';
     const rows = this.db.prepare(sql).all(...params);
 
-    return rows.map(r => ({
-      id: r.id,
-      node_id: r.node_id,
-      nodeId: r.node_id,
-      node_name: r.node_name,
-      node_online: Boolean(r.node_online),
-      node_ip: r.node_ip,
-      channel_id: r.channel_id,
-      id_channel: r.channel_id,
-      pin: r.pin,
-      name: r.name,
-      room: r.room,
-      icon: r.icon || 'light',
-      function: r.function,
-      active_low: Boolean(r.active_low),
-      activeLow: Boolean(r.active_low),
-      initial_mode: r.initial_mode,
-      enabled: Boolean(r.enabled),
-      current_state: Boolean(r.current_state),
-      state: Boolean(r.current_state),
-      requested_state: Boolean(r.requested_state),
-      is_syncing: Boolean(r.is_syncing),
-      last_changed_at: r.last_changed_at
-    }));
+    return rows.map(r => {
+      let sensorCfg = {};
+      try {
+        sensorCfg = r.sensor_config_json ? JSON.parse(r.sensor_config_json) : {};
+      } catch {}
+
+      return {
+        id: r.id,
+        node_id: r.node_id,
+        nodeId: r.node_id,
+        node_name: r.node_name,
+        node_online: Boolean(r.node_online),
+        node_ip: r.node_ip,
+        home_id: r.home_id,
+        home_name: r.home_name || 'Primary Residence',
+        channel_id: r.channel_id,
+        id_channel: r.channel_id,
+        pin: r.pin,
+        name: r.name,
+        room: r.room,
+        icon: r.icon || 'light',
+        function: r.function || 'Relay',
+        pin_mode: r.pin_mode || 'RELAY_OUTPUT',
+        sensor_type: r.sensor_type || null,
+        sensor_unit: r.sensor_unit || null,
+        sensor_config: sensorCfg,
+        last_sensor_value: r.last_sensor_value,
+        last_sensor_str: r.last_sensor_str,
+        active_low: Boolean(r.active_low),
+        activeLow: Boolean(r.active_low),
+        initial_mode: r.initial_mode,
+        enabled: Boolean(r.enabled),
+        current_state: Boolean(r.current_state),
+        state: Boolean(r.current_state),
+        requested_state: Boolean(r.requested_state),
+        is_syncing: Boolean(r.is_syncing),
+        last_changed_at: r.last_changed_at
+      };
+    });
   }
 
   getRelay(nodeId, channelId) {
     const row = this.db.prepare(`
-      SELECT r.*, n.name AS node_name, n.is_online AS node_online, n.ip_address AS node_ip
+      SELECT r.*, n.name AS node_name, n.is_online AS node_online, n.ip_address AS node_ip,
+             n.home_id AS home_id, h.name AS home_name
       FROM relays r
       JOIN nodes n ON r.node_id = n.node_id
+      LEFT JOIN homes h ON n.home_id = h.id
       WHERE r.node_id = ? AND r.channel_id = ?
     `).get(nodeId, Number(channelId));
 
     if (!row) return null;
+    let sensorCfg = {};
+    try {
+      sensorCfg = row.sensor_config_json ? JSON.parse(row.sensor_config_json) : {};
+    } catch {}
+
     return {
       id: row.id,
       node_id: row.node_id,
@@ -1350,12 +1386,20 @@ class FleetDatabase {
       node_name: row.node_name,
       node_online: Boolean(row.node_online),
       node_ip: row.node_ip,
+      home_id: row.home_id,
+      home_name: row.home_name || 'Primary Residence',
       channel_id: row.channel_id,
       pin: row.pin,
       name: row.name,
       room: row.room,
       icon: row.icon || 'light',
-      function: row.function,
+      function: row.function || 'Relay',
+      pin_mode: row.pin_mode || 'RELAY_OUTPUT',
+      sensor_type: row.sensor_type || null,
+      sensor_unit: row.sensor_unit || null,
+      sensor_config: sensorCfg,
+      last_sensor_value: row.last_sensor_value,
+      last_sensor_str: row.last_sensor_str,
       active_low: Boolean(row.active_low),
       enabled: Boolean(row.enabled),
       current_state: Boolean(row.current_state),
@@ -1364,6 +1408,21 @@ class FleetDatabase {
       is_syncing: Boolean(row.is_syncing),
       last_changed_at: row.last_changed_at
     };
+  }
+
+  updatePinSensorReading(nodeId, channelId, value, strValue = null) {
+    const nowStr = new Date().toISOString();
+    try {
+      this.db.prepare(`
+        UPDATE relays SET
+          last_sensor_value = ?,
+          last_sensor_str = ?,
+          last_changed_at = ?
+        WHERE node_id = ? AND (channel_id = ? OR pin = ?)
+      `).run(Number(value) || 0, strValue ? String(strValue) : String(value), nowStr, nodeId, Number(channelId) || 0, Number(channelId) || 0);
+    } catch (e) {
+      console.warn('[Database] updatePinSensorReading error:', e.message);
+    }
   }
 
   updateRelayState(nodeId, channelId, state) {
@@ -1383,6 +1442,20 @@ class FleetDatabase {
         }
       }
       this.db.prepare('UPDATE nodes SET channels_json = ? WHERE node_id = ?').run(JSON.stringify(node.channels), nodeId);
+    }
+  }
+
+  updateRelayRequestedState(nodeId, channelId, state) {
+    const chId = Number(channelId);
+    const stateVal = state ? 1 : 0;
+    const nowStr = new Date().toISOString();
+    try {
+      this.db.prepare(`
+        UPDATE relays SET requested_state = ?, is_syncing = 1, last_changed_at = ?
+        WHERE node_id = ? AND channel_id = ?
+      `).run(stateVal, nowStr, nodeId, chId);
+    } catch (e) {
+      console.warn('[Database] updateRelayRequestedState error:', e.message);
     }
   }
 

@@ -549,6 +549,61 @@ function updateWsStatus(connected) {
   }
 }
 
+function updateRelayUiState(nodeId, channelId, state) {
+  // Update in-memory lists
+  const r1 = (fleetData.relays || []).find(r => r.node_id === nodeId && r.channel_id == channelId);
+  if (r1) r1.current_state = state;
+  const r2 = (dashFleetRelays || []).find(r => r.node_id === nodeId && r.channel_id == channelId);
+  if (r2) r2.current_state = state;
+
+  // 1. Relays view elements
+  const chk = document.getElementById(`relay-chk-${nodeId}-${channelId}`);
+  if (chk) chk.checked = state;
+  const lbl = document.getElementById(`relay-lbl-${nodeId}-${channelId}`);
+  if (lbl) lbl.textContent = state ? 'ON' : 'OFF';
+
+  // 2. Quick relay button in Dashboard
+  const qbtn = document.getElementById(`quick-relay-btn-${nodeId}-${channelId}`);
+  if (qbtn) {
+    qbtn.className = `dash-relay-toggle-btn ${state ? 'btn-on' : 'btn-off'}`;
+    qbtn.textContent = state ? 'ON' : 'OFF';
+  }
+
+  // 3. Room subview elements
+  const rmChk = document.getElementById(`relay-room-chk-${nodeId}-${channelId}`);
+  if (rmChk) rmChk.checked = state;
+  const rmLbl = document.getElementById(`relay-room-lbl-${nodeId}-${channelId}`);
+  if (rmLbl) rmLbl.textContent = state ? 'ON' : 'OFF';
+
+  // 4. Matrix view pill
+  const mPill = document.getElementById(`matrix-live-pill-${nodeId}-${channelId}`);
+  if (mPill) {
+    mPill.className = state ? 'status-pill-online' : 'status-pill-offline';
+    mPill.textContent = state ? 'ON' : 'OFF';
+  }
+}
+
+function updateNodeUiStatus(nodeId, isOnline, rssi) {
+  const n = (fleetData.nodes || []).find(node => node.node_id === nodeId);
+  if (n) {
+    if (isOnline !== undefined) n.is_online = isOnline;
+    if (rssi !== undefined) n.rssi = rssi;
+  }
+  const dashPill = document.getElementById(`dash-node-status-${nodeId}`);
+  if (dashPill) {
+    dashPill.className = isOnline ? 'status-pill-online' : 'status-pill-offline';
+    dashPill.textContent = isOnline ? 'Online' : 'Offline';
+  }
+  const rssiEl = document.getElementById(`dash-node-rssi-${nodeId}`);
+  if (rssiEl && rssi !== undefined) {
+    rssiEl.textContent = `${rssi} dBm`;
+  }
+  const seenEl = document.getElementById(`dash-node-lastseen-${nodeId}`);
+  if (seenEl) {
+    seenEl.textContent = isOnline ? 'Live' : 'Offline';
+  }
+}
+
 function handleLiveEvent(type, data) {
   if (type === "notification") {
     showToast(data);
@@ -556,18 +611,18 @@ function handleLiveEvent(type, data) {
     if (currentView === "notifications") loadNotifications();
     if (currentView === "logs") loadLogs();
   } else if (type === "relay_state_confirmed") {
-    const el = document.getElementById(`relay-toggle-${data.node_id}-${data.channel_id}`);
-    if (el) el.checked = data.new_state;
-    const syncBadge = document.getElementById(`sync-badge-${data.node_id}-${data.channel_id}`);
-    if (syncBadge) syncBadge.style.display = "none";
-    if (currentView === "relays" || currentView === "overview") loadCurrentView();
-  } else if (type === "node_status" || type === "node_added" || type === "node_deleted") {
-    if (currentView === "nodes" || currentView === "overview") loadCurrentView();
-  } else if (type === "telemetry_update") {
+    // Zero-flicker targeted DOM update
+    updateRelayUiState(data.node_id, data.channel_id, data.new_state);
+  } else if (type === "node_status") {
+    // Zero-flicker targeted node status update
+    updateNodeUiStatus(data.node_id, data.is_online, data.rssi);
+  } else if (type === "telemetry_update" || type === "poll_cycle_completed") {
     if (currentView === "telemetry") appendTelemetryLog(data);
-    if (currentView === "overview") refreshActiveMetrics();
-  } else if (type === "poll_cycle_completed") {
-    if (currentView === "overview") refreshActiveMetrics();
+    // Silent in-place metrics refresh without wiping DOM
+    if (currentView === "overview") updateOverviewTelemetrySilently();
+  } else if (type === "node_added" || type === "node_deleted") {
+    if (currentView === "nodes") loadNodes();
+    else if (currentView === "overview") loadOverview();
   } else if (type === "poll_settings_changed") {
     updateTopbarSyncIndicator(data);
   } else if (type === "command_executed" || type === "command_acknowledged") {
@@ -580,12 +635,14 @@ function handleLiveEvent(type, data) {
     if (currentView === "breaker") {
       updateBreakerDom(data);
     }
+    updateBreakerTilesSilently(data);
   } else if (type === "breaker_serial_log") {
     if (currentView === "breaker") {
       handleIncomingSerialLog(data);
     }
   }
 }
+
 
 // --- MODAL UTILITIES ---
 function openModal(htmlContent) {
@@ -667,7 +724,12 @@ function getIconForAppliance(name = '', func = '', iconKey = '') {
     garden: '🌳',
     breaker: '⚡',
     bell: '🔔',
-    heater: '♨️'
+    heater: '♨️',
+    voltage: '📊',
+    ir: '📡',
+    motion: '🚶',
+    temp: '🌡️',
+    sensor: '🔬'
   };
   if (iconKey && iconMap[iconKey]) return iconMap[iconKey];
 
@@ -676,11 +738,19 @@ function getIconForAppliance(name = '', func = '', iconKey = '') {
   if (s.includes('socket') || s.includes('tv') || s.includes('plug')) return '🔌';
   if (s.includes('decor') || s.includes('lamp') || s.includes('bed')) return '🏮';
   if (s.includes('pump') || s.includes('water')) return '🚰';
+  if (s.includes('voltage') || s.includes('mains')) return '📊';
+  if (s.includes('ir') || s.includes('remote')) return '📡';
+  if (s.includes('motion') || s.includes('pir')) return '🚶';
+  if (s.includes('temp') || s.includes('humid')) return '🌡️';
   if (s.includes('gate') || s.includes('door') || s.includes('motor')) return '🚪';
   if (s.includes('breaker')) return '⚡';
   if (s.includes('garden')) return '🌳';
   if (s.includes('ac') || s.includes('cool')) return '❄️';
   return '💡';
+}
+
+function getApplianceIcon(iconKey) {
+  return getIconForAppliance('', '', iconKey);
 }
 
 function onQuickRelayHomeChange(val) {
@@ -699,11 +769,9 @@ function renderQuickRelaysGridHtml() {
     const homeName = targetHome ? (targetHome.name || '').toLowerCase() : '';
 
     list = list.filter(r => {
-      // Find parent node
       const parentNode = (dashFleetNodes || []).find(n => n.node_id === r.node_id);
       if (parentNode && parentNode.home_id === targetHomeId) return true;
       if (homeName && r.room && r.room.toLowerCase().includes(homeName)) return true;
-      // Default to Primary Residence (homeId 1) for main fleet
       if (targetHomeId === 1 && (!parentNode || !parentNode.home_id)) return true;
       return false;
     });
@@ -751,21 +819,16 @@ function renderQuickRelaysGridHtml() {
 async function toggleRealQuickRelay(nodeId, channelId, currentState) {
   const nextState = !currentState;
 
-  // Update in-memory relay list
+  // 1. INSTANT OPTIMISTIC DOM UPDATE ACROSS ALL VIEWS (ZERO DELAY)
+  updateRelayUiState(nodeId, channelId, nextState);
+
+  // In-memory update
   const rel = (dashFleetRelays || []).find(r => r.node_id === nodeId && r.channel_id == channelId);
-  if (rel) rel.current_state = nextState;
+  const name = rel ? rel.name : `Relay ${channelId}`;
 
-  // Optimistic UI toggle
-  const btn = document.getElementById(`quick-relay-btn-${nodeId}-${channelId}`);
-  if (btn) {
-    btn.className = `dash-relay-toggle-btn ${nextState ? 'btn-on' : 'btn-off'}`;
-    btn.textContent = nextState ? 'ON' : 'OFF';
-  }
-
-  // Log entry
+  // Log entry in dashboard
   const now = new Date();
   const timeStr = now.toTimeString().split(' ')[0];
-  const name = rel ? rel.name : `Relay ${channelId}`;
   dashLogs.unshift({
     time: timeStr,
     tag: 'INFO',
@@ -774,23 +837,141 @@ async function toggleRealQuickRelay(nodeId, channelId, currentState) {
   if (dashLogs.length > 30) dashLogs.pop();
   renderDashLogs();
 
+  // 2. DISPATCH COMMAND WITH AUTH IN BACKGROUND
   try {
-    const res = await fetch(`${API_BASE}/relays/${nodeId}/${channelId}/command`, {
+    const res = await fetchWithAuth(`${API_BASE}/relays/${nodeId}/${channelId}/command`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "setState", state: nextState })
     });
     const result = await res.json();
-    showToast(`Relay "${name}" switched ${nextState ? 'ON' : 'OFF'}`, "success");
+    if (result.success) {
+      showToast(`Relay "${name}" switched ${nextState ? 'ON' : 'OFF'}`, "success");
+    } else {
+      updateRelayUiState(nodeId, channelId, currentState);
+      showToast(`Error: ${result.error || 'Failed to switch relay'}`, "error");
+    }
   } catch (err) {
-    showToast(`Failed to switch relay: ${err.message}`, "error");
+    updateRelayUiState(nodeId, channelId, currentState);
+    showToast(`Network error: ${err.message}`, "error");
   }
+}
+
+async function updateOverviewTelemetrySilently() {
+  try {
+    const [overviewRes, breakerRes] = await Promise.all([
+      fetch(`${API_BASE}/system/overview`).then(r => r.json()).catch(() => ({})),
+      fetchWithAuth(`${API_BASE}/breaker/status`).then(r => r.json()).catch(() => ({}))
+    ]);
+    const sys = overviewRes.system || {};
+
+    // Silently update topbar values
+    const netEl = document.getElementById('topbar-net-ip');
+    if (netEl && sys.host_ip) netEl.textContent = sys.host_ip;
+    const upEl = document.getElementById('topbar-uptime');
+    if (upEl && sys.uptime_str) upEl.textContent = sys.uptime_str;
+    const sideUpEl = document.getElementById('sidebar-uptime');
+    if (sideUpEl && sys.uptime_str) sideUpEl.textContent = `Uptime: ${sys.uptime_str}`;
+    const cpuEl = document.getElementById('topbar-cpu');
+    if (cpuEl && sys.cpu_percent != null) cpuEl.textContent = `${sys.cpu_percent}%`;
+    const ramEl = document.getElementById('topbar-ram');
+    if (ramEl && sys.ram_percent != null) ramEl.textContent = `${sys.ram_percent}%`;
+    const stEl = document.getElementById('topbar-storage');
+    if (stEl) stEl.textContent = `${sys.storage_percent || 28}% (${sys.storage_used_gb || 36} / ${sys.storage_total_gb || 128} GB)`;
+
+    // Silently update gauges
+    const radius = 25;
+    const circumference = 2 * Math.PI * radius;
+    const cpuPct = sys.cpu_percent || 14;
+    const ramPct = sys.ram_percent || 38;
+    const stPct = sys.storage_percent || 28;
+
+    const cpuBar = document.getElementById('gauge-bar-cpu');
+    if (cpuBar) cpuBar.style.strokeDashoffset = circumference - (cpuPct / 100) * circumference;
+    const cpuTxt = document.getElementById('gauge-pct-cpu');
+    if (cpuTxt) cpuTxt.textContent = `${cpuPct}%`;
+
+    const ramBar = document.getElementById('gauge-bar-ram');
+    if (ramBar) ramBar.style.strokeDashoffset = circumference - (ramPct / 100) * circumference;
+    const ramTxt = document.getElementById('gauge-pct-ram');
+    if (ramTxt) ramTxt.textContent = `${ramPct}%`;
+
+    const stBar = document.getElementById('gauge-bar-storage');
+    if (stBar) stBar.style.strokeDashoffset = circumference - (stPct / 100) * circumference;
+    const stTxt = document.getElementById('gauge-pct-storage');
+    if (stTxt) stTxt.textContent = `${stPct}%`;
+
+    const rFooter = document.getElementById('dash-resources-footer');
+    if (rFooter) {
+      rFooter.innerHTML = `
+        <span>CPU: ${sys.cpu_used_cores || '1.4'} / ${sys.cpu_cores || '4'} Cores</span>
+        <span>RAM: ${sys.ram_used_gb || '1.5'} / ${sys.ram_total_gb || '4'} GB</span>
+        <span>Disk: ${sys.storage_used_gb || '36'} / ${sys.storage_total_gb || '128'} GB</span>
+      `;
+    }
+
+    if (breakerRes) updateBreakerTilesSilently(breakerRes);
+  } catch (e) {}
+}
+
+function updateBreakerTilesSilently(breakerRes) {
+  if (!breakerRes) return;
+  const reading = breakerRes.reading || breakerRes;
+  const dec = reading.decoded || {};
+
+  const vEl = document.getElementById('breaker-val-voltage');
+  if (vEl && dec.voltage_v != null) vEl.textContent = dec.voltage_v;
+  const cEl = document.getElementById('breaker-val-current');
+  if (cEl && dec.current_a != null) cEl.textContent = Number(dec.current_a).toFixed(2);
+  const pEl = document.getElementById('breaker-val-power');
+  if (pEl && dec.power_w != null) pEl.textContent = `${dec.power_w}`;
+  const eEl = document.getElementById('breaker-val-energy');
+  if (eEl && dec.total_energy_kwh != null) eEl.textContent = dec.total_energy_kwh;
+  const tEl = document.getElementById('breaker-val-temp');
+  if (tEl && dec.temperature_c != null) tEl.textContent = dec.temperature_c;
+  const fEl = document.getElementById('breaker-val-freq');
+  if (fEl && dec.frequency_hz != null) fEl.textContent = dec.frequency_hz;
+  const lEl = document.getElementById('breaker-val-leak');
+  if (lEl && dec.leakage_current_ma != null) lEl.textContent = dec.leakage_current_ma;
+}
+
+function updateOverviewInPlace(overviewRes, breakerRes, totalNodes, onlineNodes, totalRelays, activeRelays, totalHomes, totalRooms, automationsTotal, automationsEnabled) {
+  const kpiDevices = document.getElementById('kpi-val-devices');
+  if (kpiDevices) kpiDevices.textContent = `${onlineNodes} / ${totalNodes}`;
+  const kpiDevicesSub = document.getElementById('kpi-sub-devices');
+  if (kpiDevicesSub) kpiDevicesSub.innerHTML = `<span>↑</span> ${totalNodes > 0 ? Math.round((onlineNodes / totalNodes) * 100) : 100}% Online`;
+
+  const kpiRelays = document.getElementById('kpi-val-relays');
+  if (kpiRelays) kpiRelays.textContent = `${totalRelays}`;
+  const kpiRelaysSub = document.getElementById('kpi-sub-relays');
+  if (kpiRelaysSub) kpiRelaysSub.innerHTML = `<span>↑</span> ${activeRelays} Active`;
+
+  const kpiHomes = document.getElementById('kpi-val-homes');
+  if (kpiHomes) kpiHomes.textContent = `${totalHomes}`;
+  const kpiHomesSub = document.getElementById('kpi-sub-homes');
+  if (kpiHomesSub) kpiHomesSub.innerHTML = `<span>↑</span> ${totalRooms} Rooms`;
+
+  const kpiAuto = document.getElementById('kpi-val-auto');
+  if (kpiAuto) kpiAuto.textContent = `${automationsTotal}`;
+  const kpiAutoSub = document.getElementById('kpi-sub-auto');
+  if (kpiAutoSub) kpiAutoSub.innerHTML = `<span>↑</span> ${automationsEnabled} Enabled`;
+
+  (dashFleetNodes || []).forEach(n => {
+    updateNodeUiStatus(n.node_id, n.is_online, n.rssi);
+  });
+
+  (dashFleetRelays || []).forEach(r => {
+    updateRelayUiState(r.node_id, r.channel_id, Boolean(r.current_state));
+  });
+
+  if (breakerRes) updateBreakerTilesSilently(breakerRes);
 }
 
 async function loadOverview() {
   const container = document.getElementById("content-area");
+  const isAlreadyRendered = document.getElementById("dash-v2-container") !== null;
+
   try {
-    // Fetch all real fleet and overview telemetry in parallel
     const [overviewRes, breakerRes, nodesRes, relaysRes, homesRes] = await Promise.all([
       fetch(`${API_BASE}/system/overview`).then(r => r.json()).catch(() => ({})),
       fetchWithAuth(`${API_BASE}/breaker/status`).then(r => r.json()).catch(() => ({})),
@@ -815,6 +996,26 @@ async function loadOverview() {
     const totalRoomsCount = (overviewRes.homes && overviewRes.homes.rooms) || 8;
     const automationsTotal = (overviewRes.automations && overviewRes.automations.total) || 4;
     const automationsEnabled = (overviewRes.automations && overviewRes.automations.enabled) || 3;
+
+    // Topbar dynamic updates
+    const netEl = document.getElementById('topbar-net-ip');
+    if (netEl && sys.host_ip) netEl.textContent = sys.host_ip;
+    const upEl = document.getElementById('topbar-uptime');
+    if (upEl && sys.uptime_str) upEl.textContent = sys.uptime_str;
+    const sideUpEl = document.getElementById('sidebar-uptime');
+    if (sideUpEl && sys.uptime_str) sideUpEl.textContent = `Uptime: ${sys.uptime_str}`;
+    const cpuEl = document.getElementById('topbar-cpu');
+    if (cpuEl && sys.cpu_percent != null) cpuEl.textContent = `${sys.cpu_percent}%`;
+    const ramEl = document.getElementById('topbar-ram');
+    if (ramEl && sys.ram_percent != null) ramEl.textContent = `${sys.ram_percent}%`;
+    const stEl = document.getElementById('topbar-storage');
+    if (stEl) stEl.textContent = `${sys.storage_percent || 28}% (${sys.storage_used_gb || 36} / ${sys.storage_total_gb || 128} GB)`;
+
+    // IF ALREADY RENDERED, PERFORM ZERO-FLICKER IN-PLACE UPDATE ONLY
+    if (isAlreadyRendered) {
+      updateOverviewInPlace(overviewRes, breakerRes, totalNodesCount, onlineNodesCount, totalRelaysCount, activeRelaysCount, totalHomesCount, totalRoomsCount, automationsTotal, automationsEnabled);
+      return;
+    }
 
     // Breaker live reading
     let breakerTelemetry = {
@@ -847,21 +1048,6 @@ async function loadOverview() {
       if (breakerRes.config && breakerRes.config.device_name) breakerTelemetry.device_name = breakerRes.config.device_name;
     }
 
-    // Topbar dynamic updates
-    const netEl = document.getElementById('topbar-net-ip');
-    if (netEl && sys.host_ip) netEl.textContent = sys.host_ip;
-    const upEl = document.getElementById('topbar-uptime');
-    if (upEl && sys.uptime_str) upEl.textContent = sys.uptime_str;
-    const sideUpEl = document.getElementById('sidebar-uptime');
-    if (sideUpEl && sys.uptime_str) sideUpEl.textContent = `Uptime: ${sys.uptime_str}`;
-    const cpuEl = document.getElementById('topbar-cpu');
-    if (cpuEl && sys.cpu_percent != null) cpuEl.textContent = `${sys.cpu_percent}%`;
-    const ramEl = document.getElementById('topbar-ram');
-    if (ramEl && sys.ram_percent != null) ramEl.textContent = `${sys.ram_percent}%`;
-    const stEl = document.getElementById('topbar-storage');
-    if (stEl) stEl.textContent = `${sys.storage_percent || 28}% (${sys.storage_used_gb || 36} / ${sys.storage_total_gb || 128} GB)`;
-
-    // Radial gauge math
     const radius = 25;
     const circumference = 2 * Math.PI * radius;
     const cpuPct = sys.cpu_percent || 14;
@@ -871,7 +1057,6 @@ async function loadOverview() {
     const ramOffset = circumference - (ramPct / 100) * circumference;
     const stOffset = circumference - (stPct / 100) * circumference;
 
-    // 24 Hour activity bars based on real data
     const chartData = [
       { h: '12 AM', on: 2, off: 1 },
       { h: '2 AM', on: 2, off: 1 },
@@ -888,7 +1073,7 @@ async function loadOverview() {
     ];
 
     container.innerHTML = `
-      <div class="dash-v2-container">
+      <div class="dash-v2-container" id="dash-v2-container">
         <!-- 1. TOP 6 KPI METRICS ROW -->
         <div class="dash-kpi-grid">
           <!-- 1. Connected Devices -->
@@ -900,8 +1085,8 @@ async function loadOverview() {
             </div>
             <div class="dash-kpi-info">
               <span class="dash-kpi-label">Connected Devices</span>
-              <span class="dash-kpi-value">${onlineNodesCount} / ${totalNodesCount}</span>
-              <span class="dash-kpi-sub">
+              <span class="dash-kpi-value" id="kpi-val-devices">${onlineNodesCount} / ${totalNodesCount}</span>
+              <span class="dash-kpi-sub" id="kpi-sub-devices">
                 <span>↑</span> ${totalNodesCount > 0 ? Math.round((onlineNodesCount / totalNodesCount) * 100) : 100}% Online
               </span>
             </div>
@@ -916,8 +1101,8 @@ async function loadOverview() {
             </div>
             <div class="dash-kpi-info">
               <span class="dash-kpi-label">Total Relays</span>
-              <span class="dash-kpi-value">${totalRelaysCount}</span>
-              <span class="dash-kpi-sub">
+              <span class="dash-kpi-value" id="kpi-val-relays">${totalRelaysCount}</span>
+              <span class="dash-kpi-sub" id="kpi-sub-relays">
                 <span>↑</span> ${activeRelaysCount} Active
               </span>
             </div>
@@ -932,8 +1117,8 @@ async function loadOverview() {
             </div>
             <div class="dash-kpi-info">
               <span class="dash-kpi-label">Homes / Sites</span>
-              <span class="dash-kpi-value">${totalHomesCount}</span>
-              <span class="dash-kpi-sub">
+              <span class="dash-kpi-value" id="kpi-val-homes">${totalHomesCount}</span>
+              <span class="dash-kpi-sub" id="kpi-sub-homes">
                 <span>↑</span> ${totalRoomsCount} Rooms
               </span>
             </div>
@@ -948,8 +1133,8 @@ async function loadOverview() {
             </div>
             <div class="dash-kpi-info">
               <span class="dash-kpi-label">Automations</span>
-              <span class="dash-kpi-value">${automationsTotal}</span>
-              <span class="dash-kpi-sub">
+              <span class="dash-kpi-value" id="kpi-val-auto">${automationsTotal}</span>
+              <span class="dash-kpi-sub" id="kpi-sub-auto">
                 <span>↑</span> ${automationsEnabled} Enabled
               </span>
             </div>
@@ -1016,13 +1201,13 @@ async function loadOverview() {
                     <th>Last Seen</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody id="dash-device-table-body">
                   ${dashFleetNodes.map((n, idx) => {
                     let typeName = n.hardware_type || 'ESP8266';
                     if (n.node_id && n.node_id.includes('30487D')) typeName = 'Tuya Breaker';
                     const ip = n.ip || n.ip_address || '192.168.1.25';
                     return `
-                      <tr>
+                      <tr id="dash-node-row-${n.node_id}">
                         <td style="color: #64748b; font-weight: 600;">${idx + 1}</td>
                         <td style="font-weight: 600; color: #ffffff;">${escapeHtml(n.name || n.node_id)}</td>
                         <td>
@@ -1040,15 +1225,15 @@ async function loadOverview() {
                         <td>
                           <div class="signal-cell">
                             <span>📶</span>
-                            <span>${n.rssi || -55} dBm</span>
+                            <span id="dash-node-rssi-${n.node_id}">${n.rssi || -55} dBm</span>
                           </div>
                         </td>
                         <td>
-                          <span class="${n.is_online ? 'status-pill-online' : 'status-pill-offline'}">
+                          <span id="dash-node-status-${n.node_id}" class="${n.is_online ? 'status-pill-online' : 'status-pill-offline'}">
                             ${n.is_online ? 'Online' : 'Offline'}
                           </span>
                         </td>
-                        <td style="color: #94a3b8;">${n.is_online ? 'Live' : 'Offline'}</td>
+                        <td id="dash-node-lastseen-${n.node_id}" style="color: #94a3b8;">${n.is_online ? 'Live' : 'Offline'}</td>
                       </tr>
                     `;
                   }).join('')}
@@ -1109,7 +1294,7 @@ async function loadOverview() {
                 <span class="breaker-sensor-label">Mains Voltage</span>
               </div>
               <div class="breaker-sensor-value-wrap">
-                <span class="breaker-sensor-value">${breakerTelemetry.voltage_v}</span>
+                <span class="breaker-sensor-value" id="breaker-val-voltage">${breakerTelemetry.voltage_v}</span>
                 <span class="breaker-sensor-unit">V AC</span>
               </div>
               <div class="breaker-sensor-sub">Grid Nominal: 230V ±10%</div>
@@ -1122,7 +1307,7 @@ async function loadOverview() {
                 <span class="breaker-sensor-label">Load Current</span>
               </div>
               <div class="breaker-sensor-value-wrap">
-                <span class="breaker-sensor-value" style="color: #38bdf8;">${breakerTelemetry.current_a}</span>
+                <span class="breaker-sensor-value" id="breaker-val-current" style="color: #38bdf8;">${breakerTelemetry.current_a}</span>
                 <span class="breaker-sensor-unit">A</span>
               </div>
               <div class="breaker-sensor-sub">Trip Limit: 30A / 63A</div>
@@ -1135,7 +1320,7 @@ async function loadOverview() {
                 <span class="breaker-sensor-label">Active Power</span>
               </div>
               <div class="breaker-sensor-value-wrap">
-                <span class="breaker-sensor-value" style="color: #10b981;">${breakerTelemetry.power_w}</span>
+                <span class="breaker-sensor-value" id="breaker-val-power" style="color: #10b981;">${breakerTelemetry.power_w}</span>
                 <span class="breaker-sensor-unit">W (${breakerTelemetry.power_kw} kW)</span>
               </div>
               <div class="breaker-sensor-sub">Power Factor: ${breakerTelemetry.power_factor}</div>
@@ -1148,7 +1333,7 @@ async function loadOverview() {
                 <span class="breaker-sensor-label">Total Energy</span>
               </div>
               <div class="breaker-sensor-value-wrap">
-                <span class="breaker-sensor-value" style="color: #a855f7;">${breakerTelemetry.total_energy_kwh}</span>
+                <span class="breaker-sensor-value" id="breaker-val-energy" style="color: #a855f7;">${breakerTelemetry.total_energy_kwh}</span>
                 <span class="breaker-sensor-unit">kWh</span>
               </div>
               <div class="breaker-sensor-sub">Cumulative Metering</div>
@@ -1161,7 +1346,7 @@ async function loadOverview() {
                 <span class="breaker-sensor-label">Internal Temp</span>
               </div>
               <div class="breaker-sensor-value-wrap">
-                <span class="breaker-sensor-value" style="color: #f59e0b;">${breakerTelemetry.temperature_c}</span>
+                <span class="breaker-sensor-value" id="breaker-val-temp" style="color: #f59e0b;">${breakerTelemetry.temperature_c}</span>
                 <span class="breaker-sensor-unit">°C</span>
               </div>
               <div class="breaker-sensor-sub">Trip Cutoff: 96°C</div>
@@ -1174,7 +1359,7 @@ async function loadOverview() {
                 <span class="breaker-sensor-label">Grid Frequency</span>
               </div>
               <div class="breaker-sensor-value-wrap">
-                <span class="breaker-sensor-value" style="color: #60a5fa;">${breakerTelemetry.frequency_hz}</span>
+                <span class="breaker-sensor-value" id="breaker-val-freq" style="color: #60a5fa;">${breakerTelemetry.frequency_hz}</span>
                 <span class="breaker-sensor-unit">Hz</span>
               </div>
               <div class="breaker-sensor-sub">Synchronous Grid</div>
@@ -1187,7 +1372,7 @@ async function loadOverview() {
                 <span class="breaker-sensor-label">Earth Leakage</span>
               </div>
               <div class="breaker-sensor-value-wrap">
-                <span class="breaker-sensor-value" style="color: #10b981;">${breakerTelemetry.leakage_current_ma}</span>
+                <span class="breaker-sensor-value" id="breaker-val-leak" style="color: #10b981;">${breakerTelemetry.leakage_current_ma}</span>
                 <span class="breaker-sensor-unit">mA</span>
               </div>
               <div class="breaker-sensor-sub">Trip Limit: 200 mA (Safe)</div>
@@ -1247,10 +1432,10 @@ async function loadOverview() {
               <div class="dash-gauge-item">
                 <svg class="dash-gauge-svg" viewBox="0 0 64 64">
                   <circle class="dash-gauge-bg" cx="32" cy="32" r="${radius}"></circle>
-                  <circle class="dash-gauge-bar cpu" cx="32" cy="32" r="${radius}" stroke-dasharray="${circumference}" stroke-dashoffset="${cpuOffset}"></circle>
+                  <circle id="gauge-bar-cpu" class="dash-gauge-bar cpu" cx="32" cy="32" r="${radius}" stroke-dasharray="${circumference}" stroke-dashoffset="${cpuOffset}"></circle>
                 </svg>
                 <div class="dash-gauge-text">
-                  <span class="dash-gauge-pct">${cpuPct}%</span>
+                  <span id="gauge-pct-cpu" class="dash-gauge-pct">${cpuPct}%</span>
                   <span class="dash-gauge-label">CPU</span>
                 </div>
               </div>
@@ -1259,10 +1444,10 @@ async function loadOverview() {
               <div class="dash-gauge-item">
                 <svg class="dash-gauge-svg" viewBox="0 0 64 64">
                   <circle class="dash-gauge-bg" cx="32" cy="32" r="${radius}"></circle>
-                  <circle class="dash-gauge-bar ram" cx="32" cy="32" r="${radius}" stroke-dasharray="${circumference}" stroke-dashoffset="${ramOffset}"></circle>
+                  <circle id="gauge-bar-ram" class="dash-gauge-bar ram" cx="32" cy="32" r="${radius}" stroke-dasharray="${circumference}" stroke-dashoffset="${ramOffset}"></circle>
                 </svg>
                 <div class="dash-gauge-text">
-                  <span class="dash-gauge-pct">${ramPct}%</span>
+                  <span id="gauge-pct-ram" class="dash-gauge-pct">${ramPct}%</span>
                   <span class="dash-gauge-label">RAM</span>
                 </div>
               </div>
@@ -1271,16 +1456,16 @@ async function loadOverview() {
               <div class="dash-gauge-item">
                 <svg class="dash-gauge-svg" viewBox="0 0 64 64">
                   <circle class="dash-gauge-bg" cx="32" cy="32" r="${radius}"></circle>
-                  <circle class="dash-gauge-bar storage" cx="32" cy="32" r="${radius}" stroke-dasharray="${circumference}" stroke-dashoffset="${stOffset}"></circle>
+                  <circle id="gauge-bar-storage" class="dash-gauge-bar storage" cx="32" cy="32" r="${radius}" stroke-dasharray="${circumference}" stroke-dashoffset="${stOffset}"></circle>
                 </svg>
                 <div class="dash-gauge-text">
-                  <span class="dash-gauge-pct">${stPct}%</span>
+                  <span id="gauge-pct-storage" class="dash-gauge-pct">${stPct}%</span>
                   <span class="dash-gauge-label">Storage</span>
                 </div>
               </div>
             </div>
 
-            <div class="dash-resources-footer">
+            <div class="dash-resources-footer" id="dash-resources-footer">
               <span>CPU: ${sys.cpu_used_cores || '1.4'} / ${sys.cpu_cores || '4'} Cores</span>
               <span>RAM: ${sys.ram_used_gb || '1.5'} / ${sys.ram_total_gb || '4'} GB</span>
               <span>Disk: ${sys.storage_used_gb || '36'} / ${sys.storage_total_gb || '128'} GB</span>
@@ -2150,6 +2335,11 @@ let currentRelaySubTab = 'device'; // 'device' | 'room' | 'home' | 'pin-matrix'
 let relayCategoryFilter = 'all'; // 'all' | 'active' | 'inactive' | 'lights' | 'fans' | 'sockets' | 'pumps' | 'breakers'
 let relaySearchKeyword = '';
 let selectedRelayNodeId = '';
+let matrixFilterHome = 'all';
+let matrixFilterNode = 'all';
+let matrixFilterRole = 'all';
+let matrixFilterRoom = 'all';
+let matrixSearchKeyword = '';
 
 async function loadRelays() {
   const container = document.getElementById("content-area");
@@ -2306,7 +2496,7 @@ function renderActiveRelaySubView(nodes, relays, homes, getIconForChannel) {
   } else if (currentRelaySubTab === 'home') {
     return renderRelaysByHomeView(nodes, relays, homes, getIconForChannel);
   } else if (currentRelaySubTab === 'pin-matrix') {
-    return renderRelaysPinMatrixView(nodes, relays);
+    return renderRelaysPinMatrixView(nodes, relays, homes);
   } else {
     // Default: 'device' (Per-Board View matching Screenshot 2 Panel ②)
     return renderRelaysByDeviceView(nodes, relays, getIconForChannel);
@@ -2392,7 +2582,8 @@ function renderRelaysByDeviceView(nodes, relays, getIconForChannel) {
                     <small style="color: #64748b; font-size: 11px;">GPIO ${c.pin != null ? c.pin : c.channel_id}</small>
                   </div>
                 </div>
-                <div style="display: flex; align-items: center; gap: 10px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;" title="Configure Pin & Name" onclick="openRelayChannelConfigModal('${c.node_id}', ${c.channel_id})">⚙</button>
                   <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;" title="Pulse 500ms" onclick="pulseRelay('${c.node_id}', ${c.channel_id})">⚡ Pulse</button>
                   <label class="switch-toggle-wrap">
                     <input type="checkbox" id="relay-chk-${c.node_id}-${c.channel_id}" ${isOn ? 'checked' : ''} onchange="toggleRelay('${c.node_id}', ${c.channel_id}, this.checked)">
@@ -2467,7 +2658,8 @@ function renderRelaysByRoomView(relays, getIconForChannel) {
                         <span class="relay-channel-name">${escapeHtml(c.name)}</span>
                       </div>
                     </div>
-                    <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;" title="Configure Pin & Name" onclick="openRelayChannelConfigModal('${c.node_id}', ${c.channel_id})">⚙</button>
                       <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;" title="Pulse 500ms" onclick="pulseRelay('${c.node_id}', ${c.channel_id})">⚡ Pulse</button>
                       <label class="switch-toggle-wrap">
                         <input type="checkbox" id="relay-chk-${c.node_id}-${c.channel_id}" ${isOn ? 'checked' : ''} onchange="toggleRelay('${c.node_id}', ${c.channel_id}, this.checked)">
@@ -2545,57 +2737,223 @@ function renderRelaysByHomeView(nodes, relays, homes, getIconForChannel) {
   `;
 }
 
-// 4. Pin & Hardware Matrix View
-function renderRelaysPinMatrixView(nodes, relays) {
+// 4. Pin & Hardware Matrix View (With Home, Node, Role & Room Filtering + Pin Assignment & Sensor Configuration)
+function renderRelaysPinMatrixView(nodes, relays, homes = []) {
+  // Extract unique rooms
+  const uniqueRooms = Array.from(new Set(relays.map(r => r.room || 'General').filter(Boolean))).sort();
+
+  // Apply filters
+  const filteredRelays = relays.filter(r => {
+    // 1. Home filter
+    if (matrixFilterHome !== 'all') {
+      if (String(r.home_id || 'none') !== String(matrixFilterHome)) return false;
+    }
+    // 2. Node filter
+    if (matrixFilterNode !== 'all') {
+      if (r.node_id !== matrixFilterNode) return false;
+    }
+    // 3. Room filter
+    if (matrixFilterRoom !== 'all') {
+      if ((r.room || 'General') !== matrixFilterRoom) return false;
+    }
+    // 4. Pin Role filter
+    if (matrixFilterRole !== 'all') {
+      const isSensor = r.pin_mode === 'SENSOR_INPUT' || r.function === 'Sensor' || Boolean(r.sensor_type);
+      if (matrixFilterRole === 'relay' && isSensor) return false;
+      if (matrixFilterRole === 'sensor' && !isSensor) return false;
+      if (matrixFilterRole === 'voltage' && r.sensor_type !== 'VOLTAGE' && r.function !== 'Voltage Sensor') return false;
+      if (matrixFilterRole === 'ir' && r.sensor_type !== 'IR_RECEIVER' && r.sensor_type !== 'IR_TRANSMITTER' && !r.function?.includes('IR')) return false;
+      if (matrixFilterRole === 'motion' && r.sensor_type !== 'PIR_MOTION' && r.sensor_type !== 'DOOR_WINDOW' && !r.function?.includes('Motion')) return false;
+      if (matrixFilterRole === 'temp' && r.sensor_type !== 'TEMP_HUMIDITY' && !r.function?.includes('Temp')) return false;
+    }
+    // 5. Search filter
+    if (matrixSearchKeyword) {
+      const q = matrixSearchKeyword.toLowerCase();
+      const str = `${r.name || ''} ${r.node_name || ''} ${r.node_id || ''} ${r.room || ''} ${r.pin || ''} ${r.function || ''} ${r.sensor_type || ''}`.toLowerCase();
+      if (!str.includes(q)) return false;
+    }
+    return true;
+  });
+
   return `
+    <!-- Matrix Filters Toolbar -->
+    <div style="background: rgba(15, 23, 42, 0.65); backdrop-filter: blur(8px); border: 1px solid rgba(56, 189, 248, 0.15); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;">
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; flex: 1;">
+        <!-- Filter by Home -->
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <label style="font-size: 11px; color: #94a3b8; font-weight: 600;">Home / Site</label>
+          <select class="filter-select-enhanced" style="min-width: 140px; padding: 6px 10px; font-size: 12px;" onchange="handleMatrixFilterChange('home', this.value)">
+            <option value="all" ${matrixFilterHome === 'all' ? 'selected' : ''}>🌐 All Homes (${homes.length})</option>
+            ${homes.map(h => `<option value="${h.id}" ${String(matrixFilterHome) === String(h.id) ? 'selected' : ''}>🏠 ${escapeHtml(h.name)}</option>`).join('')}
+            <option value="none" ${matrixFilterHome === 'none' ? 'selected' : ''}>Unassigned</option>
+          </select>
+        </div>
+
+        <!-- Filter by Node / Device -->
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <label style="font-size: 11px; color: #94a3b8; font-weight: 600;">Hardware Node</label>
+          <select class="filter-select-enhanced" style="min-width: 180px; padding: 6px 10px; font-size: 12px;" onchange="handleMatrixFilterChange('node', this.value)">
+            <option value="all" ${matrixFilterNode === 'all' ? 'selected' : ''}>🖥️ All Nodes (${nodes.length})</option>
+            ${nodes.map(n => `<option value="${n.node_id}" ${matrixFilterNode === n.node_id ? 'selected' : ''}>${escapeHtml(n.name || n.node_id)}</option>`).join('')}
+          </select>
+        </div>
+
+        <!-- Filter by Pin Role -->
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <label style="font-size: 11px; color: #94a3b8; font-weight: 600;">Pin Role / Function</label>
+          <select class="filter-select-enhanced" style="min-width: 160px; padding: 6px 10px; font-size: 12px;" onchange="handleMatrixFilterChange('role', this.value)">
+            <option value="all" ${matrixFilterRole === 'all' ? 'selected' : ''}>⚡ All Pin Roles</option>
+            <option value="relay" ${matrixFilterRole === 'relay' ? 'selected' : ''}>⚡ Relay Outputs</option>
+            <option value="sensor" ${matrixFilterRole === 'sensor' ? 'selected' : ''}>📡 All Sensor Inputs</option>
+            <option value="voltage" ${matrixFilterRole === 'voltage' ? 'selected' : ''}>📊 Voltage Sensors (A0 / ADC)</option>
+            <option value="ir" ${matrixFilterRole === 'ir' ? 'selected' : ''}>📶 IR Remote (RX / TX)</option>
+            <option value="motion" ${matrixFilterRole === 'motion' ? 'selected' : ''}>🚶 Motion & Door Sensors</option>
+            <option value="temp" ${matrixFilterRole === 'temp' ? 'selected' : ''}>🌡️ Temp & Humidity</option>
+          </select>
+        </div>
+
+        <!-- Filter by Room -->
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <label style="font-size: 11px; color: #94a3b8; font-weight: 600;">Room</label>
+          <select class="filter-select-enhanced" style="min-width: 130px; padding: 6px 10px; font-size: 12px;" onchange="handleMatrixFilterChange('room', this.value)">
+            <option value="all" ${matrixFilterRoom === 'all' ? 'selected' : ''}>🚪 All Rooms (${uniqueRooms.length})</option>
+            ${uniqueRooms.map(rm => `<option value="${escapeHtml(rm)}" ${matrixFilterRoom === rm ? 'selected' : ''}>${escapeHtml(rm)}</option>`).join('')}
+          </select>
+        </div>
+
+        <!-- Search Box -->
+        <div style="display: flex; flex-direction: column; gap: 4px; min-width: 170px;">
+          <label style="font-size: 11px; color: #94a3b8; font-weight: 600;">Live Search</label>
+          <input type="text" class="devices-search-input" style="padding: 6px 10px; font-size: 12px;" placeholder="Search pin, GPIO, name..." value="${escapeHtml(matrixSearchKeyword)}" oninput="handleMatrixSearchInput(this.value)">
+        </div>
+
+        ${(matrixFilterHome !== 'all' || matrixFilterNode !== 'all' || matrixFilterRole !== 'all' || matrixFilterRoom !== 'all' || matrixSearchKeyword) ? `
+          <div style="display: flex; flex-direction: column; justify-content: flex-end; padding-top: 18px;">
+            <button class="btn btn-secondary" style="font-size: 11px; padding: 5px 8px;" onclick="resetMatrixFilters()">✕ Reset</button>
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Action Buttons -->
+      <div style="display: flex; gap: 8px; align-items: center; padding-top: 14px;">
+        <button class="btn btn-primary" onclick="openAssignNewPinModal()" style="font-weight: 600; font-size: 12px; padding: 8px 14px; background: linear-gradient(135deg, #0284c7, #2563eb); border: none; border-radius: 8px; box-shadow: 0 4px 12px rgba(2, 132, 199, 0.35); display: inline-flex; align-items: center; gap: 6px;">
+          <span>➕</span> Assign Pin to Node
+        </button>
+        <button class="btn btn-secondary" onclick="syncPinsWithHardware()" style="font-size: 12px; padding: 8px 12px;">
+          <span>🔄</span> Sync Hardware
+        </button>
+      </div>
+    </div>
+
+    <!-- Pin Matrix Table -->
     <div class="pin-matrix-table-wrap">
       <table class="pin-matrix-table">
         <thead>
           <tr>
             <th>Node / Board</th>
             <th>CH #</th>
-            <th>Relay Name</th>
+            <th>Pin Name</th>
             <th>Room</th>
-            <th>Hardware GPIO Pin</th>
-            <th>Invert Logic</th>
-            <th>Power-On State</th>
-            <th>Inching / Pulse</th>
-            <th>Live State</th>
-            <th style="text-align: right;">Action</th>
+            <th>Hardware GPIO</th>
+            <th>Role / Function</th>
+            <th>Config & Logic</th>
+            <th>Live State / Value</th>
+            <th style="text-align: right;">Actions</th>
           </tr>
         </thead>
         <tbody>
-          ${relays.length === 0 ? '<tr><td colspan="10" style="padding: 24px; text-align: center; color: #64748b;">No relays match the current filter.</td></tr>' : relays.map(r => {
+          ${filteredRelays.length === 0 ? `
+            <tr>
+              <td colspan="9" style="padding: 32px; text-align: center; color: #64748b;">
+                <div style="font-size: 28px; margin-bottom: 8px;">🔌</div>
+                <div style="font-size: 14px; font-weight: 600; color: #94a3b8;">No hardware pins match the current filter.</div>
+                <div style="font-size: 12px; color: #64748b; margin-top: 4px;">Try adjusting filters or click "+ Assign Pin to Node" to add a new pin.</div>
+              </td>
+            </tr>
+          ` : filteredRelays.map(r => {
             const isOn = Boolean(r.current_state);
             const pinNum = r.pin != null ? r.pin : r.channel_id;
+            const isSensor = (r.pin_mode === 'SENSOR_INPUT' || r.function === 'Sensor' || Boolean(r.sensor_type));
+            const iconSymbol = getApplianceIcon(r.icon || 'light');
+            const pinLabel = getGpioPinLabel(pinNum);
+
+            // Role Badge styling
+            let roleBadgeHtml = '';
+            if (r.sensor_type === 'VOLTAGE' || r.function === 'Voltage Sensor') {
+              roleBadgeHtml = '<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(245, 158, 11, 0.15); color: #f59e0b; font-weight: 700; border: 1px solid rgba(245, 158, 11, 0.3);">📊 Voltage Sensor</span>';
+            } else if (r.sensor_type === 'IR_RECEIVER' || r.function === 'IR Receiver') {
+              roleBadgeHtml = '<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(168, 85, 247, 0.15); color: #c084fc; font-weight: 700; border: 1px solid rgba(168, 85, 247, 0.3);">📡 IR Receiver</span>';
+            } else if (r.sensor_type === 'IR_TRANSMITTER' || r.function === 'IR Transmitter') {
+              roleBadgeHtml = '<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(6, 182, 212, 0.15); color: #22d3ee; font-weight: 700; border: 1px solid rgba(6, 182, 212, 0.3);">📶 IR Blaster</span>';
+            } else if (r.sensor_type === 'PIR_MOTION' || r.function === 'PIR Motion') {
+              roleBadgeHtml = '<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(34, 197, 94, 0.15); color: #4ade80; font-weight: 700; border: 1px solid rgba(34, 197, 94, 0.3);">🚶 Motion Sensor</span>';
+            } else if (isSensor) {
+              roleBadgeHtml = `<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(139, 92, 246, 0.15); color: #a78bfa; font-weight: 700; border: 1px solid rgba(139, 92, 246, 0.3);">🔬 Sensor (${escapeHtml(r.sensor_type || 'Input')})</span>`;
+            } else {
+              roleBadgeHtml = '<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(16, 185, 129, 0.15); color: #10b981; font-weight: 700; border: 1px solid rgba(16, 185, 129, 0.3);">⚡ Relay Output</span>';
+            }
+
+            // Config detail styling
+            let configDetailHtml = '';
+            if (isSensor) {
+              const intervalText = r.sensor_config?.interval_ms ? (r.sensor_config.interval_ms >= 1000 ? (r.sensor_config.interval_ms / 1000) + 's poll' : r.sensor_config.interval_ms + 'ms poll') : 'On-Event';
+              configDetailHtml = `<span style="color: #cbd5e1; font-size: 11px;">${escapeHtml(r.sensor_type || 'Generic')} (${intervalText})</span>`;
+            } else {
+              configDetailHtml = `
+                <span style="font-size: 10px; padding: 2px 5px; border-radius: 4px; background: ${r.active_low ? 'rgba(245, 158, 11, 0.12)' : 'rgba(56, 189, 248, 0.12)'}; color: ${r.active_low ? '#f59e0b' : '#38bdf8'}; font-weight: 600;">
+                  ${r.active_low ? 'Active-Low' : 'Active-High'}
+                </span>
+                <span style="color: #94a3b8; font-size: 11px; margin-left: 4px;">${r.pulse_duration ? r.pulse_duration + 'ms' : 'Standard'}</span>
+              `;
+            }
+
+            // Live State / Reading element
+            let liveControlHtml = '';
+            if (isSensor) {
+              if (r.sensor_type === 'VOLTAGE' || r.function === 'Voltage Sensor') {
+                const voltVal = r.last_sensor_value != null ? r.last_sensor_value : (r.node_id === 'NODE-30487DE85D5C' ? 255 : '--');
+                liveControlHtml = `<span style="font-weight: 700; color: #f59e0b; font-family: monospace; font-size: 12px; background: rgba(245, 158, 11, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(245, 158, 11, 0.3);">⚡ ${voltVal} V</span>`;
+              } else if (r.sensor_type === 'IR_RECEIVER' || r.function === 'IR Receiver') {
+                liveControlHtml = `<span style="font-weight: 700; color: #c084fc; font-family: monospace; font-size: 11px; background: rgba(168, 85, 247, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(168, 85, 247, 0.3);">📡 ${escapeHtml(r.last_sensor_str || 'Listening...')}</span>`;
+              } else if (r.sensor_type === 'IR_TRANSMITTER' || r.function === 'IR Transmitter') {
+                liveControlHtml = `<button class="btn btn-secondary" style="font-size: 10px; padding: 3px 7px; color: #22d3ee;" onclick="openIrTransmitModal('${r.node_id}')">🚀 Send Code</button>`;
+              } else if (r.sensor_type === 'PIR_MOTION' || r.function === 'PIR Motion') {
+                const motionState = r.last_sensor_str || 'Clear';
+                liveControlHtml = `<span style="font-weight: 700; color: #4ade80; font-family: monospace; font-size: 11px; background: rgba(34, 197, 94, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(34, 197, 94, 0.3);">🚶 ${escapeHtml(motionState)}</span>`;
+              } else {
+                const valText = r.last_sensor_str || (r.last_sensor_value != null ? r.last_sensor_value + ' ' + (r.sensor_unit || '') : 'Active');
+                liveControlHtml = `<span style="font-weight: 700; color: #38bdf8; font-family: monospace; font-size: 11px; background: rgba(56, 189, 248, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(56, 189, 248, 0.3);">${escapeHtml(valText)}</span>`;
+              }
+            } else {
+              liveControlHtml = `
+                <label class="switch-toggle-wrap" style="transform: scale(0.85); transform-origin: left center;">
+                  <input type="checkbox" id="relay-chk-${r.node_id}-${r.channel_id}" ${isOn ? 'checked' : ''} onchange="toggleRelay('${r.node_id}', ${r.channel_id}, this.checked)">
+                  <span class="switch-toggle-slider">
+                    <span class="switch-toggle-label" id="relay-lbl-${r.node_id}-${r.channel_id}">${isOn ? 'ON' : 'OFF'}</span>
+                  </span>
+                </label>
+              `;
+            }
 
             return `
               <tr>
                 <td>
                   <strong style="color: #fff;">${escapeHtml(r.node_name || r.node_id)}</strong>
+                  ${r.home_name ? `<span style="font-size: 10px; background: rgba(56, 189, 248, 0.15); color: #38bdf8; padding: 1px 6px; border-radius: 4px; margin-left: 6px;">🏠 ${escapeHtml(r.home_name)}</span>` : ''}
                   <br><small style="color: #64748b; font-family: monospace;">${escapeHtml(r.node_id)}</small>
                 </td>
                 <td style="color: #38bdf8; font-weight: 700;">CH${r.channel_id}</td>
-                <td style="font-weight: 600; color: #fff;">${escapeHtml(r.name)}</td>
+                <td style="font-weight: 600; color: #fff;">
+                  <span style="margin-right: 6px;">${iconSymbol}</span>${escapeHtml(r.name)}
+                </td>
                 <td style="color: #94a3b8;">${escapeHtml(r.room || 'General')}</td>
-                <td><span class="gpio-badge">GPIO ${pinNum}</span></td>
-                <td>
-                  <span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: ${r.active_low ? 'rgba(245, 158, 11, 0.15)' : 'rgba(56, 189, 248, 0.15)'}; color: ${r.active_low ? '#f59e0b' : '#38bdf8'}; font-weight: 600;">
-                    ${r.active_low ? 'Active-Low' : 'Active-High'}
-                  </span>
-                </td>
-                <td style="color: #cbd5e1; font-size: 12px;">${r.default_state || 'Remember Last'}</td>
-                <td style="color: #94a3b8; font-size: 12px;">${r.pulse_duration ? r.pulse_duration + 'ms' : 'Standard'}</td>
-                <td>
-                  <label class="switch-toggle-wrap" style="transform: scale(0.85); transform-origin: left center;">
-                    <input type="checkbox" id="relay-chk-${r.node_id}-${r.channel_id}" ${isOn ? 'checked' : ''} onchange="toggleRelay('${r.node_id}', ${r.channel_id}, this.checked)">
-                    <span class="switch-toggle-slider">
-                      <span class="switch-toggle-label" id="relay-lbl-${r.node_id}-${r.channel_id}">${isOn ? 'ON' : 'OFF'}</span>
-                    </span>
-                  </label>
-                </td>
-                <td style="text-align: right;">
-                  <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;" onclick="openRelayChannelConfigModal('${r.node_id}', ${r.channel_id})">⚙ Edit Pin</button>
+                <td><span class="gpio-badge" style="font-family: monospace;">${pinLabel}</span></td>
+                <td>${roleBadgeHtml}</td>
+                <td>${configDetailHtml}</td>
+                <td>${liveControlHtml}</td>
+                <td style="text-align: right; white-space: nowrap;">
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px; margin-right: 4px;" onclick="openRelayChannelConfigModal('${r.node_id}', ${r.channel_id})">⚙ Configure</button>
+                  <button class="btn btn-danger" style="font-size: 11px; padding: 4px 7px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); color: #f87171;" title="Unassign pin" onclick="handleUnassignPin('${r.node_id}', ${r.channel_id}, '${escapeHtml(r.name)}')">🗑️</button>
                 </td>
               </tr>
             `;
@@ -2604,6 +2962,28 @@ function renderRelaysPinMatrixView(nodes, relays) {
       </table>
     </div>
   `;
+}
+
+function handleMatrixFilterChange(type, value) {
+  if (type === 'home') matrixFilterHome = value;
+  if (type === 'node') matrixFilterNode = value;
+  if (type === 'role') matrixFilterRole = value;
+  if (type === 'room') matrixFilterRoom = value;
+  renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
+}
+
+function handleMatrixSearchInput(val) {
+  matrixSearchKeyword = val;
+  renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
+}
+
+function resetMatrixFilters() {
+  matrixFilterHome = 'all';
+  matrixFilterNode = 'all';
+  matrixFilterRole = 'all';
+  matrixFilterRoom = 'all';
+  matrixSearchKeyword = '';
+  renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
 }
 
 function switchRelaySubTab(tab) {
@@ -2679,146 +3059,534 @@ async function handleBatchHomeRelays(homeId, targetState) {
   }
 }
 
+function getGpioPinLabel(pin) {
+  const p = Number(pin);
+  if (p === 5) return 'GPIO 5 (D1)';
+  if (p === 4) return 'GPIO 4 (D2)';
+  if (p === 0) return 'GPIO 0 (D3)';
+  if (p === 2) return 'GPIO 2 (D4)';
+  if (p === 14) return 'GPIO 14 (D5)';
+  if (p === 12) return 'GPIO 12 (D6)';
+  if (p === 13) return 'GPIO 13 (D7)';
+  if (p === 15) return 'GPIO 15 (D8)';
+  if (p === 16) return 'GPIO 16 (D0)';
+  if (p === 17 || p === 1000) return 'A0 (ADC0)';
+  if (p >= 100 && p <= 107) return `P${p - 100} (PCF8574)`;
+  return `GPIO ${p}`;
+}
+
 function openRelayChannelConfigModal(nodeId, channelId) {
   const r = (fleetData.relays || []).find(ch => ch.node_id === nodeId && ch.channel_id == channelId) || {};
   const currentIcon = r.icon || 'light';
+  const currentPin = r.pin != null ? r.pin : channelId;
+  const isSensor = (r.pin_mode === 'SENSOR_INPUT' || r.function === 'Sensor' || Boolean(r.sensor_type));
+  const currentRole = r.sensor_type ? r.sensor_type : (isSensor ? 'GENERIC_DIGITAL' : 'RELAY_OUTPUT');
+  const sensorCfg = r.sensor_config || {};
+  const uniqueRooms = Array.from(new Set((fleetData.relays || []).map(ch => ch.room || 'General').filter(Boolean))).sort();
 
   const html = `
-    <div class="modal-content" style="max-width: 520px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+    <div class="modal-content" style="max-width: 560px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
       <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 16px;">
-        <h3 style="margin: 0; color: #fff; font-size: 16px;">Configure Channel: ${escapeHtml(r.name || 'CH' + channelId)}</h3>
+        <div>
+          <h3 style="margin: 0; color: #fff; font-size: 16px;">Configure Pin: ${escapeHtml(r.name || 'CH' + channelId)}</h3>
+          <small style="color: #64748b; font-family: monospace;">Node: ${escapeHtml(nodeId)} | Channel: CH${channelId}</small>
+        </div>
         <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
       </div>
 
-      <div class="form-group" style="margin-bottom: 12px;">
-        <label class="settings-field-label">Relay Channel Name</label>
-        <input type="text" id="cfg-relay-name" class="settings-input" style="width: 100%; box-sizing: border-box;" value="${escapeHtml(r.name || '')}">
-      </div>
-
-      <div class="form-group" style="margin-bottom: 12px;">
-        <label class="settings-field-label">Appliance / Pin Icon</label>
-        <select id="cfg-relay-icon" class="filter-select-enhanced" style="width: 100%;">
-          <option value="light" ${currentIcon === 'light' ? 'selected' : ''}>💡 Light / Ceiling Lamp</option>
-          <option value="fan" ${currentIcon === 'fan' ? 'selected' : ''}>🌀 Ceiling Fan / Exhaust</option>
-          <option value="socket" ${currentIcon === 'socket' ? 'selected' : ''}>🔌 Socket / General Outlet</option>
-          <option value="pump" ${currentIcon === 'pump' ? 'selected' : ''}>🚰 Water Pump / Motor</option>
-          <option value="gate" ${currentIcon === 'gate' ? 'selected' : ''}>🚪 Automatic Gate / Door</option>
-          <option value="tv" ${currentIcon === 'tv' ? 'selected' : ''}>📺 TV / Entertainment</option>
-          <option value="ac" ${currentIcon === 'ac' ? 'selected' : ''}>❄️ AC / HVAC Unit</option>
-          <option value="porch" ${currentIcon === 'porch' ? 'selected' : ''}>🏮 Porch / Outdoor Lantern</option>
-          <option value="garden" ${currentIcon === 'garden' ? 'selected' : ''}>🌳 Garden / Lawn Light</option>
-          <option value="breaker" ${currentIcon === 'breaker' ? 'selected' : ''}>⚡ Circuit Breaker / Feeder</option>
-          <option value="bell" ${currentIcon === 'bell' ? 'selected' : ''}>🔔 Chime / Doorbell</option>
-          <option value="heater" ${currentIcon === 'heater' ? 'selected' : ''}>♨️ Water Heater / Geyser</option>
+      <!-- Pin Role / Type Selector -->
+      <div class="form-group" style="margin-bottom: 14px;">
+        <label class="settings-field-label" style="color: #38bdf8; font-weight: 700;">Hardware Role / Mode</label>
+        <select id="cfg-pin-role" class="filter-select-enhanced" style="width: 100%; font-weight: 600;" onchange="toggleConfigPinRole(this.value)">
+          <option value="RELAY_OUTPUT" ${!isSensor ? 'selected' : ''}>⚡ Relay Output (Switch Appliance ON / OFF)</option>
+          <option value="VOLTAGE" ${r.sensor_type === 'VOLTAGE' || r.function === 'Voltage Sensor' ? 'selected' : ''}>📊 Voltage Sensor (AC / DC Voltage on A0 / ADC)</option>
+          <option value="IR_RECEIVER" ${r.sensor_type === 'IR_RECEIVER' || r.function === 'IR Receiver' ? 'selected' : ''}>📡 IR Receiver (Decode Remote Control Signals)</option>
+          <option value="IR_TRANSMITTER" ${r.sensor_type === 'IR_TRANSMITTER' || r.function === 'IR Transmitter' ? 'selected' : ''}>📶 IR Blaster / Transmitter (Transmit Remote Codes)</option>
+          <option value="PIR_MOTION" ${r.sensor_type === 'PIR_MOTION' || r.function === 'PIR Motion' ? 'selected' : ''}>🚶 PIR Motion / Radar Detector</option>
+          <option value="DOOR_WINDOW" ${r.sensor_type === 'DOOR_WINDOW' ? 'selected' : ''}>🚪 Magnetic Door / Window Sensor</option>
+          <option value="TEMP_HUMIDITY" ${r.sensor_type === 'TEMP_HUMIDITY' ? 'selected' : ''}>🌡️ Temperature & Humidity (DHT11 / DHT22)</option>
+          <option value="GENERIC_DIGITAL" ${r.sensor_type === 'GENERIC_DIGITAL' ? 'selected' : ''}>🔘 Generic Digital Input (Pushbutton / Limit Switch)</option>
+          <option value="GENERIC_ANALOG" ${r.sensor_type === 'GENERIC_ANALOG' ? 'selected' : ''}>📈 Generic Analog Input (ADC)</option>
         </select>
       </div>
 
-      <div class="form-group" style="margin-bottom: 12px;">
-        <label class="settings-field-label">Hardware GPIO Pin</label>
-        <input type="number" id="cfg-relay-pin" class="settings-input" style="width: 100%; box-sizing: border-box;" value="${r.pin != null ? r.pin : channelId}">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+        <div class="form-group">
+          <label class="settings-field-label">Pin Label / Name</label>
+          <input type="text" id="cfg-relay-name" class="settings-input" style="width: 100%; box-sizing: border-box;" value="${escapeHtml(r.name || '')}">
+        </div>
+
+        <div class="form-group">
+          <label class="settings-field-label">Assigned Room</label>
+          <select id="cfg-relay-room" class="filter-select-enhanced" style="width: 100%;">
+            ${uniqueRooms.map(rm => `<option value="${escapeHtml(rm)}" ${(r.room || 'General') === rm ? 'selected' : ''}>${escapeHtml(rm)}</option>`).join('')}
+            ${!uniqueRooms.includes(r.room) && r.room ? `<option value="${escapeHtml(r.room)}" selected>${escapeHtml(r.room)}</option>` : ''}
+          </select>
+        </div>
       </div>
 
-      <div class="form-group" style="margin-bottom: 12px;">
-        <label class="settings-field-label">Pin Invert Logic</label>
-        <select id="cfg-relay-logic" class="filter-select-enhanced" style="width: 100%;">
-          <option value="1" ${r.active_low ? 'selected' : ''}>Active-Low (Relay ON when GPIO LOW - Standard Board)</option>
-          <option value="0" ${!r.active_low ? 'selected' : ''}>Active-High (Relay ON when GPIO HIGH)</option>
-        </select>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+        <div class="form-group">
+          <label class="settings-field-label">Hardware Pin (GPIO / ADC)</label>
+          <select id="cfg-relay-pin-preset" class="filter-select-enhanced" style="width: 100%; margin-bottom: 6px;" onchange="document.getElementById('cfg-relay-pin').value = this.value">
+            <option value="5" ${currentPin == 5 ? 'selected' : ''}>GPIO 5 (D1 - SCL)</option>
+            <option value="4" ${currentPin == 4 ? 'selected' : ''}>GPIO 4 (D2 - SDA)</option>
+            <option value="14" ${currentPin == 14 ? 'selected' : ''}>GPIO 14 (D5 - SCK)</option>
+            <option value="12" ${currentPin == 12 ? 'selected' : ''}>GPIO 12 (D6 - MISO)</option>
+            <option value="13" ${currentPin == 13 ? 'selected' : ''}>GPIO 13 (D7 - MOSI)</option>
+            <option value="0" ${currentPin == 0 ? 'selected' : ''}>GPIO 0 (D3 - Flash)</option>
+            <option value="2" ${currentPin == 2 ? 'selected' : ''}>GPIO 2 (D4 - TX1)</option>
+            <option value="15" ${currentPin == 15 ? 'selected' : ''}>GPIO 15 (D8 - CS)</option>
+            <option value="16" ${currentPin == 16 ? 'selected' : ''}>GPIO 16 (D0 - Wake)</option>
+            <option value="17" ${currentPin == 17 || currentPin == 1000 ? 'selected' : ''}>A0 (ADC0 - Analog)</option>
+            <option value="custom">-- Custom GPIO Number --</option>
+          </select>
+          <input type="number" id="cfg-relay-pin" class="settings-input" style="width: 100%; box-sizing: border-box;" value="${currentPin}">
+        </div>
+
+        <div class="form-group">
+          <label class="settings-field-label">Appliance / Pin Icon</label>
+          <select id="cfg-relay-icon" class="filter-select-enhanced" style="width: 100%;">
+            <option value="light" ${currentIcon === 'light' ? 'selected' : ''}>💡 Light / Lamp</option>
+            <option value="fan" ${currentIcon === 'fan' ? 'selected' : ''}>🌀 Fan / Ventilation</option>
+            <option value="socket" ${currentIcon === 'socket' ? 'selected' : ''}>🔌 Socket / Plug</option>
+            <option value="pump" ${currentIcon === 'pump' ? 'selected' : ''}>🚰 Water Pump / Motor</option>
+            <option value="gate" ${currentIcon === 'gate' ? 'selected' : ''}>🚪 Automatic Gate</option>
+            <option value="tv" ${currentIcon === 'tv' ? 'selected' : ''}>📺 TV / AV Receiver</option>
+            <option value="ac" ${currentIcon === 'ac' ? 'selected' : ''}>❄️ AC / HVAC</option>
+            <option value="voltage" ${currentIcon === 'voltage' ? 'selected' : ''}>📊 Voltage Sensor</option>
+            <option value="ir" ${currentIcon === 'ir' ? 'selected' : ''}>📡 IR Transceiver</option>
+            <option value="motion" ${currentIcon === 'motion' ? 'selected' : ''}>🚶 Motion / PIR</option>
+            <option value="temp" ${currentIcon === 'temp' ? 'selected' : ''}>🌡️ Temp & Humidity</option>
+            <option value="breaker" ${currentIcon === 'breaker' ? 'selected' : ''}>⚡ Breaker / Feeder</option>
+          </select>
+        </div>
       </div>
 
-      <div class="form-group" style="margin-bottom: 12px;">
-        <label class="settings-field-label">Power-On Default State</label>
-        <select id="cfg-relay-default" class="filter-select-enhanced" style="width: 100%;">
-          <option value="last">Remember Last State (Restore previous state on reboot)</option>
-          <option value="off">Always Inactive (OFF) on Boot</option>
-          <option value="on">Always Active (ON) on Boot</option>
-        </select>
+      <!-- SECTION A: RELAY SPECIFIC OPTIONS -->
+      <div id="sec-relay-options" style="display: ${isSensor ? 'none' : 'block'}; background: rgba(30, 41, 59, 0.5); border-radius: 8px; padding: 12px; margin-bottom: 12px; border: 1px solid #1e293b;">
+        <div style="font-size: 12px; font-weight: 700; color: #10b981; margin-bottom: 10px;">⚡ Relay Actuator Settings</div>
+
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label class="settings-field-label">Invert Logic</label>
+          <select id="cfg-relay-logic" class="filter-select-enhanced" style="width: 100%;">
+            <option value="1" ${r.active_low ? 'selected' : ''}>Active-Low (Relay ON when GPIO LOW - Standard Board)</option>
+            <option value="0" ${!r.active_low ? 'selected' : ''}>Active-High (Relay ON when GPIO HIGH)</option>
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label class="settings-field-label">Power-On Default State</label>
+          <select id="cfg-relay-default" class="filter-select-enhanced" style="width: 100%;">
+            <option value="last">Remember Last State (Restore previous state on reboot)</option>
+            <option value="off">Always Inactive (OFF) on Boot</option>
+            <option value="on">Always Active (ON) on Boot</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="settings-field-label">Inching / Auto-Off Timer</label>
+          <select id="cfg-relay-inching" class="filter-select-enhanced" style="width: 100%;">
+            <option value="0">Disabled (Standard Toggle)</option>
+            <option value="500">Pulse 500 ms (Momentary Gate / Pushbutton)</option>
+            <option value="2000">Auto-Off after 2 Seconds</option>
+            <option value="10000">Auto-Off after 10 Seconds</option>
+            <option value="60000">Auto-Off after 1 Minute</option>
+          </select>
+        </div>
       </div>
 
-      <div class="form-group" style="margin-bottom: 16px;">
-        <label class="settings-field-label">Inching / Auto-Off Timer (Optional)</label>
-        <select id="cfg-relay-inching" class="filter-select-enhanced" style="width: 100%;">
-          <option value="0">Disabled (Standard Toggle)</option>
-          <option value="500">Pulse 500 ms (Momentary Gate / Pushbutton)</option>
-          <option value="2000">Auto-Off after 2 Seconds</option>
-          <option value="10000">Auto-Off after 10 Seconds (Staircase / Corridor)</option>
-          <option value="60000">Auto-Off after 1 Minute</option>
-        </select>
+      <!-- SECTION B: SENSOR SPECIFIC OPTIONS -->
+      <div id="sec-sensor-options" style="display: ${isSensor ? 'block' : 'none'}; background: rgba(30, 41, 59, 0.5); border-radius: 8px; padding: 12px; margin-bottom: 12px; border: 1px solid #1e293b;">
+        <div style="font-size: 12px; font-weight: 700; color: #c084fc; margin-bottom: 10px;">📡 Sensor Configuration & Calibration</div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div class="form-group">
+            <label class="settings-field-label">Telemetry Reporting Interval</label>
+            <select id="cfg-sensor-interval" class="filter-select-enhanced" style="width: 100%;">
+              <option value="0">On-Event / Interrupt (Immediate Push)</option>
+              <option value="500" ${sensorCfg.interval_ms == 500 ? 'selected' : ''}>500 ms (Fast Polling)</option>
+              <option value="1000" ${sensorCfg.interval_ms == 1000 ? 'selected' : ''}>1 Second</option>
+              <option value="2000" ${sensorCfg.interval_ms == 2000 ? 'selected' : ''}>2 Seconds</option>
+              <option value="5000" ${sensorCfg.interval_ms == 5000 ? 'selected' : ''}>5 Seconds (Standard)</option>
+              <option value="10000" ${sensorCfg.interval_ms == 10000 ? 'selected' : ''}>10 Seconds</option>
+              <option value="30000" ${sensorCfg.interval_ms == 30000 ? 'selected' : ''}>30 Seconds</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="settings-field-label">Sensor Unit Label</label>
+            <input type="text" id="cfg-sensor-unit" class="settings-input" style="width: 100%; box-sizing: border-box;" placeholder="e.g. V, °C, HEX, mA" value="${escapeHtml(r.sensor_unit || '')}">
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div class="form-group">
+            <label class="settings-field-label">Voltage / ADC Multiplier</label>
+            <input type="number" step="0.001" id="cfg-sensor-multiplier" class="settings-input" style="width: 100%; box-sizing: border-box;" placeholder="e.g. 0.244" value="${sensorCfg.multiplier ?? 1.0}">
+          </div>
+
+          <div class="form-group">
+            <label class="settings-field-label">Calibration Offset</label>
+            <input type="number" step="0.1" id="cfg-sensor-offset" class="settings-input" style="width: 100%; box-sizing: border-box;" placeholder="0.0" value="${sensorCfg.offset ?? 0.0}">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="settings-field-label">IR Protocol (For IR Receiver / Transmitter)</label>
+          <select id="cfg-sensor-ir-proto" class="filter-select-enhanced" style="width: 100%;">
+            <option value="NEC" ${sensorCfg.ir_protocol === 'NEC' ? 'selected' : ''}>NEC (Standard TV / STB / AC)</option>
+            <option value="SONY" ${sensorCfg.ir_protocol === 'SONY' ? 'selected' : ''}>SONY (12/15/20 Bit)</option>
+            <option value="RC5" ${sensorCfg.ir_protocol === 'RC5' ? 'selected' : ''}>Philips RC5 / RC6</option>
+            <option value="SAMSUNG" ${sensorCfg.ir_protocol === 'SAMSUNG' ? 'selected' : ''}>Samsung 32-Bit</option>
+            <option value="RAW" ${sensorCfg.ir_protocol === 'RAW' ? 'selected' : ''}>Raw Timing Buffer</option>
+          </select>
+        </div>
       </div>
 
       <div style="display: flex; justify-content: flex-end; gap: 10px; padding-top: 14px; border-top: 1px solid #1e293b;">
         <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-        <button class="btn-save-settings" onclick="saveRelayChannelConfig('${nodeId}', ${channelId})">Save Channel Settings</button>
+        <button class="btn-save-settings" onclick="saveRelayChannelConfig('${nodeId}', ${channelId})">Save Pin Configuration</button>
       </div>
     </div>
   `;
   openModal(html);
 }
 
+function toggleConfigPinRole(role) {
+  const isSensor = role !== 'RELAY_OUTPUT';
+  const secRelay = document.getElementById('sec-relay-options');
+  const secSensor = document.getElementById('sec-sensor-options');
+  if (secRelay) secRelay.style.display = isSensor ? 'none' : 'block';
+  if (secSensor) secSensor.style.display = isSensor ? 'block' : 'none';
+
+  // Automatically adjust icon hint
+  const iconSelect = document.getElementById('cfg-relay-icon');
+  if (iconSelect) {
+    if (role === 'VOLTAGE') iconSelect.value = 'voltage';
+    else if (role === 'IR_RECEIVER' || role === 'IR_TRANSMITTER') iconSelect.value = 'ir';
+    else if (role === 'PIR_MOTION') iconSelect.value = 'motion';
+    else if (role === 'TEMP_HUMIDITY') iconSelect.value = 'temp';
+    else if (role === 'RELAY_OUTPUT') iconSelect.value = 'light';
+  }
+
+  // Automatically adjust unit hint
+  const unitInput = document.getElementById('cfg-sensor-unit');
+  if (unitInput) {
+    if (role === 'VOLTAGE') unitInput.value = 'V';
+    else if (role === 'IR_RECEIVER') unitInput.value = 'HEX';
+    else if (role === 'TEMP_HUMIDITY') unitInput.value = '°C';
+    else if (role === 'PIR_MOTION') unitInput.value = 'STATE';
+  }
+
+  // Automatically preset ADC pin if voltage
+  if (role === 'VOLTAGE') {
+    const pinSelect = document.getElementById('cfg-relay-pin-preset');
+    const pinInput = document.getElementById('cfg-relay-pin');
+    if (pinSelect && pinInput) {
+      pinSelect.value = '17';
+      pinInput.value = '17';
+    }
+  }
+}
+
 async function saveRelayChannelConfig(nodeId, channelId) {
+  const role = document.getElementById("cfg-pin-role").value;
+  const isSensor = role !== 'RELAY_OUTPUT';
   const name = document.getElementById("cfg-relay-name").value.trim();
+  const room = document.getElementById("cfg-relay-room") ? document.getElementById("cfg-relay-room").value : 'General';
   const icon = document.getElementById("cfg-relay-icon").value;
   const pin = Number(document.getElementById("cfg-relay-pin").value);
-  const active_low = document.getElementById("cfg-relay-logic").value === '1';
+  const active_low = document.getElementById("cfg-relay-logic") ? document.getElementById("cfg-relay-logic").value === '1' : true;
+
+  const sensorConfig = isSensor ? {
+    interval_ms: Number(document.getElementById("cfg-sensor-interval")?.value || 0),
+    multiplier: Number(document.getElementById("cfg-sensor-multiplier")?.value || 1.0),
+    offset: Number(document.getElementById("cfg-sensor-offset")?.value || 0.0),
+    ir_protocol: document.getElementById("cfg-sensor-ir-proto")?.value || 'NEC'
+  } : {};
+
+  const sensorUnit = isSensor ? (document.getElementById("cfg-sensor-unit")?.value || '') : null;
+  const sensorType = isSensor ? role : null;
+  const func = isSensor ? (role === 'VOLTAGE' ? 'Voltage Sensor' : (role === 'IR_RECEIVER' ? 'IR Receiver' : (role === 'IR_TRANSMITTER' ? 'IR Transmitter' : 'Sensor'))) : 'Relay';
+  const pinMode = isSensor ? 'SENSOR_INPUT' : 'RELAY_OUTPUT';
 
   try {
     const res = await fetchWithAuth(`${API_BASE}/relays/${nodeId}/${channelId}/advanced-config`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, pin, active_low, icon })
+      body: JSON.stringify({
+        name,
+        room,
+        pin,
+        active_low,
+        icon,
+        function: func,
+        pin_mode: pinMode,
+        sensor_type: sensorType,
+        sensor_unit: sensorUnit,
+        sensor_config: sensorConfig
+      })
     });
     const data = await res.json();
-    showToast(data.message || 'Channel configured successfully', 'success');
+    showToast(data.message || 'Pin configured successfully', 'success');
     closeModal();
     loadRelays();
   } catch (err) {
-    showToast('Failed to save channel config: ' + err.message, 'error');
+    showToast('Failed to save pin config: ' + err.message, 'error');
+  }
+}
+
+// Open Modal to Assign New Pin to Any Node
+function openAssignNewPinModal() {
+  const nodes = fleetData.nodes || [];
+  const defaultNode = nodes.find(n => n.node_id === selectedRelayNodeId) || nodes[0] || {};
+  const currentRelays = (fleetData.relays || []).filter(r => r.node_id === defaultNode.node_id);
+  const nextChId = currentRelays.length > 0 ? Math.max(...currentRelays.map(r => Number(r.channel_id) || 0)) + 1 : 1;
+  const uniqueRooms = Array.from(new Set((fleetData.relays || []).map(ch => ch.room || 'General').filter(Boolean))).sort();
+
+  const html = `
+    <div class="modal-content" style="max-width: 560px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: #fff; font-size: 16px;">➕ Assign New Pin to Hardware Node</h3>
+        <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Target Hardware Node</label>
+        <select id="new-pin-node" class="filter-select-enhanced" style="width: 100%;">
+          ${nodes.map(n => `<option value="${n.node_id}" ${n.node_id === defaultNode.node_id ? 'selected' : ''}>${escapeHtml(n.name || n.node_id)} (${escapeHtml(n.ip_address || 'LAN')})</option>`).join('')}
+        </select>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+        <div class="form-group">
+          <label class="settings-field-label">Channel Number</label>
+          <input type="number" id="new-pin-channel" class="settings-input" style="width: 100%; box-sizing: border-box;" value="${nextChId}">
+        </div>
+
+        <div class="form-group">
+          <label class="settings-field-label">Hardware Pin (GPIO / ADC)</label>
+          <select id="new-pin-gpio" class="filter-select-enhanced" style="width: 100%;">
+            <option value="5">GPIO 5 (D1 - SCL)</option>
+            <option value="4">GPIO 4 (D2 - SDA)</option>
+            <option value="14">GPIO 14 (D5 - SCK)</option>
+            <option value="12">GPIO 12 (D6 - MISO)</option>
+            <option value="13">GPIO 13 (D7 - MOSI)</option>
+            <option value="0">GPIO 0 (D3 - Flash)</option>
+            <option value="2">GPIO 2 (D4 - TX1)</option>
+            <option value="15">GPIO 15 (D8 - CS)</option>
+            <option value="16">GPIO 16 (D0 - Wake)</option>
+            <option value="17">A0 (ADC0 - Analog Voltage)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Pin Role / Function</label>
+        <select id="new-pin-role" class="filter-select-enhanced" style="width: 100%; font-weight: 600;">
+          <option value="RELAY_OUTPUT">⚡ Relay Actuator (Control Appliance ON / OFF)</option>
+          <option value="VOLTAGE">📊 Voltage Sensor (Mains AC / DC Divider on ADC)</option>
+          <option value="IR_RECEIVER">📡 IR Remote Sensor (Decode IR pulses)</option>
+          <option value="IR_TRANSMITTER">📶 IR Blaster (Transmit IR remote signals)</option>
+          <option value="PIR_MOTION">🚶 PIR Motion / Radar Detector</option>
+          <option value="DOOR_WINDOW">🚪 Door / Window Magnetic Contact</option>
+          <option value="TEMP_HUMIDITY">🌡️ Temperature & Humidity (DHT)</option>
+          <option value="GENERIC_DIGITAL">🔘 Generic Digital Input</option>
+          <option value="GENERIC_ANALOG">📈 Generic Analog Input</option>
+        </select>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+        <div class="form-group">
+          <label class="settings-field-label">Pin Name / Label</label>
+          <input type="text" id="new-pin-name" class="settings-input" style="width: 100%; box-sizing: border-box;" placeholder="e.g. Balcony Light or Voltage Monitor">
+        </div>
+
+        <div class="form-group">
+          <label class="settings-field-label">Assigned Room</label>
+          <select id="new-pin-room" class="filter-select-enhanced" style="width: 100%;">
+            ${uniqueRooms.map(rm => `<option value="${escapeHtml(rm)}">${escapeHtml(rm)}</option>`).join('')}
+            <option value="Living Room">Living Room</option>
+            <option value="Bedroom">Bedroom</option>
+            <option value="Kitchen">Kitchen</option>
+            <option value="Main DB">Main DB</option>
+            <option value="General">General</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; padding-top: 14px; border-top: 1px solid #1e293b;">
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn-save-settings" onclick="handleAssignNewPinSubmit()">Assign Pin to Node</button>
+      </div>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleAssignNewPinSubmit() {
+  const nodeId = document.getElementById("new-pin-node").value;
+  const channelId = Number(document.getElementById("new-pin-channel").value);
+  const pin = Number(document.getElementById("new-pin-gpio").value);
+  const role = document.getElementById("new-pin-role").value;
+  const isSensor = role !== 'RELAY_OUTPUT';
+  const name = document.getElementById("new-pin-name").value.trim() || (isSensor ? `Sensor ${channelId}` : `Relay ${channelId}`);
+  const room = document.getElementById("new-pin-room").value;
+
+  let icon = 'light';
+  let unit = '';
+  if (role === 'VOLTAGE') { icon = 'voltage'; unit = 'V'; }
+  else if (role.startsWith('IR')) { icon = 'ir'; unit = 'HEX'; }
+  else if (role.includes('MOTION')) { icon = 'motion'; unit = 'STATE'; }
+  else if (role.includes('TEMP')) { icon = 'temp'; unit = '°C'; }
+
+  const payload = {
+    channel_id: channelId,
+    pin: pin,
+    name: name,
+    room: room,
+    icon: icon,
+    function: isSensor ? (role === 'VOLTAGE' ? 'Voltage Sensor' : (role.startsWith('IR') ? 'IR Transceiver' : 'Sensor')) : 'Relay',
+    pin_mode: isSensor ? 'SENSOR_INPUT' : 'RELAY_OUTPUT',
+    sensor_type: isSensor ? role : null,
+    sensor_unit: unit,
+    active_low: true
+  };
+
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${nodeId}/pins`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(data.message || 'Pin assigned successfully', 'success');
+      closeModal();
+      loadRelays();
+    } else {
+      showToast('Error: ' + data.error, 'error');
+    }
+  } catch (err) {
+    showToast('Failed to assign pin: ' + err.message, 'error');
+  }
+}
+
+async function handleUnassignPin(nodeId, channelId, name) {
+  if (!confirm(`Are you sure you want to unassign pin channel ${channelId} ('${name}') from node '${nodeId}'?`)) return;
+
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${nodeId}/pins/${channelId}`, {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(data.message || 'Pin unassigned successfully', 'success');
+      loadRelays();
+    } else {
+      showToast('Error: ' + data.error, 'error');
+    }
+  } catch (err) {
+    showToast('Failed to unassign pin: ' + err.message, 'error');
+  }
+}
+
+function openIrTransmitModal(nodeId) {
+  const html = `
+    <div class="modal-content" style="max-width: 480px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: #fff; font-size: 16px;">📶 Transmit IR Command (${escapeHtml(nodeId)})</h3>
+        <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">IR Protocol</label>
+        <select id="ir-tx-protocol" class="filter-select-enhanced" style="width: 100%;">
+          <option value="NEC">NEC (Standard TVs, Set-Top Boxes, AC remotes)</option>
+          <option value="SONY">SONY (12/15/20 Bit)</option>
+          <option value="RC5">Philips RC5</option>
+          <option value="SAMSUNG">Samsung 32-Bit</option>
+        </select>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 14px;">
+        <label class="settings-field-label">Hex IR Code</label>
+        <input type="text" id="ir-tx-code" class="settings-input" style="width: 100%; box-sizing: border-box; font-family: monospace; font-size: 14px;" placeholder="e.g. 0xF720DF or 0x20DF10EF" value="0xF720DF">
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; padding-top: 14px; border-top: 1px solid #1e293b;">
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn-save-settings" onclick="handleSendIrCommand('${nodeId}')">🚀 Transmit Signal</button>
+      </div>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function handleSendIrCommand(nodeId) {
+  const protocol = document.getElementById("ir-tx-protocol").value;
+  const code = document.getElementById("ir-tx-code").value.trim();
+  if (!code) return showToast('Please enter an IR hex code', 'warning');
+
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${nodeId}/ir/transmit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocol, code })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(data.message || `Transmitted IR: ${code}`, 'success');
+      closeModal();
+    } else {
+      showToast('Error: ' + data.error, 'error');
+    }
+  } catch (err) {
+    showToast('Failed to transmit IR: ' + err.message, 'error');
   }
 }
 
 async function toggleRelay(nodeId, channelId, state) {
-  // Update local fleetData
-  const rel = (fleetData.relays || []).find(r => r.node_id === nodeId && r.channel_id == channelId);
-  if (rel) rel.current_state = state;
+  // 1. INSTANT OPTIMISTIC UI UPDATE (ZERO DELAY)
+  updateRelayUiState(nodeId, channelId, state);
 
-  // Update DOM switch label immediately
-  const lbl = document.getElementById(`relay-lbl-${nodeId}-${channelId}`);
-  if (lbl) lbl.textContent = state ? 'ON' : 'OFF';
-
+  // 2. DISPATCH COMMAND WITH AUTH IN BACKGROUND
   try {
-    await fetch(`${API_BASE}/relays/${nodeId}/${channelId}/command`, {
+    const res = await fetchWithAuth(`${API_BASE}/relays/${nodeId}/${channelId}/command`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "setState", state: state })
     });
+    const data = await res.json();
+    if (!data.success && data.error) {
+      updateRelayUiState(nodeId, channelId, !state);
+      showToast(`Error: ${data.error}`, 'error');
+    }
   } catch (e) {
-    console.error("Relay command error:", e);
+    updateRelayUiState(nodeId, channelId, !state);
+    showToast(`Network error: ${e.message}`, 'error');
   }
 }
 
 async function pulseRelay(nodeId, channelId, duration = 500) {
+  // Instant momentary visual pulse
+  updateRelayUiState(nodeId, channelId, true);
+  setTimeout(() => {
+    updateRelayUiState(nodeId, channelId, false);
+  }, duration);
+
   try {
-    await fetch(`${API_BASE}/relays/${nodeId}/${channelId}/command`, {
+    await fetchWithAuth(`${API_BASE}/relays/${nodeId}/${channelId}/command`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "pulse", duration: duration })
     });
-
-    const rel = (fleetData.relays || []).find(r => r.node_id === nodeId && r.channel_id == channelId);
-    if (rel) {
-      rel.current_state = true;
-      renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
-      setTimeout(() => {
-        rel.current_state = false;
-        renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
-      }, duration);
-    }
   } catch (e) {
-    alert("Pulse failed: " + e.message);
+    console.error("Pulse command error:", e);
   }
 }
 
-// ==========================================================================
 // VIEW ③ & ④: ROOMS & HOMES MANAGEMENT (MATCHING PANELS ③ & ④)
 // ==========================================================================
 let currentRoomsHomesSubTab = 'rooms'; // 'rooms' or 'homes'
@@ -3719,35 +4487,6 @@ async function saveAutomationRuleFromEditor() {
     loadAutomation();
   } catch (e) {
     console.error("Save automation failed:", e);
-  }
-}
-
-// --- 3. RELAY UTILITIES ---
-async function toggleRelay(nodeId, channelId, state) {
-  
-  const syncBadge = document.getElementById(`sync-badge-${nodeId}-${channelId}`);
-  if (syncBadge) syncBadge.style.display = "inline";
-
-  try {
-    await fetch(`${API_BASE}/relays/${nodeId}/${channelId}/command`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "setState", state: state })
-    });
-  } catch (e) {
-    alert("Relay command failed: " + e.message);
-  }
-}
-
-async function pulseRelay(nodeId, channelId) {
-  try {
-    await fetch(`${API_BASE}/relays/${nodeId}/${channelId}/command`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "pulse", duration: 500 })
-    });
-  } catch (e) {
-    alert("Pulse failed: " + e.message);
   }
 }
 

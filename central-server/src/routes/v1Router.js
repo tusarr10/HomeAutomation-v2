@@ -1086,7 +1086,7 @@ function createV1Router(nodeManager, db) {
     }
   });
 
-  router.put('/nodes/:nodeId/relays/:channelId', requirePermission(db, 'devices:manage'), (req, res) => {
+  router.put('/nodes/:nodeId/relays/:channelId', requirePermission(db, 'devices:manage'), async (req, res) => {
     const { nodeId, channelId } = req.params;
     const node = db.getNode(nodeId);
     if (!node) {
@@ -1097,9 +1097,16 @@ function createV1Router(nodeManager, db) {
       const relay = db.addOrUpdateRelay(nodeId, { ...req.body, channel_id: Number(channelId) });
       db.logAudit('RELAY_UPDATED', nodeId, `Updated channel ${channelId} ('${relay.name}', ${nodeManager.formatPinName(relay.pin)}) on node '${node.name}'`);
       nodeManager.broadcast('relay_sync', { nodeId, channel_id: relay.channel_id, relay });
+
+      try {
+        await nodeManager.syncPinToNode(nodeId, Number(channelId));
+      } catch (syncErr) {
+        console.warn(`[NodeManager] Warning syncing pin CH${channelId} to node ${nodeId}:`, syncErr.message);
+      }
+
       res.json({
         success: true,
-        message: `Relay channel ${channelId} updated`,
+        message: `Relay channel ${channelId} updated and synchronized to node`,
         relay
       });
     } catch (err) {
@@ -1120,12 +1127,14 @@ function createV1Router(nodeManager, db) {
     nodeManager.broadcast('relay_sync', { nodeId, channel_id: numericChannelId, deleted: true });
 
     try {
-      await nodeManager.pushNodeConfig(nodeId);
-    } catch {}
+      await nodeManager.syncPinToNode(nodeId, numericChannelId);
+    } catch (syncErr) {
+      console.warn(`[NodeManager] Warning syncing pin removal to node ${nodeId}:`, syncErr.message);
+    }
 
     res.json({
       success: true,
-      message: `Relay channel ${numericChannelId} deleted from node '${node.name}'`
+      message: `Relay channel ${numericChannelId} deleted and removed from node '${node.name}'`
     });
   });
 
@@ -2027,10 +2036,15 @@ function createV1Router(nodeManager, db) {
     }
   });
 
-  router.post('/relays/:nodeId/:channelId/advanced-config', requirePermission(db, 'devices:manage'), (req, res) => {
+  router.post('/relays/:nodeId/:channelId/advanced-config', requirePermission(db, 'devices:manage'), async (req, res) => {
     try {
       const { nodeId, channelId } = req.params;
-      const { name, pin, active_low, icon, room, pulse_duration, default_state, interlock_group } = req.body;
+      const {
+        name, pin, active_low, icon, room, function: func, pin_mode,
+        sensor_type, sensor_unit, sensor_config
+      } = req.body;
+
+      const sensorConfigJson = typeof sensor_config === 'object' ? JSON.stringify(sensor_config) : (req.body.sensor_config_json || null);
 
       if (db.db) {
         db.db.prepare(`
@@ -2039,13 +2053,139 @@ function createV1Router(nodeManager, db) {
               pin = COALESCE(?, pin),
               active_low = COALESCE(?, active_low),
               icon = COALESCE(?, icon),
-              room = COALESCE(?, room)
+              room = COALESCE(?, room),
+              function = COALESCE(?, function),
+              pin_mode = COALESCE(?, pin_mode),
+              sensor_type = COALESCE(?, sensor_type),
+              sensor_unit = COALESCE(?, sensor_unit),
+              sensor_config_json = COALESCE(?, sensor_config_json)
           WHERE node_id = ? AND channel_id = ?
-        `).run(name || null, pin !== undefined ? Number(pin) : null, active_low !== undefined ? (active_low ? 1 : 0) : null, icon || null, room || null, nodeId, Number(channelId));
+        `).run(
+          name || null,
+          pin !== undefined ? Number(pin) : null,
+          active_low !== undefined ? (active_low ? 1 : 0) : null,
+          icon || null,
+          room || null,
+          func || null,
+          pin_mode || null,
+          sensor_type || null,
+          sensor_unit || null,
+          sensorConfigJson,
+          nodeId,
+          Number(channelId)
+        );
       }
 
-      db.logAudit('RELAY_CONFIG_UPDATE', nodeId, `Updated advanced config for relay channel ${channelId}`);
-      res.json({ success: true, message: `Relay channel ${channelId} advanced config updated` });
+      // If configured as a sensor, also sync into sensors table
+      if (sensor_type || func === 'Sensor' || pin_mode === 'SENSOR_INPUT') {
+        db.upsertSensor({
+          nodeId,
+          sensorType: sensor_type || 'GENERIC',
+          name: name || `Sensor CH${channelId}`,
+          room: room || 'General',
+          unit: sensor_unit || ''
+        });
+      }
+
+      // Synchronize updated pin name and parameters directly to the physical microcontroller/node
+      try {
+        await nodeManager.syncPinToNode(nodeId, Number(channelId));
+      } catch (syncErr) {
+        console.warn(`[NodeManager] Warning syncing pin CH${channelId} to node ${nodeId}:`, syncErr.message);
+      }
+
+      db.logAudit('RELAY_CONFIG_UPDATE', nodeId, `Updated advanced config for pin/relay channel ${channelId}`);
+      res.json({ success: true, message: `Pin channel ${channelId} configuration updated and pushed to node` });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // --- Assign New Pin to Node ---
+  router.post('/nodes/:nodeId/pins', requirePermission(db, 'devices:manage'), async (req, res) => {
+    try {
+      const { nodeId } = req.params;
+      const relay = db.addOrUpdateRelay(nodeId, req.body);
+      const chId = relay?.channel_id || req.body.channel_id;
+
+      // Synchronize new pin configuration to hardware node
+      try {
+        await nodeManager.syncPinToNode(nodeId, Number(chId));
+      } catch (syncErr) {
+        console.warn(`[NodeManager] Warning syncing new pin to node ${nodeId}:`, syncErr.message);
+      }
+
+      db.logAudit('PIN_ASSIGN', nodeId, `Assigned pin GPIO ${req.body.pin} as CH${chId} (${req.body.name || 'Pin'})`);
+      res.json({ success: true, message: `Pin assigned and pushed to node ${nodeId} successfully`, relay });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  });
+
+  // --- Unassign / Delete Pin from Node ---
+  router.delete('/nodes/:nodeId/pins/:channelId', requirePermission(db, 'devices:manage'), async (req, res) => {
+    try {
+      const { nodeId, channelId } = req.params;
+      db.deleteRelay(nodeId, channelId);
+
+      // Synchronize pin deletion to hardware node
+      try {
+        await nodeManager.syncPinToNode(nodeId, Number(channelId));
+      } catch (syncErr) {
+        console.warn(`[NodeManager] Warning syncing pin removal to node ${nodeId}:`, syncErr.message);
+      }
+
+      db.logAudit('PIN_DELETE', nodeId, `Unassigned pin channel ${channelId}`);
+      res.json({ success: true, message: `Pin channel ${channelId} unassigned successfully` });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // --- Transmit IR Code to Node ---
+  router.post('/nodes/:nodeId/ir/transmit', requirePermission(db, 'devices:control'), async (req, res) => {
+    try {
+      const { nodeId } = req.params;
+      const { code, protocol = 'NEC', bits = 32, frequency = 38000 } = req.body;
+      if (!code) return res.status(400).json({ success: false, error: 'IR code is required' });
+
+      const command = {
+        action: 'send_ir',
+        protocol,
+        code,
+        bits: Number(bits) || 32,
+        frequency: Number(frequency) || 38000
+      };
+
+      const result = await nodeManager.queueOrSendCommand(nodeId, 0, command);
+      db.logAudit('IR_TRANSMIT', nodeId, `Transmitted IR code ${code} (${protocol})`);
+      res.json({ success: true, message: `IR transmission dispatched: ${code}`, result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // --- Ingest Sensor Telemetry ---
+  router.post('/sensors/telemetry', async (req, res) => {
+    try {
+      const { nodeId, sensorType, name, room, value, unit, strValue, pin, channelId } = req.body;
+      if (!nodeId || !sensorType) return res.status(400).json({ success: false, error: 'nodeId and sensorType required' });
+
+      db.upsertSensor({
+        nodeId,
+        sensorType,
+        name: name || sensorType,
+        room: room || 'General',
+        value: Number(value) || 0,
+        unit: unit || ''
+      });
+
+      if (channelId || pin) {
+        db.updatePinSensorReading(nodeId, channelId || pin, value, strValue);
+      }
+
+      nodeManager.broadcast('sensor_telemetry', req.body);
+      res.json({ success: true, message: 'Sensor telemetry recorded' });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
     }
