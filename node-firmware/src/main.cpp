@@ -9,6 +9,9 @@
 #include "ota_manager.h"
 #include "web_server.h"
 #include "receiver_client.h"
+#if FEATURE_PCF8574
+#include "drivers/pcf8574_driver.h"
+#endif
 
 // Hardware Reset Button State
 unsigned long resetBtnPressStart = 0;
@@ -121,6 +124,51 @@ void loop() {
         if (c == 'h' || c == 'H') {
             Serial.printf("[HEAP] Free: %u bytes, Max Block: %u bytes, Frag: %u%%\n",
                           ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation());
+        } else if (c == 'i' || c == 'I' || c == 's' || c == 'S') {
+            Serial.println(F("\n=================================================="));
+            Serial.println(F("              I2C HARDWARE BUS SCAN               "));
+            Serial.println(F("=================================================="));
+#if FEATURE_PCF8574
+            struct PinPair { uint8_t sda; uint8_t scl; const char* name; };
+            PinPair pairs[] = {
+                { 4, 5, "SDA=D2 (GPIO 4), SCL=D1 (GPIO 5) [Standard NodeMCU I2C]" },
+                { 5, 4, "SDA=D1 (GPIO 5), SCL=D2 (GPIO 4) [Reversed SDA/SCL]" },
+                { 12, 14, "SDA=D6 (GPIO 12), SCL=D5 (GPIO 14)" },
+                { 14, 12, "SDA=D5 (GPIO 14), SCL=D6 (GPIO 12)" },
+                { 0, 2, "SDA=D3 (GPIO 0), SCL=D4 (GPIO 2)" },
+                { 2, 0, "SDA=D4 (GPIO 2), SCL=D3 (GPIO 0)" }
+            };
+
+            bool anyFound = false;
+            for (const auto& p : pairs) {
+                std::vector<uint8_t> devs = Pcf8574Driver::getInstance().scanBus(p.sda, p.scl);
+                if (!devs.empty()) {
+                    anyFound = true;
+                    Serial.printf("[I2C] >>> DEVICE FOUND on %s! Count: %u\n", p.name, (unsigned int)devs.size());
+                    for (uint8_t a : devs) {
+                        const char* type = (a >= 0x20 && a <= 0x27) ? "PCF8574 (Standard 8-Ch Expander)" :
+                                           ((a >= 0x38 && a <= 0x3F) ? "PCF8574A (High-Address 8-Ch Expander)" :
+                                           ((a == 0x3C || a == 0x3D) ? "OLED Display (SSD1306)" :
+                                           ((a == 0x68) ? "RTC (DS3231/DS1307) or MPU6050" :
+                                           ((a == 0x48) ? "ADS1115 ADC" : "Generic I2C Device"))));
+                        Serial.printf("      * Address: 0x%02X (%u decimal) -> %s\n", a, a, type);
+                    }
+                    GpioManager::getInstance().setI2cConfig(true, p.sda, p.scl, devs[0]);
+                    Serial.printf("[I2C] -> Configured & Saved to LittleFS (SDA=%u, SCL=%u, Addr=0x%02X)\n", p.sda, p.scl, devs[0]);
+                }
+            }
+            if (!anyFound) {
+                Serial.println(F("[I2C] No devices responded on any pin pairs."));
+                Serial.println(F("Checklist:"));
+                Serial.println(F("  1. VCC connected to 3.3V (or 5V for 5V I2C modules)?"));
+                Serial.println(F("  2. GND connected securely to ESP GND?"));
+                Serial.println(F("  3. SDA connected to D2 (GPIO 4)?"));
+                Serial.println(F("  4. SCL connected to D1 (GPIO 5)?"));
+            }
+            Serial.println(F("==================================================\n"));
+#else
+            Serial.println(F("[I2C SCAN] FEATURE_PCF8574 is disabled."));
+#endif
         }
     }
 
@@ -138,6 +186,9 @@ void loop() {
 #include "ota_manager.h"
 #include "web_server.h"
 #include "receiver_client.h"
+#if FEATURE_PCF8574
+#include "drivers/pcf8574_driver.h"
+#endif
 
 // Hardware Reset Button State
 unsigned long resetBtnPressStart = 0;
@@ -258,6 +309,51 @@ void loop() {
         if (c == 'h' || c == 'H') {
             Serial.printf("[HEAP] Free: %u bytes, Max Block: %u bytes, Frag: %u%%\n",
                           ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation());
+        } else if (c == 'i' || c == 'I' || c == 's' || c == 'S') {
+            Serial.println(F("\n=================================================="));
+            Serial.println(F("              I2C HARDWARE BUS SCAN               "));
+            Serial.println(F("=================================================="));
+#if FEATURE_PCF8574
+            struct PinPair { uint8_t sda; uint8_t scl; const char* name; };
+            PinPair pairs[] = {
+                { 4, 5, "SDA=D2 (GPIO 4), SCL=D1 (GPIO 5) [Standard NodeMCU I2C]" },
+                { 5, 4, "SDA=D1 (GPIO 5), SCL=D2 (GPIO 4) [Reversed SDA/SCL]" },
+                { 12, 14, "SDA=D6 (GPIO 12), SCL=D5 (GPIO 14)" },
+                { 14, 12, "SDA=D5 (GPIO 14), SCL=D6 (GPIO 12)" },
+                { 0, 2, "SDA=D3 (GPIO 0), SCL=D4 (GPIO 2)" },
+                { 2, 0, "SDA=D4 (GPIO 2), SCL=D3 (GPIO 0)" }
+            };
+
+            bool anyFound = false;
+            for (const auto& p : pairs) {
+                std::vector<uint8_t> devs = Pcf8574Driver::getInstance().scanBus(p.sda, p.scl);
+                if (!devs.empty()) {
+                    anyFound = true;
+                    Serial.printf("[I2C] >>> DEVICE FOUND on %s! Count: %u\n", p.name, (unsigned int)devs.size());
+                    for (uint8_t a : devs) {
+                        const char* type = (a >= 0x20 && a <= 0x27) ? "PCF8574 (Standard 8-Ch Expander)" :
+                                           ((a >= 0x38 && a <= 0x3F) ? "PCF8574A (High-Address 8-Ch Expander)" :
+                                           ((a == 0x3C || a == 0x3D) ? "OLED Display (SSD1306)" :
+                                           ((a == 0x68) ? "RTC (DS3231/DS1307) or MPU6050" :
+                                           ((a == 0x48) ? "ADS1115 ADC" : "Generic I2C Device"))));
+                        Serial.printf("      * Address: 0x%02X (%u decimal) -> %s\n", a, a, type);
+                    }
+                    GpioManager::getInstance().setI2cConfig(true, p.sda, p.scl, devs[0]);
+                    Serial.printf("[I2C] -> Configured & Saved to LittleFS (SDA=%u, SCL=%u, Addr=0x%02X)\n", p.sda, p.scl, devs[0]);
+                }
+            }
+            if (!anyFound) {
+                Serial.println(F("[I2C] No devices responded on any pin pairs."));
+                Serial.println(F("Checklist:"));
+                Serial.println(F("  1. VCC connected to 3.3V (or 5V for 5V I2C modules)?"));
+                Serial.println(F("  2. GND connected securely to ESP GND?"));
+                Serial.println(F("  3. SDA connected to D2 (GPIO 4)?"));
+                Serial.println(F("  4. SCL connected to D1 (GPIO 5)?"));
+            }
+            Serial.println(F("==================================================\n"));
+#else
+            Serial.println(F("[I2C SCAN] FEATURE_PCF8574 is disabled."));
+#endif
         }
     }
 
@@ -275,6 +371,9 @@ void loop() {
 #include "ota_manager.h"
 #include "web_server.h"
 #include "receiver_client.h"
+#if FEATURE_PCF8574
+#include "drivers/pcf8574_driver.h"
+#endif
 
 // Hardware Reset Button State
 unsigned long resetBtnPressStart = 0;
@@ -388,6 +487,51 @@ void loop() {
         if (c == 'h' || c == 'H') {
             Serial.printf("[HEAP] Free: %u bytes, Max Block: %u bytes, Frag: %u%%\n",
                           ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation());
+        } else if (c == 'i' || c == 'I' || c == 's' || c == 'S') {
+            Serial.println(F("\n=================================================="));
+            Serial.println(F("              I2C HARDWARE BUS SCAN               "));
+            Serial.println(F("=================================================="));
+#if FEATURE_PCF8574
+            struct PinPair { uint8_t sda; uint8_t scl; const char* name; };
+            PinPair pairs[] = {
+                { 4, 5, "SDA=D2 (GPIO 4), SCL=D1 (GPIO 5) [Standard NodeMCU I2C]" },
+                { 5, 4, "SDA=D1 (GPIO 5), SCL=D2 (GPIO 4) [Reversed SDA/SCL]" },
+                { 12, 14, "SDA=D6 (GPIO 12), SCL=D5 (GPIO 14)" },
+                { 14, 12, "SDA=D5 (GPIO 14), SCL=D6 (GPIO 12)" },
+                { 0, 2, "SDA=D3 (GPIO 0), SCL=D4 (GPIO 2)" },
+                { 2, 0, "SDA=D4 (GPIO 2), SCL=D3 (GPIO 0)" }
+            };
+
+            bool anyFound = false;
+            for (const auto& p : pairs) {
+                std::vector<uint8_t> devs = Pcf8574Driver::getInstance().scanBus(p.sda, p.scl);
+                if (!devs.empty()) {
+                    anyFound = true;
+                    Serial.printf("[I2C] >>> DEVICE FOUND on %s! Count: %u\n", p.name, (unsigned int)devs.size());
+                    for (uint8_t a : devs) {
+                        const char* type = (a >= 0x20 && a <= 0x27) ? "PCF8574 (Standard 8-Ch Expander)" :
+                                           ((a >= 0x38 && a <= 0x3F) ? "PCF8574A (High-Address 8-Ch Expander)" :
+                                           ((a == 0x3C || a == 0x3D) ? "OLED Display (SSD1306)" :
+                                           ((a == 0x68) ? "RTC (DS3231/DS1307) or MPU6050" :
+                                           ((a == 0x48) ? "ADS1115 ADC" : "Generic I2C Device"))));
+                        Serial.printf("      * Address: 0x%02X (%u decimal) -> %s\n", a, a, type);
+                    }
+                    GpioManager::getInstance().setI2cConfig(true, p.sda, p.scl, devs[0]);
+                    Serial.printf("[I2C] -> Configured & Saved to LittleFS (SDA=%u, SCL=%u, Addr=0x%02X)\n", p.sda, p.scl, devs[0]);
+                }
+            }
+            if (!anyFound) {
+                Serial.println(F("[I2C] No devices responded on any pin pairs."));
+                Serial.println(F("Checklist:"));
+                Serial.println(F("  1. VCC connected to 3.3V (or 5V for 5V I2C modules)?"));
+                Serial.println(F("  2. GND connected securely to ESP GND?"));
+                Serial.println(F("  3. SDA connected to D2 (GPIO 4)?"));
+                Serial.println(F("  4. SCL connected to D1 (GPIO 5)?"));
+            }
+            Serial.println(F("==================================================\n"));
+#else
+            Serial.println(F("[I2C SCAN] FEATURE_PCF8574 is disabled."));
+#endif
         }
     }
 

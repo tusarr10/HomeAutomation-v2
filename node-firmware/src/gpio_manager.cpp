@@ -1058,7 +1058,19 @@ bool GpioManager::begin() {
     }
 
 #if FEATURE_PCF8574
-    if (_i2cEnabled) {
+    if (!_i2cEnabled) {
+        // Quick auto-probe on boot to detect newly connected I2C chips
+        std::vector<uint8_t> devs = Pcf8574Driver::getInstance().scanBus(4, 5);
+        if (devs.empty()) devs = Pcf8574Driver::getInstance().scanBus(5, 4);
+        if (!devs.empty()) {
+            _i2cEnabled = true;
+            _i2cAddress = devs[0];
+            _i2cSdaPin = 4;
+            _i2cSclPin = 5;
+            Pcf8574Driver::getInstance().begin(_i2cSdaPin, _i2cSclPin, _i2cAddress);
+            Serial.printf("[I2C] Auto-detected device at address 0x%02X on boot (SDA=4, SCL=5)! Expander ready.\n", _i2cAddress);
+        }
+    } else {
         Serial.printf("[GPIO] Initializing I2C Bus: SDA=GPIO%u, SCL=GPIO%u, defaultAddr=0x%02X\n",
                       _i2cSdaPin, _i2cSclPin, _i2cAddress);
         Pcf8574Driver::getInstance().begin(_i2cSdaPin, _i2cSclPin, _i2cAddress);
