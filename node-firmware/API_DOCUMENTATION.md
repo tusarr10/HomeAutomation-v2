@@ -1,330 +1,971 @@
-# SmartHome Node Firmware: Complete API Reference & Security Architecture
+# SmartHome Node Firmware: Master API Reference & Server Integration Guide
 
 **Firmware Version:** 1.6.0  
 **Hardware Platforms:** ESP8266 (ESP-12E/F NodeMCU / D1 Mini 4MB, ESP-01/01S 1MB) & ESP32  
-**Target Communication:** HTTP REST API (Port 80), Async TCP Telemetry Socket (Port 2000), ArduinoOTA (Port 8266)
+**Communication Channels:**
+- **HTTP REST API:** Port `80` (Direct synchronous request/response)
+- **Async TCP Telemetry Socket:** Port `2000` (Outbound bi-directional telemetry & remote command execution)
+- **Wireless OTA Engine:** Port `8266` (ArduinoOTA wireless firmware flashing)
 
 ---
 
 ## Table of Contents
 1. [Security Architecture & Dual-Authentication](#1-security-architecture--dual-authentication)
-   - [Wi-Fi Hotspot WPA2 Protection](#wi-fi-hotspot-wpa2-protection)
-   - [Dual-Password Login System (Admin + Server Pairing Key)](#dual-password-login-system)
-   - [Direct Header Authentication for Central Servers](#direct-header-authentication)
-   - [Pairing & Provisioning Lifecycle](#pairing--provisioning-lifecycle)
-2. [I2C Bus & PCF8574 Pin Expander](#2-i2c-bus--pcf8574-pin-expander)
-   - [Dynamic Pin Configuration & Bus Auto-Discovery](#dynamic-pin-configuration)
-   - [Extended Relays P0–P7 (Pins 100–107)](#extended-relays-p0p7)
-3. [REST API Specification](#3-rest-api-specification)
-   - [Authentication & Pairing Endpoints](#authentication--pairing-endpoints)
-   - [System Diagnostics & Status](#system-diagnostics--status)
-   - [I2C Bus & Expander Management](#i2c-bus--expander-management)
-   - [GPIO & Relay Channel Control](#gpio--relay-channel-control)
-   - [Wi-Fi Network Management](#wi-fi-network-management)
-   - [Automation Engine](#automation-engine)
-   - [Central Receiver Telemetry Client](#central-receiver-telemetry-client)
-   - [System Management & Logs](#system-management--logs)
-4. [Client Implementation Examples (cURL & Python)](#4-client-implementation-examples)
+   - [Overview & Loophole Fix](#overview--loophole-fix)
+   - [Allowed Authentication Headers & Methods](#allowed-authentication-headers--methods)
+   - [Initial Server Pairing Lifecycle Handshake](#initial-server-pairing-lifecycle-handshake)
+2. [Hardware Pin Architecture & PCF8574 Expander](#2-hardware-pin-architecture--pcf8574-expander)
+   - [Native ESP Pins vs I2C Extended Pins (P0–P7)](#native-esp-pins-vs-i2c-extended-pins-p0p7)
+   - [Pin Safety Map & Boot Strapping Warnings](#pin-safety-map--boot-strapping-warnings)
+3. [REST API Endpoints: Complete Send & Receive Schemas](#3-rest-api-endpoints-complete-send--receive-schemas)
+   - [1. Authentication & Security](#1-authentication--security)
+   - [2. System Overview & Live Telemetry](#2-system-overview--live-telemetry)
+   - [3. GPIO & Relay Control](#3-gpio--relay-control)
+   - [4. I2C Bus & PCF8574 Expander](#4-i2c-bus--pcf8574-expander)
+   - [5. Remote Command Execution](#5-remote-command-execution)
+   - [6. Wi-Fi Network Management](#6-wi-fi-network-management)
+   - [7. Central Receiver Telemetry Client](#7-central-receiver-telemetry-client)
+   - [8. Automation Engine (Edge Rules)](#8-automation-engine-edge-rules)
+   - [9. Configuration Backup, Restore & Firmware Streaming](#9-configuration-backup-restore--firmware-streaming)
+   - [10. LittleFS Filesystem Explorer](#10-littlefs-filesystem-explorer)
+   - [11. Device Settings & Maintenance](#11-device-settings--maintenance)
+4. [Async TCP Telemetry Socket Protocol (Port 2000)](#4-async-tcp-telemetry-socket-protocol-port-2000)
+   - [Outbound Telemetry Payload (Node -> Server)](#outbound-telemetry-payload-node---server)
+   - [Server Inbound Response & Remote Command Dispatch (Server -> Node)](#server-inbound-response--remote-command-dispatch-server---node)
+5. [Server Integration Implementation Examples](#5-server-integration-implementation-examples)
+   - [Python Server Client](#python-server-client)
+   - [Node.js / Express Client](#nodejs--express-client)
+   - [cURL Command Reference](#curl-command-reference)
 
 ---
 
 ## 1. Security Architecture & Dual-Authentication
 
-### Wi-Fi Hotspot WPA2 Protection
-To prevent unauthorized users from hijacking unconfigured nodes, the built-in Access Point hotspot runs with **WPA2 encryption** by default:
-- **SSID Format:** `SmartHome-Setup-XXXX` (where `XXXX` represents the unique last 4 hex characters of the node's hardware MAC address).
-- **Default AP Password:** `smarthome1234` (configurable in Web Settings or `/api/wifi/ap`).
-- **IP Address:** `192.168.4.1` (Subnet `255.255.255.0`, DHCP range `.2` to `.20`).
-
----
-
-### Dual-Password Login System
-The node features a **Dual-Authentication** model designed to solve the access control loophole when pairing nodes to a central multi-node controller:
+### Overview & Loophole Fix
+To prevent unauthorized users from hijacking nodes while maintaining zero-breakage server automation, the node implements a **Dual-Authentication** model:
 
 ```
-                  ┌──────────────────────────────────────────────┐
-                  │              HTTP Authentication             │
-                  └──────────────────────┬───────────────────────┘
-                                         │
-                   Username MUST match: "admin"
-                                         │
-                  ┌──────────────────────┴───────────────────────┐
-                  │                                              │
-         Option A: Human Admin                         Option B: Server Pairing Key
-    Password: "tusarranjan"                       Password: "abcdefgh12345678"
-    Matches SHA256(_adminPasswordHash)            Matches SHA256(_serverKeyHash)
-                  │                                              │
-                  └──────────────────────┬───────────────────────┘
-                                         ▼
-                             [ ACCESS GRANTED (200 OK) ]
-                             Issues Session Token: Set-Cookie
+                   ┌──────────────────────────────────────────────┐
+                   │               HTTP REST Request              │
+                   └──────────────────────┬───────────────────────┘
+                                          │
+                    Username MUST match: "admin"
+                                          │
+                   ┌──────────────────────┴───────────────────────┐
+                   │                                              │
+          Option A: Human Admin                         Option B: Server Pairing Key
+     Password: "tusarranjan"                       Password: "abcdefgh12345678"
+     Matches SHA256(_adminPasswordHash)            Matches SHA256(_serverKeyHash)
+                   │                                              │
+                   └──────────────────────┬───────────────────────┘
+                                          ▼
+                              [ ACCESS GRANTED (200 OK) ]
+                              Issues Session Token / Executes Request
 ```
 
-1. **Human Administrator Password:** Configured by the owner (default: `admin`). Used for daily browser login on the Web Dashboard.
-2. **Server Pairing Key:** Provisioned by the central home server during initial setup (e.g., `abcdefgh12345678`).
-3. **Login Matching:** Logging in as `admin` succeeds if **EITHER** the human admin password **OR** the server pairing key matches!
-4. **Resilience:** If the human administrator changes their password via the UI, the central server’s automated routines **never break** because the server key remains valid. Conversely, if a node is reassigned, the server key can be revoked via `/api/auth/unpair` without resetting the admin's personal credentials.
+* **Human Admin Password:** Used by the owner for web browser access (default: `admin`).
+* **Server Pairing Key:** Generated by your central server and provisioned during pairing.
+* **Resilience:** Changing the admin password never breaks server automation; unpairing a node revokes server access instantly without wiping the owner's password.
 
----
+### Allowed Authentication Headers & Methods
+For any protected endpoint, your server can authenticate using **any** of the following:
 
-### Direct Header Authentication
-For high-performance automated REST requests without session cookies, central servers and background workers can authenticate by passing the pairing key in an HTTP header:
+1. **Direct Server Header (Recommended for automated backends):**
+   ```http
+   X-Server-Key: abcdefgh12345678
+   ```
+   *(Alternative aliases: `X-Pairing-Key: abcdefgh12345678` or `Authorization: Bearer abcdefgh12345678`)*
+2. **Session Cookie:**
+   ```http
+   Cookie: session=6e8baa75d0de753643d6b850d0e4623e
+   ```
+3. **HTTP Basic Auth:**
+   ```http
+   Authorization: Basic YWRtaW46dHVzYXJyYW5qYW4=
+   ```
 
-```http
-X-Server-Key: abcdefgh12345678
+### Initial Server Pairing Lifecycle Handshake
+
 ```
-*(Also accepts `X-Pairing-Key: abcdefgh12345678` or `Authorization: Bearer abcdefgh12345678`)*
-
-When this header is present and its SHA256 matches the stored pairing hash, the node grants administrative access instantly without cookie/session overhead.
-
----
-
-### Pairing & Provisioning Lifecycle
-
-```
-Central Server / User                            ESP8266 SmartHome Node
-       │                                                    │
-       │  1. POST /api/auth/pair                            │
-       │     Body: {"serverKey":"abcdefgh..."}              │
-       ├───────────────────────────────────────────────────►│
-       │                                                    │ (Computes SHA256 & persists
-       │                                                    │  to /config/system.json)
-       │  2. 200 OK: {"success":true,"paired":true}        │
-       │◄───────────────────────────────────────────────────┤
-       │                                                    │
-       │  3. Subsequent REST Calls                          │
-       │     Header: X-Server-Key: abcdefgh...             │
-       ├───────────────────────────────────────────────────►│ (Instantly authorized)
-       │  4. 200 OK                                         │
-       │◄───────────────────────────────────────────────────┤
+Central Server                                                  ESP8266 Node
+      │                                                              │
+      │  1. POST /api/auth/pair                                      │
+      │     Body: {"serverKey":"abcdefgh12345678"}                   │
+      ├─────────────────────────────────────────────────────────────►│
+      │                                                              │ (Computes SHA256 & persists
+      │                                                              │  hash to LittleFS)
+      │  2. 200 OK: {"success":true,"paired":true}                   │
+      │◄─────────────────────────────────────────────────────────────┤
+      │                                                              │
+      │  3. All Subsequent REST Calls                                │
+      │     Header: X-Server-Key: abcdefgh12345678                   │
+      ├─────────────────────────────────────────────────────────────►│ (Instantly authorized)
+      │  4. 200 OK: Response Data                                    │
+      │◄─────────────────────────────────────────────────────────────┤
 ```
 
 ---
 
-## 2. I2C Bus & PCF8574 Pin Expander
+## 2. Hardware Pin Architecture & PCF8574 Expander
 
-### Dynamic Pin Configuration
-Any GPIO pins can be assigned to software I2C on the fly via the Web UI or `/api/i2c`:
-- **Default SDA Pin:** GPIO 4 (`D2` on NodeMCU)
-- **Default SCL Pin:** GPIO 5 (`D1` on NodeMCU)
-- **Clock Speed:** 100 kHz standard mode with software pull-ups enabled.
-- **Safety Lock:** When I2C is enabled, the configured SDA and SCL pins are automatically marked **RESERVED** by `GpioManager`, preventing relay conflicts.
+### Native ESP Pins vs I2C Extended Pins (P0–P7)
+* **Native NodeMCU Pins:** Physical GPIOs (0 to 16).
+* **Extended I2C PCF8574 Pins (Virtual Pins 100 to 107):**
+  * When I2C is active, the firmware maps virtual IDs **100 through 107** to PCF8574 expander outputs **P0 through P7**.
+  * All APIs (`/api/gpio/state`, pulse timers, automation rules) treat pins 100–107 identically to native ESP pins.
 
-### Extended Relays P0–P7 (Pins 100–107)
-When a PCF8574 / PCF8574A 8-bit expander is attached to the I2C bus:
-- The firmware maps virtual pin IDs **100 through 107** to expander outputs `P0` through `P7`.
-- State changes, pulses, timers, and automation rules operate on pins 100–107 identically to native ESP pins.
-- Relays default to active-low logic (initial byte `0xFF` ensures relays stay open/off during cold boot).
+### Pin Safety Map & Boot Strapping Warnings
 
----
-
-## 3. REST API Specification
-
-### Authentication & Pairing Endpoints
-
-#### 1. Login
-- **Endpoint:** `POST /api/auth/login`
-- **Auth Required:** No
-- **Headers:** `Content-Type: application/json`
-- **Request Body:**
-```json
-{
-  "username": "admin",
-  "password": "tusarranjan"
-}
-```
-*(Password can be either the admin password OR the paired server key)*
-- **Success Response (200 OK):**
-```json
-{
-  "success": true,
-  "token": "7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d",
-  "username": "admin"
-}
-```
-*(Sets HTTP-Only cookie `session=7a8b9c0d...; Path=/`)*
-- **Error Response (401 Unauthorized):**
-```json
-{
-  "success": false,
-  "error": "Invalid username or password"
-}
-```
+| Pin Header | GPIO ID | Safe for Relays? | Hardware Characteristics & Boot Rules |
+| :--- | :---: | :---: | :--- |
+| **P0 to P7** | `100` to `107` | **YES (Recommended)** | **Safe Isolated I2C Relays:** No boot pins, no pull-ups, zero boot interference. |
+| **D5** | `14` | **YES** | **Safe Native Pin:** Neutral SPI CLK pin, no pull-up, boot-neutral. |
+| **D6** | `12` | **YES** | **Safe Native Pin:** Neutral SPI MISO pin, no pull-up, boot-neutral. |
+| **D7** | `13` | **YES** | **Safe Native Pin:** Neutral SPI MOSI pin, no pull-up, boot-neutral. |
+| **D0** | `16` | **YES** | **Safe Native Pin:** RTC GPIO; no pull-up resistor. |
+| **D1** | `5` | **RESERVED** | **I2C SCL Clock Bus.** Reserved when I2C is enabled. |
+| **D2** | `4` | **RESERVED** | **I2C SDA Data Bus.** Reserved when I2C is enabled. |
+| **D3** | `0` | ⚠️ **Avoid for Relays** | **FLASH Button & Boot Strapping Pin:** Hardwired to 10k pull-up and button. Must be HIGH at boot. Optocoupler circuits cause relay lockup. |
+| **D4** | `2` | ⚠️ **Avoid for Relays** | **Onboard Blue LED:** Hardwired to 10k pull-up. Must be HIGH at boot. |
+| **D8** | `15` | ❌ **Do NOT use for Relays** | **Boot Strapping Pin:** Must be held LOW at boot. Relay loads pull it HIGH and cause boot failure. |
 
 ---
 
-#### 2. Check Authentication Session
-- **Endpoint:** `GET /api/auth/check`
-- **Auth Required:** Optional (reads session cookie or header)
-- **Response (200 OK):**
-```json
-{
-  "authenticated": true,
-  "adminUser": "admin"
-}
-```
+## 3. REST API Endpoints: Complete Send & Receive Schemas
+
+### 1. Authentication & Security
+
+#### A. Login (Create Session)
+* **Endpoint:** `POST /api/auth/login`
+* **Auth Required:** No
+* **Request ("Send"):**
+  ```json
+  {
+    "username": "admin",
+    "password": "tusarranjan"
+  }
+  ```
+  *(Note: `password` accepts either the human admin password OR the paired `serverKey`)*
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "token": "6e8baa75d0de753643d6b850d0e4623e",
+    "message": "Login successful"
+  }
+  ```
+  *Headers Returned:* `Set-Cookie: session=6e8baa75d0de753643d6b850d0e4623e; Path=/; HttpOnly`
+* **Response ("Receive") - 401 Unauthorized:**
+  ```json
+  {
+    "success": false,
+    "error": "Invalid username or password"
+  }
+  ```
 
 ---
 
-#### 3. Pair Central Server Key
-- **Endpoint:** `POST /api/auth/pair`
-- **Auth Required:** Yes (must be logged in as admin OR provide `adminPassword` in the JSON body)
-- **Request Body:**
-```json
-{
-  "serverKey": "abcdefgh12345678",
-  "adminPassword": "admin"
-}
-```
-- **Success Response (200 OK):**
-```json
-{
-  "success": true,
-  "message": "Device successfully paired to Central Server"
-}
-```
+#### B. Check Authentication Status
+* **Endpoint:** `GET /api/auth/check`
+* **Auth Required:** No
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "authenticated": true,
+    "username": "admin",
+    "paired": true
+  }
+  ```
 
 ---
 
-#### 4. Query Pairing Status
-- **Endpoint:** `GET /api/auth/pair`
-- **Auth Required:** No
-- **Response (200 OK):**
-```json
-{
-  "paired": true,
-  "adminUser": "admin"
-}
-```
+#### C. Pair Node with Central Server
+* **Endpoint:** `POST /api/auth/pair`
+* **Auth Required:** No (if node is currently unpaired) / Yes (if re-pairing an already paired node)
+* **Request ("Send"):**
+  ```json
+  {
+    "serverKey": "abcdefgh12345678",
+    "adminPassword": "admin"
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "paired": true,
+    "message": "Device successfully paired to Central Server"
+  }
+  ```
 
 ---
 
-#### 5. Unpair Central Server Key
-- **Endpoint:** `POST /api/auth/unpair`
-- **Auth Required:** Yes
-- **Response (200 OK):**
-```json
-{
-  "success": true,
-  "message": "Device unpaired successfully"
-}
-```
+#### D. Unpair Node from Central Server
+* **Endpoint:** `POST /api/auth/unpair`
+* **Auth Required:** Yes (`X-Server-Key` or session cookie)
+* **Request ("Send"):** `{}`
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Device unpaired successfully"
+  }
+  ```
 
 ---
 
-#### 6. Logout
-- **Endpoint:** `POST /api/auth/logout`
-- **Auth Required:** No
-- **Response (200 OK):**
-```json
-{
-  "success": true,
-  "message": "Logged out successfully"
-}
-```
+#### E. Change Administrator Password
+* **Endpoint:** `POST /api/settings/password` (or `POST /api/auth/password`)
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "currentPassword": "admin",
+    "newPassword": "tusarranjan"
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Password changed successfully"
+  }
+  ```
 
 ---
 
-### System Diagnostics & Status
+### 2. System Overview & Live Telemetry
 
-#### Query Node Diagnostics
-- **Endpoint:** `GET /api/status`
-- **Auth Required:** No
-- **Response (200 OK):**
-```json
-{
-  "deviceName": "SmartHome-NodeMCU",
-  "firmwareVersion": "1.6.0",
-  "hardware": "ESP8266 (ESP-12E/F) NodeMCU",
-  "uptimeSec": 3482,
-  "bootCount": 4,
-  "cpuFreq": 80,
-  "mac": "8C:4F:00:56:5D:72",
-  "nodeId": "SmartHome-Setup-5D72",
-  "chipId": "565d72",
-  "formattedTime": "22:15:00",
-  "freeHeap": 25264,
-  "minFreeHeap": 24890,
-  "flashSize": 4194304,
-  "fsTotal": 2072576,
-  "fsUsed": 188416,
-  "fsFree": 1884160,
-  "wifiMode": 2,
-  "apActive": true,
-  "apSsid": "SmartHome-Setup-5D72",
-  "apIp": "192.168.4.1",
-  "staConnected": true,
-  "staSsid": "MyHomeRouter",
-  "staIp": "192.168.1.35",
-  "paired": true,
-  "i2cEnabled": true,
-  "pcfDetected": true
-}
-```
-
----
-
-### I2C Bus & Expander Management
-
-#### 1. Query I2C Bus Configuration
-- **Endpoint:** `GET /api/i2c`
-- **Auth Required:** No
-- **Response (200 OK):**
-```json
-{
-  "enabled": true,
-  "sdaPin": 4,
-  "sclPin": 5,
-  "address": 39,
-  "addressHex": "0x27",
-  "detected": true,
-  "detectedAddress": 39,
-  "extendedPins": [100, 101, 102, 103, 104, 105, 106, 107]
-}
-```
+#### A. Comprehensive System Diagnostics
+* **Endpoint:** `GET /api/status`
+* **Auth Required:** No
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "deviceName": "SmartHome-NodeMCU",
+    "firmwareVersion": "1.6.0",
+    "hardware": "ESP8266 (ESP-12E/F) NodeMCU",
+    "coreVersion": "3.1.2",
+    "sdkVersion": "2.2.2-dev(38a443e)",
+    "uptimeSec": 1240,
+    "bootCount": 7,
+    "cpuFreq": 80,
+    "mac": "8C:4F:00:56:5D:72",
+    "nodeId": "NODE-8C4F00565D72",
+    "chipId": "565d72",
+    "formattedTime": "2026-11-25 00:30:15 (IST)",
+    "resetReason": "External System",
+    "resetDetails": "Hardware Reset (External Reset Pin / Flash button pressed)",
+    "freeHeap": 18456,
+    "minFreeHeap": 16184,
+    "maxFreeBlock": 12456,
+    "heapFragPercent": 25,
+    "flashSize": 4194304,
+    "flashConfigSize": 4194304,
+    "flashSpeed": 40000000,
+    "flashMode": "DIO (Dual I/O)",
+    "flashChipId": "16405e",
+    "sketchSize": 501264,
+    "freeSketchSpace": 1593344,
+    "fsTotal": 2072576,
+    "fsUsed": 204800,
+    "fsFree": 1867776,
+    "fsPercent": 9,
+    "wifiMode": 2,
+    "apActive": true,
+    "apSsid": "SmartHome-Setup-5D72",
+    "apIp": "192.168.4.1",
+    "staConnected": true,
+    "staSsid": "Highspeed Net 0",
+    "staIp": "192.168.1.28",
+    "staGateway": "192.168.1.1",
+    "staSubnet": "255.255.255.0",
+    "rssi": -34,
+    "paired": true,
+    "i2cEnabled": true,
+    "pcfDetected": true,
+    "ntpSynced": true,
+    "tzOffset": 19800
+  }
+  ```
 
 ---
 
-#### 2. Configure I2C Settings
-- **Endpoint:** `POST /api/i2c`
-- **Auth Required:** Yes
-- **Request Body:**
-```json
-{
-  "enabled": true,
-  "sdaPin": 4,
-  "sclPin": 5,
-  "address": 39,
-  "reboot": false
-}
-```
-*(Set `reboot: true` to immediately restart the node and initialize expander channels)*
-- **Response (200 OK):**
-```json
-{
-  "success": true,
-  "message": "I2C settings saved successfully"
-}
-```
+#### B. Aggregated Full Node State (`/api/all`)
+Fetches all channels, automation rules, I2C, and receiver configurations in a single round-trip.
+* **Endpoint:** `GET /api/all`
+* **Auth Required:** No
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "status": { "...system status object..." },
+    "gpio": [ "...channels array..." ],
+    "automation": [ "...rules array..." ],
+    "receiver": { "...receiver config..." },
+    "i2c": { "...i2c config..." }
+  }
+  ```
 
 ---
 
-#### 3. Live I2C Bus Scan
-- **Endpoint:** `GET /api/i2c/scan?sda=4&scl=5`
-- **Auth Required:** No
-- **Query Parameters:** `sda` (optional), `scl` (optional)
-- **Response (200 OK):**
-```json
-{
-  "success": true,
-  "sdaPin": 4,
-  "sclPin": 5,
-  "count": 1,
-  "devices": [
+#### C. System Event Logs Ring Buffer
+* **Endpoint:** `GET /api/logs`
+* **Auth Required:** No
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "count": 3,
+    "logs": [
+      { "uptimeMs": 105, "msg": "[STORAGE] LittleFS mounted successfully." },
+      { "uptimeMs": 240, "msg": "[PCF8574] Expander detected at I2C address 0x20" },
+      { "uptimeMs": 3120, "msg": "[WIFI] Connected to Highspeed Net 0 (IP: 192.168.1.28)" }
+    ]
+  }
+  ```
+
+---
+
+### 3. GPIO & Relay Control
+
+#### A. List All Channels
+* **Endpoint:** `GET /api/gpio`
+* **Auth Required:** No
+* **Response ("Receive") - 200 OK:**
+  ```json
+  [
     {
-      "address": 39,
-      "hex": "0x27",
-      "type": "PCF8574"
+      "id": 1,
+      "pin": 100,
+      "enabled": true,
+      "state": false,
+      "label": "P0 (PCF8574 Relay 1)",
+      "note": "I2C Expander Pin P0 (Safe isolated relay output)",
+      "bootSensitive": false,
+      "name": "Living Room Light",
+      "room": "Living Room",
+      "function": "Light",
+      "activeLow": true,
+      "initialMode": 0
+    },
+    {
+      "id": 9,
+      "pin": 14,
+      "enabled": true,
+      "state": true,
+      "label": "D5 (GPIO14)",
+      "note": "Safe SPI CLK, boot-neutral",
+      "bootSensitive": false,
+      "name": "Bedroom Fan",
+      "room": "Bedroom",
+      "function": "Fan",
+      "activeLow": true,
+      "initialMode": 0
+    }
+  ]
+  ```
+
+---
+
+#### B. Set Relay State / Toggle / Pulse
+* **Endpoint:** `POST /api/gpio/state`
+* **Auth Required:** Yes
+* **Request ("Send") - Mode 1: Explicit ON / OFF:**
+  ```json
+  {
+    "id": 1,
+    "state": true,
+    "action": "setState"
+  }
+  ```
+* **Request ("Send") - Mode 2: Toggle State:**
+  ```json
+  {
+    "id": 1,
+    "action": "toggle"
+  }
+  ```
+* **Request ("Send") - Mode 3: Timed Pulse (Inch Mode):**
+  ```json
+  {
+    "id": 1,
+    "action": "pulse",
+    "duration": 750
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "State updated"
+  }
+  ```
+
+---
+
+#### C. Add New Channel
+* **Endpoint:** `POST /api/gpio`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "pin": 101,
+    "name": "Dining Light",
+    "room": "Dining Room",
+    "function": "Light",
+    "activeLow": true,
+    "initialMode": 0
+  }
+  ```
+  *Field Notes:*
+  - `initialMode`: `0` = Restore Last State, `1` = Always Boot OFF, `2` = Always Boot ON.
+  - `activeLow`: `true` for standard active-low relay boards (LOW = Relay ON).
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "GPIO channel created",
+    "id": 2
+  }
+  ```
+
+---
+
+#### D. Update Channel Configuration
+* **Endpoint:** `POST /api/gpio/update`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "id": 2,
+    "name": "Main Chandelier",
+    "room": "Living Room",
+    "function": "Light",
+    "activeLow": true,
+    "initialMode": 0,
+    "enabled": true
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "GPIO channel updated"
+  }
+  ```
+
+---
+
+#### E. Delete Channel
+* **Endpoint:** `POST /api/gpio/delete`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "id": 9
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "GPIO channel removed"
+  }
+  ```
+
+---
+
+### 4. I2C Bus & PCF8574 Expander
+
+#### A. Query I2C Bus Configuration & Status
+* **Endpoint:** `GET /api/i2c`
+* **Auth Required:** No
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "enabled": true,
+    "sdaPin": 4,
+    "sclPin": 5,
+    "address": 32,
+    "addressHex": "0x20",
+    "detected": true,
+    "detectedAddress": 32,
+    "outputByte": 255
+  }
+  ```
+
+---
+
+#### B. Save I2C Configuration
+* **Endpoint:** `POST /api/i2c`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "enabled": true,
+    "sdaPin": 4,
+    "sclPin": 5,
+    "address": 32,
+    "reboot": false
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "I2C settings saved successfully"
+  }
+  ```
+
+---
+
+#### C. Auto-Populate 8 PCF8574 Channels (P0–P7)
+* **Endpoint:** `POST /api/i2c/auto-channels`
+* **Auth Required:** Yes
+* **Request ("Send"):** `{}`
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Added 8 PCF8574 relay channels (P0-P7)"
+  }
+  ```
+
+---
+
+#### D. Live I2C Hardware Bus Scan
+* **Endpoint:** `GET /api/i2c/scan?sda=4&scl=5`
+* **Auth Required:** No
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "sdaPin": 4,
+    "sclPin": 5,
+    "count": 1,
+    "devices": [
+      {
+        "address": 32,
+        "hex": "0x20",
+        "type": "PCF8574 (Standard 8-Ch Expander)"
+      }
+    ]
+  }
+  ```
+
+---
+
+### 5. Remote Command Execution
+
+#### Direct Command Dispatch (`/api/commands/execute` or `/api/command`)
+Used by automation servers to issue high-level commands and receive an instant execution confirmation.
+* **Endpoint:** `POST /api/commands/execute`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "commandId": "cmd-8821039",
+    "action": "setState",
+    "id": 1,
+    "state": true
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "commandId": "cmd-8821039",
+    "nodeId": "NODE-8C4F00565D72",
+    "success": true,
+    "action": "setState",
+    "status": "EXECUTED",
+    "channelId": 1,
+    "state": true
+  }
+  ```
+
+---
+
+### 6. Wi-Fi Network Management
+
+#### A. Wi-Fi Status
+* **Endpoint:** `GET /api/wifi/status`
+* **Auth Required:** No
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "mode": 2,
+    "apActive": true,
+    "apSsid": "SmartHome-Setup-5D72",
+    "apIp": "192.168.4.1",
+    "staConnected": true,
+    "staSsid": "Highspeed Net 0",
+    "staIp": "192.168.1.28",
+    "staGateway": "192.168.1.1",
+    "rssi": -33
+  }
+  ```
+
+---
+
+#### B. Scan Nearby Wi-Fi Networks
+* **Endpoint:** `GET /api/wifi/scan`
+* **Auth Required:** Yes
+* **Response ("Receive") - 200 OK:**
+  ```json
+  [
+    { "ssid": "Highspeed Net 0", "rssi": -33, "encryption": "WPA2", "channel": 6 },
+    { "ssid": "Neighbor_WiFi", "rssi": -78, "encryption": "WPA2", "channel": 1 }
+  ]
+  ```
+
+---
+
+#### C. Connect to Wi-Fi Network
+* **Endpoint:** `POST /api/wifi/connect`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "ssid": "Highspeed Net 0",
+    "password": "tusarranjan"
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Connecting to Highspeed Net 0..."
+  }
+  ```
+
+---
+
+#### D. Configure Static IP vs DHCP
+* **Endpoint:** `POST /api/wifi/ip`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "useStaticIp": true,
+    "staticIp": "192.168.1.150",
+    "staticGateway": "192.168.1.1",
+    "staticSubnet": "255.255.255.0",
+    "staticDns1": "8.8.8.8",
+    "staticDns2": "1.1.1.1"
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "IP configuration updated"
+  }
+  ```
+
+---
+
+#### E. Set Wi-Fi Operational Mode
+* **Endpoint:** `POST /api/wifi/mode`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "mode": 1
+  }
+  ```
+  *(Mode: `0` = AP Only, `1` = Station / Router Only, `2` = Dual AP + Station)*
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Wi-Fi mode updated"
+  }
+  ```
+
+---
+
+#### F. Reset Wi-Fi Credentials
+* **Endpoint:** `POST /api/wifi/reset`
+* **Auth Required:** Yes
+* **Request ("Send"):** `{}`
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Wi-Fi credentials erased. Node restarting in AP mode..."
+  }
+  ```
+
+---
+
+### 7. Central Receiver Telemetry Client
+
+#### A. Query Central Telemetry Configuration
+* **Endpoint:** `GET /api/receiver`
+* **Auth Required:** No
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "enabled": true,
+    "serverHost": "192.168.1.100",
+    "serverPort": 2000,
+    "intervalSec": 30,
+    "sendOnStateChange": true,
+    "authToken": "abcdefgh12345678",
+    "nodeId": "NODE-8C4F00565D72",
+    "nodeName": "SmartHome-NodeMCU"
+  }
+  ```
+
+---
+
+#### B. Save Central Telemetry Configuration
+* **Endpoint:** `POST /api/receiver`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "enabled": true,
+    "serverHost": "192.168.1.100",
+    "serverPort": 2000,
+    "intervalSec": 30,
+    "sendOnStateChange": true,
+    "authToken": "abcdefgh12345678",
+    "nodeName": "Living Room Hub"
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Receiver settings saved"
+  }
+  ```
+
+---
+
+#### C. Trigger Immediate Telemetry Push
+* **Endpoint:** `POST /api/receiver/push`
+* **Auth Required:** Yes
+* **Request ("Send"):** `{}`
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Telemetry packet dispatched to Central Server"
+  }
+  ```
+
+---
+
+#### D. Test Receiver Connection
+* **Endpoint:** `POST /api/receiver/test`
+* **Auth Required:** Yes
+* **Request ("Send"):** `{}`
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "code": 200,
+    "message": "Connection verified successfully"
+  }
+  ```
+
+---
+
+### 8. Automation Engine (Edge Rules)
+
+The node executes independent edge rules locally without requiring constant server connectivity.
+
+#### A. List Automation Rules
+* **Endpoint:** `GET /api/automation`
+* **Auth Required:** No
+* **Response ("Receive") - 200 OK:**
+  ```json
+  [
+    {
+      "id": 1,
+      "name": "Auto-Off Bathroom Fan",
+      "enabled": true,
+      "type": 0,
+      "sourceGpioId": 1,
+      "targetGpioId": 2,
+      "condState": true,
+      "targetState": false,
+      "param1": 300
+    }
+  ]
+  ```
+
+---
+
+#### B. Add Automation Rule
+* **Endpoint:** `POST /api/automation`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "name": "Auto Off Hallway Light",
+    "type": 0,
+    "sourceGpioId": 1,
+    "targetGpioId": 1,
+    "condState": true,
+    "targetState": false,
+    "param1": 180
+  }
+  ```
+  *Rule Types:* `0` = Timer/Delay (seconds), `1` = Interlock/Mirror, `2` = Schedule (Epoch/RTC).
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Automation rule created"
+  }
+  ```
+
+---
+
+#### C. Toggle / Delete Automation Rule
+* **Toggle:** `POST /api/automation/toggle` | Body: `{"id": 1}`
+* **Delete:** `POST /api/automation/delete` | Body: `{"id": 1}`
+
+---
+
+### 9. Configuration Backup, Restore & Firmware Streaming
+
+#### A. Download Complete JSON Settings Backup
+* **Endpoint:** `GET /api/backup/download`
+* **Auth Required:** Yes
+* **Response ("Receive") - 200 OK:** Returns a downloadable file attachment containing all system, Wi-Fi, GPIO, I2C, and automation settings.
+
+---
+
+#### B. Restore JSON Settings Backup
+* **Endpoint:** `POST /api/backup/restore`
+* **Auth Required:** Yes
+* **Request ("Send"):** Upload the full JSON document downloaded from `/api/backup/download`.
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Configuration restored successfully. Device restarting..."
+  }
+  ```
+
+---
+
+#### C. Stream Running Firmware Binary to Browser
+* **Endpoint:** `GET /api/firmware/download`
+* **Auth Required:** Yes
+* **Response ("Receive") - 200 OK:** Reads the microcontroller's SPI flash chip byte-by-byte and streams a bit-for-bit `.bin` backup file (`firmware_backup_8C4F00565D72_v1.6.0.bin`).
+
+---
+
+### 10. LittleFS Filesystem Explorer
+
+* **List Directory:** `GET /api/fs/list?dir=/config`
+* **Download File:** `GET /api/fs/download?path=/config/wifi.json`
+* **Upload File:** `POST /api/fs/upload` (Multipart form-data)
+* **Delete File:** `POST /api/fs/delete` | Body: `{"path": "/config/sample.json"}`
+* **Rename File:** `POST /api/fs/rename` | Body: `{"oldPath": "/old.json", "newPath": "/new.json"}`
+
+---
+
+### 11. Device Settings & Maintenance
+
+#### A. Soft Reboot
+* **Endpoint:** `POST /api/system/reboot`
+* **Auth Required:** Yes
+* **Request ("Send"):** `{}`
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Device restarting..."
+  }
+  ```
+
+---
+
+#### B. Factory Reset (Wipe Flash Configurations)
+* **Endpoint:** `POST /api/system/factory-reset`
+* **Auth Required:** Yes
+* **Request ("Send"):** `{}`
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Factory reset complete. Device rebooting..."
+  }
+  ```
+
+---
+
+#### C. Force NTP Clock Sync
+* **Endpoint:** `POST /api/settings/ntp-sync`
+* **Auth Required:** Yes
+* **Request ("Send"):** `{}`
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "NTP time synchronized successfully"
+  }
+  ```
+
+---
+
+## 4. Async TCP Telemetry Socket Protocol (Port 2000)
+
+When `ReceiverClient` is enabled, the node connects directly to your central server's TCP socket on port `2000` (configurable).
+
+### Outbound Telemetry Payload (Node -> Server)
+The node dispatches a single-line newline-delimited (`\n`) JSON string:
+* On boot (`eventType: "boot"`)
+* Periodically (`eventType: "periodic"`, e.g. every 30s)
+* Immediately upon any relay state change (`eventType: "state_change"`)
+
+```json
+{
+  "nodeId": "NODE-8C4F00565D72",
+  "nodeName": "SmartHome-NodeMCU",
+  "eventType": "state_change",
+  "timestamp": "2026-11-25 00:35:10 (IST)",
+  "epoch": 1795547110,
+  "ip": "192.168.1.28",
+  "gateway": "192.168.1.1",
+  "mac": "8C:4F:00:56:5D:72",
+  "rssi": -34,
+  "uptimeSec": 1540,
+  "freeHeap": 18456,
+  "firmwareVersion": "1.6.0",
+  "token": "abcdefgh12345678",
+  "channels": [
+    {
+      "id": 1,
+      "pin": 100,
+      "enabled": true,
+      "state": true,
+      "name": "Living Room Light",
+      "room": "Living Room",
+      "function": "Light",
+      "activeLow": true
+    },
+    {
+      "id": 2,
+      "pin": 101,
+      "enabled": true,
+      "state": false,
+      "name": "Dining Light",
+      "room": "Dining Room",
+      "function": "Light",
+      "activeLow": true
+    }
+  ],
+  "acks": [
+    {
+      "command_uuid": "cmd-8821",
+      "success": true,
+      "status": "ACKNOWLEDGED"
     }
   ]
 }
@@ -332,273 +973,152 @@ When a PCF8574 / PCF8574A 8-bit expander is attached to the I2C bus:
 
 ---
 
-#### 4. Auto-Populate PCF8574 Extended Channels
-Automatically populates all 8 relay channels mapped to PCF8574 extended pins P0 through P7 (virtual pin IDs 100 to 107) with active-low logic.
-- **Endpoint:** `POST /api/i2c/auto-channels`
-- **Auth Required:** Yes
-- **Response (200 OK):**
+### Server Inbound Response & Remote Command Dispatch (Server -> Node)
+When your central server receives the telemetry line, it can reply with a standard status acknowledgment **and optionally attach commands to execute on the node**:
+
 ```json
 {
-  "success": true,
-  "message": "Added 8 PCF8574 relay channels (P0-P7)"
-}
-```
-
----
-
-#### 1. List All Configured Channels
-- **Endpoint:** `GET /api/gpio`
-- **Auth Required:** No
-- **Response (200 OK):**
-```json
-[
-  {
-    "id": 1,
-    "pin": 100,
-    "name": "Living Room Light",
-    "room": "Living Room",
-    "function": "Light",
-    "activeLow": true,
-    "initialMode": 0,
-    "enabled": true,
-    "state": false
-  },
-  {
-    "id": 2,
-    "pin": 101,
-    "name": "Ceiling Fan",
-    "room": "Living Room",
-    "function": "Fan",
-    "activeLow": true,
-    "initialMode": 0,
-    "enabled": true,
-    "state": true
-  }
-]
-```
-
----
-
-#### 2. Add New Relay Channel
-- **Endpoint:** `POST /api/gpio`
-- **Auth Required:** Yes
-- **Request Body:**
-```json
-{
-  "pin": 100,
-  "name": "Garden Floodlight",
-  "room": "Garden",
-  "function": "Light",
-  "activeLow": true,
-  "initialMode": 0
-}
-```
-- **Pin Mapping Guide:**
-  - `100` to `107`: PCF8574 Extended Pins `P0` through `P7`.
-  - `16` (`D0`), `14` (`D5`), `12` (`D6`), `13` (`D7`), `0` (`D3`), `2` (`D4`), `15` (`D8`): Native ESP pins.
-- **Initial Mode Options:**
-  - `0`: Restore last saved state on boot (default).
-  - `1`: Always boot OFF.
-  - `2`: Always boot ON.
-
----
-
-#### 3. Update Existing Channel
-- **Endpoint:** `POST /api/gpio/update`
-- **Auth Required:** Yes
-- **Request Body:**
-```json
-{
-  "id": 1,
-  "name": "Master Bed Lamp",
-  "room": "Bedroom",
-  "function": "Light",
-  "activeLow": true,
-  "initialMode": 0,
-  "enabled": true
-}
-```
-
----
-
-#### 4. Delete Channel
-- **Endpoint:** `POST /api/gpio/delete`
-- **Auth Required:** Yes
-- **Request Body:**
-```json
-{
-  "id": 1
-}
-```
-
----
-
-#### 5. Change Relay State (On / Off / Toggle / Pulse)
-- **Endpoint:** `POST /api/gpio/state`
-- **Auth Required:** Yes
-- **Turn Explicitly ON / OFF:**
-```json
-{
-  "id": 1,
-  "state": true
-}
-```
-- **Toggle State (Flip current state):**
-```json
-{
-  "id": 1,
-  "action": "toggle"
-}
-```
-- **Pulse Output (Turn ON for X milliseconds, then auto-turn OFF):**
-```json
-{
-  "id": 1,
-  "action": "pulse",
-  "duration": 750
-}
-```
-- **Success Response (200 OK):**
-```json
-{
-  "success": true,
-  "message": "State updated"
-}
-```
-
----
-
-### Wi-Fi Network Management
-
-#### 1. Scan Available Wi-Fi Networks
-- **Endpoint:** `GET /api/wifi/scan`
-- **Auth Required:** No
-- **Response (200 OK):**
-```json
-{
-  "count": 2,
-  "networks": [
-    { "ssid": "Home-Network-5G", "rssi": -58, "encryption": "WPA2" },
-    { "ssid": "Office-IoT", "rssi": -72, "encryption": "WPA2" }
+  "status": "OK",
+  "commands": [
+    {
+      "command_uuid": "cmd-99342",
+      "action": "setState",
+      "id": 1,
+      "state": false
+    },
+    {
+      "command_uuid": "cmd-99343",
+      "action": "pulse",
+      "id": 2,
+      "duration": 500
+    }
   ]
 }
 ```
 
----
-
-#### 2. Connect to Router
-- **Endpoint:** `POST /api/wifi/connect`
-- **Auth Required:** Yes
-- **Request Body:**
-```json
-{
-  "ssid": "MyHomeRouter",
-  "password": "RouterPassword123"
-}
-```
+*Supported Actions in TCP Response:*
+* `setState`: Sets relay state (`"state": true` or `"state": false`).
+* `toggle`: Flips channel state.
+* `pulse`: Turns channel ON for `"duration"` milliseconds, then auto-shuts OFF.
+* `reboot`: Soft reboots the microcontroller.
 
 ---
 
-#### 3. Update AP Hotspot Configuration
-- **Endpoint:** `POST /api/wifi/ap`
-- **Auth Required:** Yes
-- **Request Body:**
-```json
-{
-  "ssid": "SmartHome-Node-Custom",
-  "password": "mySecurePassword123"
-}
-```
-*(Password must be at least 8 characters for WPA2, or blank for Open AP)*
+## 5. Server Integration Implementation Examples
 
----
-
-### Automation Engine
-
-- **List Rules:** `GET /api/automation`
-- **Add Rule:** `POST /api/automation`
-  - Body: `{"name":"Auto-Off","type":0,"sourceGpioId":1,"targetGpioId":2,"condState":true,"targetState":false,"param1":30}`
-- **Delete Rule:** `POST /api/automation/delete`
-  - Body: `{"id":1}`
-
----
-
-### Central Receiver Telemetry Client
-
-- **Get Config:** `GET /api/receiver`
-- **Save Config:** `POST /api/receiver`
-  - Body: `{"enabled":true,"host":"192.168.1.100","port":2000,"heartbeatSec":15,"token":"server_secret"}`
-- **Test Ping:** `POST /api/receiver/test`
-
----
-
-### System Management & Logs
-
-- **Reboot Node:** `POST /api/system/reboot` (Auth Required)
-- **Factory Reset:** `POST /api/system/factory-reset` (Auth Required)
-- **System Logs:** `GET /api/logs` (Returns circular ring buffer logs)
-
----
-
-## 4. Client Implementation Examples
-
-### Python: Authenticate & Toggle Relay via Server Pairing Key
+### Python Server Client
 
 ```python
 import requests
 
-NODE_IP = "192.168.1.35"
-PAIRING_KEY = "abcdefgh12345678"
+NODE_IP = "192.168.1.28"
+SERVER_KEY = "abcdefgh12345678"
 
-# Option A: Direct Header Authentication (Recommended for background scripts)
 headers = {
-    "X-Server-Key": PAIRING_KEY,
+    "X-Server-Key": SERVER_KEY,
     "Content-Type": "application/json"
 }
 
-# Toggle Relay ID 1
+# 1. Fetch live system status
+status = requests.get(f"http://{NODE_IP}/api/status").json()
+print(f"Node: {status['deviceName']} (Heap Free: {status['freeHeap']} bytes)")
+
+# 2. Turn ON PCF8574 Relay 1 (Channel 1, Pin 100)
 resp = requests.post(
     f"http://{NODE_IP}/api/gpio/state",
-    headers=headers,
-    json={"id": 1, "action": "toggle"}
+    json={"id": 1, "state": True, "action": "setState"},
+    headers=headers
 )
-print("Toggle Response:", resp.json())
+print("Relay 1 ON:", resp.json())
 
-# Option B: Login with Admin + Server Pairing Key to get Session Token
-login_payload = {
-    "username": "admin",
-    "password": PAIRING_KEY  # Server key accepted directly as admin password!
-}
-session_resp = requests.post(f"http://{NODE_IP}/api/auth/login", json=login_payload)
-data = session_resp.json()
-print("Session Token:", data.get("token"))
+# 3. Toggle Relay 2 (Channel 2, Pin 101)
+resp = requests.post(
+    f"http://{NODE_IP}/api/gpio/state",
+    json={"id": 2, "action": "toggle"},
+    headers=headers
+)
+print("Relay 2 Toggled:", resp.json())
+
+# 4. Pulse Relay 3 for 500ms
+requests.post(
+    f"http://{NODE_IP}/api/gpio/state",
+    json={"id": 3, "action": "pulse", "duration": 500},
+    headers=headers
+)
 ```
 
 ---
 
-### cURL: Pair Node, Configure I2C Expander & Toggle Pin 100
+### Node.js / Express Client
+
+```javascript
+const axios = require('axios');
+
+const NODE_IP = '192.168.1.28';
+const SERVER_KEY = 'abcdefgh12345678';
+
+const client = axios.create({
+  baseURL: `http://${NODE_IP}`,
+  headers: {
+    'X-Server-Key': SERVER_KEY,
+    'Content-Type': 'application/json'
+  },
+  timeout: 4000
+});
+
+async function main() {
+  // Query all channels
+  const gpios = await client.get('/api/gpio');
+  console.log('Channels configured:', gpios.data.length);
+
+  // Turn Channel 1 ON
+  await client.post('/api/gpio/state', {
+    id: 1,
+    state: true,
+    action: 'setState'
+  });
+  console.log('Channel 1 is now ON');
+
+  // Trigger immediate telemetry push to central socket
+  await client.post('/api/receiver/push', {});
+}
+
+main().catch(console.error);
+```
+
+---
+
+### cURL Command Reference
 
 ```bash
-# 1. Pair central server key to node
-curl -X POST http://192.168.4.1/api/auth/pair \
+# Pair node with server key
+curl -X POST http://192.168.1.28/api/auth/pair \
   -H "Content-Type: application/json" \
   -d '{"serverKey": "abcdefgh12345678", "adminPassword": "admin"}'
 
-# 2. Enable I2C on SDA=D2 (GPIO 4) and SCL=D1 (GPIO 5)
-curl -X POST http://192.168.4.1/api/i2c \
-  -H "X-Server-Key: abcdefgh12345678" \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": true, "sdaPin": 4, "sclPin": 5, "address": 39, "reboot": false}'
+# Read system status
+curl http://192.168.1.28/api/status
 
-# 3. Add an expander relay on Pin 100 (P0)
-curl -X POST http://192.168.4.1/api/gpio \
-  -H "X-Server-Key: abcdefgh12345678" \
-  -H "Content-Type: application/json" \
-  -d '{"pin": 100, "name": "Balcony Light", "room": "Balcony", "function": "Light", "activeLow": true, "initialMode": 0}'
+# Read all configured channels
+curl http://192.168.1.28/api/gpio
 
-# 4. Turn the relay ON
-curl -X POST http://192.168.4.1/api/gpio/state \
+# Turn ON Channel 1 (Pin 100 / P0)
+curl -X POST http://192.168.1.28/api/gpio/state \
   -H "X-Server-Key: abcdefgh12345678" \
   -H "Content-Type: application/json" \
-  -d '{"id": 1, "state": true}'
+  -d '{"id": 1, "state": true, "action": "setState"}'
+
+# Toggle Channel 1
+curl -X POST http://192.168.1.28/api/gpio/state \
+  -H "X-Server-Key: abcdefgh12345678" \
+  -H "Content-Type: application/json" \
+  -d '{"id": 1, "action": "toggle"}'
+
+# Auto-populate 8 PCF8574 expander relays (P0-P7)
+curl -X POST http://192.168.1.28/api/i2c/auto-channels \
+  -H "X-Server-Key: abcdefgh12345678"
+
+# Soft reboot node
+curl -X POST http://192.168.1.28/api/system/reboot \
+  -H "X-Server-Key: abcdefgh12345678"
 ```
