@@ -20,6 +20,51 @@ class NodeManager {
     this.lastPollEpoch = 0;
     this.nodeExpanderStatus = new Map(); // nodeId -> { type, detected, address, outputByte, updatedAt }
     this.nodeAuthMismatch = new Map(); // nodeId -> boolean
+    this.nodeServerKeys = new Map(); // nodeId or ip -> serverKey
+    try { this.preloadServerKeys(); } catch {}
+  }
+
+  preloadServerKeys() {
+    try {
+      const nodes = this.db.getNodes ? this.db.getNodes() : [];
+      for (const n of nodes) {
+        if (n.server_key) {
+          this.nodeServerKeys.set(n.node_id, n.server_key);
+          if (n.ip) this.nodeServerKeys.set(n.ip, n.server_key);
+          if (n.ip_address) this.nodeServerKeys.set(n.ip_address, n.server_key);
+        }
+      }
+    } catch {}
+  }
+
+  getNodeAuthHeaders(nodeOrIp) {
+    let node = null;
+    let ip = '';
+    if (typeof nodeOrIp === 'object' && nodeOrIp !== null) {
+      node = nodeOrIp;
+      ip = node.ip || node.ip_address || '';
+    } else if (typeof nodeOrIp === 'string') {
+      if (nodeOrIp.includes('.')) {
+        ip = nodeOrIp;
+        node = this.db.getNodeByIp ? this.db.getNodeByIp(ip) : null;
+      } else {
+        node = this.db.getNode(nodeOrIp);
+        ip = node?.ip || node?.ip_address || '';
+      }
+    }
+
+    const headers = { 'Content-Type': 'application/json' };
+    const serverKey = node?.server_key || this.nodeServerKeys.get(node?.node_id) || this.nodeServerKeys.get(ip);
+    if (serverKey) {
+      headers['X-Server-Key'] = serverKey;
+      headers['Authorization'] = `Bearer ${serverKey}`;
+      return headers;
+    }
+
+    const user = node?.auth_username || this.config.node_auth?.username || 'admin';
+    const pass = node?.auth_password || this.config.node_auth?.password || 'admin';
+    headers['Authorization'] = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
+    return headers;
   }
 
   getNodeExpanderStatus(nodeId) {
@@ -1409,6 +1454,385 @@ class NodeManager {
         platform: 'SmartHome Edge Broker'
       }
     };
+  }
+
+  // === DUAL-AUTH PAIRING ENGINE ===
+
+  async pairNode(nodeId) {
+    if (nodeId.includes('30487D') || nodeId.toUpperCase().includes('BREAKER')) {
+      return { success: true, message: 'Tuya Smart Breaker does not require ESP pairing' };
+    }
+
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) {
+      throw new Error(`Node '${nodeId}' not found or has no IP address`);
+    }
+
+    const nodeIp = node.ip || node.ip_address;
+    const serverKey = crypto.randomBytes(16).toString('hex');
+    const user = node.auth_username || this.config.node_auth?.username || 'admin';
+    const pass = node.auth_password || this.config.node_auth?.password || 'admin';
+
+    const payload = {
+      serverKey,
+      adminPassword: pass
+    };
+
+    const res = await fetch(`http://${nodeIp}/api/auth/pair`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64')
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(4000)
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && (data.success !== false)) {
+      this.db.updateNodeServerKey(nodeId, serverKey, 1);
+      this.nodeServerKeys.set(nodeId, serverKey);
+      this.nodeServerKeys.set(nodeIp, serverKey);
+      this.db.logAudit('NODE_PAIRED', nodeId, `Successfully paired node '${node.name}' (${nodeIp}) with permanent server key`);
+      this.broadcastNotification('Node Paired', `Node '${node.name}' paired with secure server key.`, 'SUCCESS', 'SECURITY', { nodeId });
+      return { success: true, serverKey, message: 'Node paired successfully' };
+    } else {
+      throw new Error(data.error || data.message || `Node returned HTTP ${res.status}`);
+    }
+  }
+
+  async unpairNode(nodeId) {
+    if (nodeId.includes('30487D') || nodeId.toUpperCase().includes('BREAKER')) {
+      return { success: true };
+    }
+
+    const node = this.db.getNode(nodeId);
+    if (!node) return { success: true };
+
+    const nodeIp = node.ip || node.ip_address;
+    if (nodeIp) {
+      try {
+        const headers = this.getNodeAuthHeaders(node);
+        await fetch(`http://${nodeIp}/api/auth/unpair`, {
+          method: 'POST',
+          headers,
+          signal: AbortSignal.timeout(3000)
+        });
+      } catch (err) {
+        console.warn(`[NodeManager] Unpair warning for ${nodeId}:`, err.message);
+      }
+    }
+
+    this.db.clearNodeServerKey(nodeId);
+    this.nodeServerKeys.delete(nodeId);
+    if (nodeIp) this.nodeServerKeys.delete(nodeIp);
+    this.db.logAudit('NODE_UNPAIRED', nodeId, `Unpaired node '${node.name}' (${nodeIp}) from central server`);
+    return { success: true, message: 'Node unpaired successfully' };
+  }
+
+  // === I2C & PCF8574 EXPANDER MANAGEMENT ===
+
+  async scanNodeI2c(nodeId) {
+    if (nodeId.includes('30487D') || nodeId.toUpperCase().includes('BREAKER')) {
+      throw new Error('I2C scan not supported on Tuya Smart Breaker');
+    }
+
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) {
+      throw new Error(`Node '${nodeId}' not found or offline`);
+    }
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/i2c/scan`, {
+      headers,
+      signal: AbortSignal.timeout(4500)
+    });
+
+    if (!res.ok) {
+      throw new Error(`I2C scan failed with HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    let pcfDetected = false;
+    let pcfAddress = null;
+    if (Array.isArray(data.devices)) {
+      for (const dev of data.devices) {
+        const hex = (dev.hex || '').toLowerCase();
+        const addr = Number(dev.address);
+        if ((addr >= 0x20 && addr <= 0x27) || (addr >= 0x38 && addr <= 0x3f) || (dev.type || '').toUpperCase().includes('PCF8574')) {
+          pcfDetected = true;
+          pcfAddress = dev.hex || `0x${addr.toString(16)}`;
+          break;
+        }
+      }
+    }
+
+    this.db.updateNodeI2cStatus(nodeId, data.count > 0, pcfAddress, pcfDetected);
+    this.db.logAudit('I2C_SCAN', nodeId, `Scanned I2C bus: found ${data.count || 0} devices (PCF8574: ${pcfDetected ? pcfAddress : 'None'})`);
+    return { ...data, pcfDetected, pcfAddress };
+  }
+
+  async getNodeI2cStatus(nodeId) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) {
+      throw new Error(`Node '${nodeId}' not found or offline`);
+    }
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/i2c`, {
+      headers,
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Node returned HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async configureNodeI2c(nodeId, i2cConfig) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) {
+      throw new Error(`Node '${nodeId}' not found or offline`);
+    }
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/i2c`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(i2cConfig),
+      signal: AbortSignal.timeout(4000)
+    });
+
+    if (!res.ok) throw new Error(`Failed to configure I2C (HTTP ${res.status})`);
+    const data = await res.json();
+    this.db.logAudit('I2C_CONFIG', nodeId, `Configured I2C bus: enabled=${Boolean(i2cConfig.enabled)}`);
+    return data;
+  }
+
+  async autoProvisionNodePcfChannels(nodeId) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) {
+      throw new Error(`Node '${nodeId}' not found or offline`);
+    }
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/i2c/auto-channels`, {
+      method: 'POST',
+      headers,
+      signal: AbortSignal.timeout(4000)
+    });
+
+    const data = await res.json().catch(() => ({}));
+    // Pull the newly generated channels into Central Server SQLite
+    const syncRes = await this.syncNodePins(nodeId);
+    this.db.logAudit('I2C_AUTO_CHANNELS', nodeId, `Provisioned 8 PCF8574 expansion channels on node '${node.name}'`);
+    return { success: true, message: 'PCF8574 channels provisioned', syncRes, data };
+  }
+
+  // === INFRARED (IR) SUITE ===
+
+  async startNodeIrTraining(nodeId, timeoutSec = 25) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/ir/train/start`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ timeoutSec: Number(timeoutSec) || 25 }),
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Node returned HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async stopNodeIrTraining(nodeId) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/ir/train/stop`, {
+      method: 'POST',
+      headers,
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Node returned HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async getNodeIrTrainingResult(nodeId) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/ir/train/result`, {
+      headers,
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Node returned HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async getNodeIrRemotes(nodeId) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/ir/remotes`, {
+      headers,
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Node returned HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async saveNodeIrRemoteButton(nodeId, buttonData) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/ir/remotes/save`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(buttonData),
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Failed to save IR button (HTTP ${res.status})`);
+    return await res.json();
+  }
+
+  async deleteNodeIrRemote(nodeId, payload) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/ir/remotes/delete`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Failed to delete IR remote (HTTP ${res.status})`);
+    return await res.json();
+  }
+
+  async transmitNodeIr(nodeId, irPayload) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/ir/transmit`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(irPayload),
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`IR transmit failed (HTTP ${res.status})`);
+    this.db.logAudit('IR_TRANSMIT', nodeId, `Blasted IR signal: ${irPayload.protocol || 'NEC'} (${irPayload.code || irPayload.hexCode})`);
+    return await res.json();
+  }
+
+  // === HARDWARE LOGS & EDGE AUTOMATIONS ===
+
+  async getNodeHardwareLogs(nodeId) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/logs`, {
+      headers,
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Failed to fetch logs (HTTP ${res.status})`);
+    const data = await res.json();
+    return Array.isArray(data) ? data : (data.logs || []);
+  }
+
+  async getNodeAutomations(nodeId) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/automation`, {
+      headers,
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Failed to fetch automations (HTTP ${res.status})`);
+    return await res.json();
+  }
+
+  async deployAutomationToNode(nodeId, rule) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/automation`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(rule),
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Failed to deploy edge rule (HTTP ${res.status})`);
+    const data = await res.json();
+    this.db.logAudit('EDGE_RULE_DEPLOY', nodeId, `Deployed edge rule '${rule.name || 'Rule'}' to node`);
+    return data;
+  }
+
+  async toggleNodeAutomation(nodeId, ruleId) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/automation/toggle`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ id: Number(ruleId) }),
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Failed to toggle edge rule (HTTP ${res.status})`);
+    return await res.json();
+  }
+
+  async deleteNodeAutomation(nodeId, ruleId) {
+    const node = this.db.getNode(nodeId);
+    if (!node || (!node.ip && !node.ip_address)) throw new Error(`Node '${nodeId}' not found or offline`);
+
+    const nodeIp = node.ip || node.ip_address;
+    const headers = this.getNodeAuthHeaders(node);
+    const res = await fetch(`http://${nodeIp}/api/automation/delete`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ id: Number(ruleId) }),
+      signal: AbortSignal.timeout(3000)
+    });
+
+    if (!res.ok) throw new Error(`Failed to delete edge rule (HTTP ${res.status})`);
+    return await res.json();
   }
 }
 

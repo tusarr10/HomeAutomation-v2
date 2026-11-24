@@ -566,6 +566,11 @@ class FleetDatabase {
     try { this.db.exec(`ALTER TABLE nodes ADD COLUMN home_id INTEGER DEFAULT NULL`); } catch {}
     try { this.db.exec(`ALTER TABLE nodes ADD COLUMN room_id INTEGER DEFAULT NULL`); } catch {}
     try { this.db.exec(`ALTER TABLE nodes ADD COLUMN assigned_at REAL DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE nodes ADD COLUMN server_key TEXT DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE nodes ADD COLUMN is_paired INTEGER DEFAULT 0`); } catch {}
+    try { this.db.exec(`ALTER TABLE nodes ADD COLUMN i2c_enabled INTEGER DEFAULT 0`); } catch {}
+    try { this.db.exec(`ALTER TABLE nodes ADD COLUMN i2c_address TEXT DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE nodes ADD COLUMN pcf8574_detected INTEGER DEFAULT 0`); } catch {}
     try { this.db.exec(`ALTER TABLE relays ADD COLUMN icon TEXT DEFAULT 'light'`); } catch {}
     try { this.db.exec(`ALTER TABLE relays ADD COLUMN pin_mode TEXT DEFAULT 'RELAY_OUTPUT'`); } catch {}
     try { this.db.exec(`ALTER TABLE relays ADD COLUMN sensor_type TEXT DEFAULT NULL`); } catch {}
@@ -671,7 +676,7 @@ class FleetDatabase {
     const scopeCount = this.db.prepare('SELECT COUNT(*) as count FROM scopes').get().count;
     if (scopeCount === 0) {
       this.db.prepare(`
-        INSERT INTO scopes (scope_type, scope_identifier, name, description)
+        INSERT OR IGNORE INTO scopes (scope_type, scope_identifier, name, description)
         VALUES ('GLOBAL', 'global', 'Global Scope', 'Full fleet and location access')
       `).run();
     }
@@ -935,6 +940,30 @@ class FleetDatabase {
     }
   }
 
+  updateNodeServerKey(nodeId, serverKey, isPaired = 1) {
+    try {
+      return this.db.prepare('UPDATE nodes SET server_key = ?, is_paired = ? WHERE node_id = ?').run(serverKey, isPaired ? 1 : 0, nodeId);
+    } catch (e) {
+      console.error('Error updating node server key:', e);
+    }
+  }
+
+  clearNodeServerKey(nodeId) {
+    try {
+      return this.db.prepare('UPDATE nodes SET server_key = NULL, is_paired = 0 WHERE node_id = ?').run(nodeId);
+    } catch (e) {
+      console.error('Error clearing node server key:', e);
+    }
+  }
+
+  updateNodeI2cStatus(nodeId, enabled, address, pcfDetected) {
+    try {
+      return this.db.prepare('UPDATE nodes SET i2c_enabled = ?, i2c_address = ?, pcf8574_detected = ? WHERE node_id = ?').run(enabled ? 1 : 0, address || null, pcfDetected ? 1 : 0, nodeId);
+    } catch (e) {
+      console.error('Error updating node I2C status:', e);
+    }
+  }
+
   upsertRelayFromChannel(nodeId, ch) {
     const chId = Number(ch.id ?? ch.channel_id);
     if (isNaN(chId)) return;
@@ -1080,7 +1109,12 @@ class FleetDatabase {
         relays_count: relays.length,
         sensors_count: 0,
         relays: relays,
-        channels: channels
+        channels: channels,
+        server_key: n.server_key || null,
+        is_paired: Boolean(n.is_paired),
+        i2c_enabled: Boolean(n.i2c_enabled),
+        i2c_address: n.i2c_address || null,
+        pcf8574_detected: Boolean(n.pcf8574_detected)
       };
     });
   }
@@ -1139,7 +1173,12 @@ class FleetDatabase {
       relays_count: relays.length,
       sensors_count: 0,
       relays: relays,
-      channels: channels
+      channels: channels,
+      server_key: row.server_key || null,
+      is_paired: Boolean(row.is_paired),
+      i2c_enabled: Boolean(row.i2c_enabled),
+      i2c_address: row.i2c_address || null,
+      pcf8574_detected: Boolean(row.pcf8574_detected)
     };
   }
 

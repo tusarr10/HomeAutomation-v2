@@ -822,6 +822,11 @@ function createV1Router(nodeManager, db) {
     db.logAudit('NODE_ADDED', nodeId, `Manually registered node '${nodeName}' (${ip}) into fleet [Auth User: ${authUsername}]`);
     nodeManager.broadcast('node_added', { nodeId, name: nodeName, ip });
 
+    // Attempt auto-pairing with permanent server key if supported
+    nodeManager.pairNode(nodeId).catch((err) => {
+      console.log(`[AutoPair] Deferred pairing for ${nodeId}: ${err.message}`);
+    });
+
     res.json({
       success: true,
       message: `Node '${nodeName}' successfully registered and probed!`,
@@ -854,12 +859,253 @@ function createV1Router(nodeManager, db) {
     if (!verifyDeviceScope(req.user, node, db)) {
       return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
     }
+    nodeManager.unpairNode(req.params.nodeId).catch(() => {});
     const ok = db.deleteNode(req.params.nodeId);
     if (ok) {
       nodeManager.broadcast('node_deleted', { nodeId: req.params.nodeId });
       res.json({ success: true, nodeId: req.params.nodeId });
     } else {
       res.status(404).json({ success: false, error: 'Node not found' });
+    }
+  });
+
+  // === HARDWARE INTEGRATION: PAIRING, I2C, IR & HARDWARE LOGS ===
+
+  router.post('/nodes/:nodeId/pair', requirePermission(db, 'devices:manage'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.pairNode(req.params.nodeId);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/nodes/:nodeId/unpair', requirePermission(db, 'devices:manage'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.unpairNode(req.params.nodeId);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.get('/nodes/:nodeId/i2c', authenticateUser(db), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const status = await nodeManager.getNodeI2cStatus(req.params.nodeId);
+      res.json({ success: true, status });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/nodes/:nodeId/i2c', requirePermission(db, 'devices:manage'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.configureNodeI2c(req.params.nodeId, req.body);
+      res.json({ success: true, result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.get('/nodes/:nodeId/i2c/scan', requirePermission(db, 'devices:manage'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const scan = await nodeManager.scanNodeI2c(req.params.nodeId);
+      res.json({ success: true, ...scan });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/nodes/:nodeId/i2c/auto-channels', requirePermission(db, 'devices:manage'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.autoProvisionNodePcfChannels(req.params.nodeId);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/nodes/:nodeId/ir/train/start', requirePermission(db, 'devices:control'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.startNodeIrTraining(req.params.nodeId, req.body?.timeoutSec);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/nodes/:nodeId/ir/train/stop', requirePermission(db, 'devices:control'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.stopNodeIrTraining(req.params.nodeId);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.get('/nodes/:nodeId/ir/train/result', requirePermission(db, 'devices:control'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.getNodeIrTrainingResult(req.params.nodeId);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.get('/nodes/:nodeId/ir/remotes', authenticateUser(db), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const remotes = await nodeManager.getNodeIrRemotes(req.params.nodeId);
+      res.json({ success: true, remotes });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/nodes/:nodeId/ir/remotes/save', requirePermission(db, 'devices:control'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.saveNodeIrRemoteButton(req.params.nodeId, req.body);
+      res.json({ success: true, result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/nodes/:nodeId/ir/remotes/delete', requirePermission(db, 'devices:control'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.deleteNodeIrRemote(req.params.nodeId, req.body);
+      res.json({ success: true, result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.get('/nodes/:nodeId/hardware-logs', requirePermission(db, 'devices:manage'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const logs = await nodeManager.getNodeHardwareLogs(req.params.nodeId);
+      res.json({ success: true, logs });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.get('/nodes/:nodeId/edge-automations', authenticateUser(db), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const data = await nodeManager.getNodeAutomations(req.params.nodeId);
+      res.json({ success: true, data });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/nodes/:nodeId/edge-automations', requirePermission(db, 'devices:manage'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.deployAutomationToNode(req.params.nodeId, req.body);
+      res.json({ success: true, result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/nodes/:nodeId/edge-automations/:ruleId/toggle', requirePermission(db, 'devices:manage'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.toggleNodeAutomation(req.params.nodeId, req.params.ruleId);
+      res.json({ success: true, result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.delete('/nodes/:nodeId/edge-automations/:ruleId', requirePermission(db, 'devices:manage'), async (req, res) => {
+    try {
+      const node = db.getNode(req.params.nodeId);
+      if (!node) return res.status(404).json({ success: false, error: 'Node not found' });
+      if (!verifyDeviceScope(req.user, node, db)) {
+        return res.status(403).json({ success: false, error: 'Forbidden: Device outside assigned scope' });
+      }
+      const result = await nodeManager.deleteNodeAutomation(req.params.nodeId, req.params.ruleId);
+      res.json({ success: true, result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
     }
   });
 
@@ -2149,15 +2395,27 @@ function createV1Router(nodeManager, db) {
       const { code, protocol = 'NEC', bits = 32, frequency = 38000 } = req.body;
       if (!code) return res.status(400).json({ success: false, error: 'IR code is required' });
 
-      const command = {
-        action: 'send_ir',
-        protocol,
-        code,
-        bits: Number(bits) || 32,
-        frequency: Number(frequency) || 38000
-      };
+      let result = null;
+      try {
+        result = await nodeManager.transmitNodeIr(nodeId, {
+          protocol,
+          code,
+          hexCode: code,
+          bits: Number(bits) || 32,
+          frequency: Number(frequency) || 38000
+        });
+      } catch (httpErr) {
+        // Fallback to TCP/queued command
+        const command = {
+          action: 'send_ir',
+          protocol,
+          code,
+          bits: Number(bits) || 32,
+          frequency: Number(frequency) || 38000
+        };
+        result = await nodeManager.queueOrSendCommand(nodeId, 0, command);
+      }
 
-      const result = await nodeManager.queueOrSendCommand(nodeId, 0, command);
       db.logAudit('IR_TRANSMIT', nodeId, `Transmitted IR code ${code} (${protocol})`);
       res.json({ success: true, message: `IR transmission dispatched: ${code}`, result });
     } catch (err) {

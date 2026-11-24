@@ -1900,6 +1900,7 @@ function renderDevicesRows(nodes) {
       typeLabel = 'Sensor Node';
     }
 
+    const isBreaker = (n.node_id || '').includes('30487D') || hw.includes('breaker');
     const isOnline = Boolean(n.is_online);
     const rssi = n.rssi != null ? n.rssi : -52;
     const signalColor = rssi >= -60 ? '#10b981' : (rssi >= -75 ? '#f59e0b' : '#ef4444');
@@ -1939,6 +1940,10 @@ function renderDevicesRows(nodes) {
             <button class="btn-action-icon" title="Edit Device Settings" onclick="showNodeSettingsModal('${n.node_id}')">✏️</button>
             <button class="btn-action-icon" title="Device Details & Diagnostics" onclick="showNodeInfoModal('${n.node_id}')">ℹ️</button>
             <button class="btn-action-icon" title="Browse LittleFS Files" onclick="selectedFsNodeId = '${n.node_id}'; switchView('littlefs');">📁</button>
+            ${!isBreaker ? `
+              <button class="btn-action-icon" title="Hardware Serial Logs" onclick="showNodeLogsModal('${n.node_id}')">📜</button>
+              <button class="btn-action-icon" title="IR Remote & Code Learner" onclick="showNodeIrModal('${n.node_id}')">📡</button>
+            ` : ''}
             <button class="btn-action-icon" title="Ping Device" onclick="pingNode('${n.node_id}')">⚡</button>
           </div>
         </td>
@@ -2223,14 +2228,23 @@ async function saveNodeSettings(nodeId) {
 // --------------------------------------------------------------------------
 // ℹ️ DEVICE DETAILS & DIAGNOSTICS MODAL
 // --------------------------------------------------------------------------
-function showNodeInfoModal(nodeId) {
-  const node = (fleetData.nodes || []).find(n => n.node_id === nodeId) || { node_id: nodeId };
+async function showNodeInfoModal(nodeId) {
+  let node = (fleetData.nodes || []).find(n => n.node_id === nodeId) || { node_id: nodeId };
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.node) node = { ...node, ...data.node };
+    }
+  } catch (e) {}
+
   const channels = (fleetData.relays || []).filter(r => r.node_id === nodeId);
   const isOnline = Boolean(node.is_online);
   const nodeIp = node.ip_address || node.ip || '';
+  const isBreaker = nodeId.includes('30487D') || (node.hardware_type || '').includes('Breaker');
 
   const html = `
-    <div class="modal-content" style="max-width: 650px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+    <div class="modal-content" style="max-width: 720px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
       <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 14px; margin-bottom: 18px;">
         <div>
           <h3 style="margin: 0; color: #fff; font-size: 17px; display: flex; align-items: center; gap: 8px;">
@@ -2245,7 +2259,7 @@ function showNodeInfoModal(nodeId) {
       </div>
 
       <!-- Specs Grid -->
-      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; background: #090e1a; padding: 16px; border-radius: 10px; border: 1px solid rgba(56, 189, 248, 0.1); margin-bottom: 18px;">
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; background: #090e1a; padding: 14px 16px; border-radius: 10px; border: 1px solid rgba(56, 189, 248, 0.1); margin-bottom: 14px;">
         <div style="font-size: 12.5px; color: #94a3b8;"><strong>Hardware:</strong> <span style="color: #fff;">${escapeHtml(node.hardware_type || 'ESP8266')}</span></div>
         <div style="font-size: 12.5px; color: #94a3b8;"><strong>IP Address:</strong> <a href="http://${escapeHtml(nodeIp)}" target="_blank" style="color: #38bdf8; font-family: monospace; text-decoration: underline;">${nodeIp || 'N/A'} ↗</a></div>
         <div style="font-size: 12.5px; color: #94a3b8;"><strong>MAC Address:</strong> <span style="color: #cbd5e1; font-family: monospace;">${node.mac_address || node.mac || 'N/A'}</span></div>
@@ -2254,9 +2268,57 @@ function showNodeInfoModal(nodeId) {
         <div style="font-size: 12.5px; color: #94a3b8;"><strong>Uptime:</strong> <span style="color: #fff;">${formatUptime(node.uptime_sec)}</span></div>
       </div>
 
+      <!-- Security & Hardware Integration Bar -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; background: #090e1a; padding: 12px 16px; border-radius: 10px; border: 1px solid #1e293b; margin-bottom: 16px;">
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <div style="font-size: 11.5px; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">🔐 Dual-Auth Fleet Pairing</div>
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <div>
+              ${node.is_paired ? `
+                <span class="status-pill-online" style="font-size: 11px;">🔒 Paired & Key Active</span>
+              ` : `
+                <span class="status-pill-offline" style="font-size: 11px;">🔓 Unpaired (Open Auth)</span>
+              `}
+            </div>
+            ${!isBreaker ? `
+              <div>
+                ${node.is_paired ? `
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 2px 8px; color: #f87171;" onclick="handleUnpairNode('${node.node_id}')">Unpair</button>
+                ` : `
+                  <button class="btn btn-primary" style="font-size: 11px; padding: 2px 8px;" onclick="handlePairNode('${node.node_id}')">🔑 Pair Node</button>
+                `}
+              </div>
+            ` : '<span style="font-size: 11px; color: #64748b;">Not required</span>'}
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <div style="font-size: 11.5px; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">🔌 I2C & PCF8574 Expansion</div>
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+            <div>
+              ${node.pcf8574_detected ? `
+                <span style="color: #10b981; font-size: 11.5px; font-weight: 600;">PCF8574 (${escapeHtml(node.i2c_address || '0x20')})</span>
+              ` : (node.i2c_enabled ? `
+                <span style="color: #38bdf8; font-size: 11.5px;">I2C Active</span>
+              ` : `
+                <span style="color: #64748b; font-size: 11.5px;">I2C Inactive</span>
+              `)}
+            </div>
+            ${!isBreaker ? `
+              <div style="display: flex; gap: 4px;">
+                <button class="btn btn-secondary" style="font-size: 11px; padding: 2px 8px;" onclick="handleScanI2c('${node.node_id}')">🔍 Scan</button>
+                ${node.pcf8574_detected ? `
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 2px 8px; color: #38bdf8; border-color: rgba(56,189,248,0.4);" title="Auto-map 8 Relay expansion channels" onclick="handleAutoProvisionPcf('${node.node_id}')">⚡ 8-CH</button>
+                ` : ''}
+              </div>
+            ` : '<span style="font-size: 11px; color: #64748b;">Not required</span>'}
+          </div>
+        </div>
+      </div>
+
       <!-- Channel Pinout List -->
       <h4 style="margin: 0 0 10px 0; color: #cbd5e1; font-size: 13.5px;">Configured Relay Channels (${channels.length})</h4>
-      <div style="max-height: 180px; overflow-y: auto; background: #090e1a; border-radius: 8px; border: 1px solid #1e293b;">
+      <div style="max-height: 160px; overflow-y: auto; background: #090e1a; border-radius: 8px; border: 1px solid #1e293b;">
         <table style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
           <thead>
             <tr style="border-bottom: 1px solid #1e293b; color: #64748b;">
@@ -2290,19 +2352,418 @@ function showNodeInfoModal(nodeId) {
       </div>
 
       <!-- Action Buttons -->
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px; padding-top: 16px; border-top: 1px solid #1e293b; flex-wrap: wrap; gap: 8px;">
-        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 18px; padding-top: 14px; border-top: 1px solid #1e293b; flex-wrap: wrap; gap: 8px;">
+        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
           ${nodeIp ? `<button class="btn-neutral-action" onclick="window.open('http://${escapeHtml(nodeIp)}', '_blank')">🌐 Visit Device</button>` : ''}
           <button class="btn-neutral-action" onclick="closeModal(); showAssignNodeModal('${node.node_id}')">🚪 Assign Room</button>
           <button class="btn-neutral-action" onclick="pingNode('${node.node_id}')">⚡ Ping</button>
           <button class="btn-neutral-action" onclick="syncPinsWithHardware('${node.node_id}')">🔄 Sync Pins</button>
           <button class="btn-neutral-action" onclick="closeModal(); selectedFsNodeId = '${node.node_id}'; switchView('littlefs');">📁 LittleFS Files</button>
+          ${!isBreaker ? `
+            <button class="btn-neutral-action" style="color: #38bdf8; border-color: rgba(56,189,248,0.3);" onclick="showNodeLogsModal('${node.node_id}')">📜 Hardware Logs</button>
+            <button class="btn-neutral-action" style="color: #a78bfa; border-color: rgba(167,139,250,0.3);" onclick="showNodeIrModal('${node.node_id}')">📡 IR Remote</button>
+          ` : ''}
         </div>
         <button class="btn btn-primary" onclick="closeModal()">Close</button>
       </div>
     </div>
   `;
   openModal(html);
+}
+
+// --------------------------------------------------------------------------
+// PAIRING & I2C HANDLERS
+// --------------------------------------------------------------------------
+async function handlePairNode(nodeId) {
+  if (!confirm(`Pair node '${nodeId}' with a permanent server key? This will authenticate all future control requests.`)) return;
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/pair`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to pair node');
+    alert(`Node paired successfully!\nServer Key: ${data.serverKey}`);
+    await loadNodes();
+    showNodeInfoModal(nodeId);
+  } catch (err) {
+    alert('Pairing error: ' + err.message);
+  }
+}
+
+async function handleUnpairNode(nodeId) {
+  if (!confirm(`Unpair node '${nodeId}'? This removes the server key from the node and central server.`)) return;
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/unpair`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to unpair node');
+    alert('Node unpaired successfully.');
+    await loadNodes();
+    showNodeInfoModal(nodeId);
+  } catch (err) {
+    alert('Unpair error: ' + err.message);
+  }
+}
+
+async function handleScanI2c(nodeId) {
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/i2c/scan`);
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'I2C scan failed');
+    if (data.count === 0) {
+      alert(`I2C Bus Scan Complete on ${nodeId}:\nNo I2C devices detected on SDA/SCL pins.`);
+    } else {
+      const devList = (data.devices || []).map(d => `• Address: ${d.hex} (${d.address}) - Type: ${d.type || 'Unknown'}`).join('\n');
+      alert(`I2C Bus Scan Complete on ${nodeId}:\nFound ${data.count} device(s):\n${devList}\n\nPCF8574 Expander Detected: ${data.pcfDetected ? 'YES (' + data.pcfAddress + ')' : 'NO'}`);
+    }
+    await loadNodes();
+    showNodeInfoModal(nodeId);
+  } catch (err) {
+    alert('I2C scan error: ' + err.message);
+  }
+}
+
+async function handleAutoProvisionPcf(nodeId) {
+  if (!confirm(`Auto-generate 8 Relay expansion channels for PCF8574 on node '${nodeId}'? This will automatically map GPIO pins 100-107 into the fleet and pin matrix.`)) return;
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/i2c/auto-channels`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Auto-provision failed');
+    alert('Successfully generated 8 PCF8574 expansion channels and synchronized pin matrix!');
+    await loadNodes();
+    showNodeInfoModal(nodeId);
+  } catch (err) {
+    alert('Auto-provision error: ' + err.message);
+  }
+}
+
+// --------------------------------------------------------------------------
+// HARDWARE SERIAL LOGS VIEWER
+// --------------------------------------------------------------------------
+async function showNodeLogsModal(nodeId) {
+  const node = (fleetData.nodes || []).find(n => n.node_id === nodeId) || { node_id: nodeId };
+  const html = `
+    <div class="modal-content" style="max-width: 780px; width: 90%; background: #0b1120; border: 1px solid #1e293b; border-radius: 14px; padding: 22px; box-shadow: 0 10px 30px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 14px;">
+        <h3 style="margin: 0; color: #fff; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+          <span>📜 Hardware Serial Logs: ${escapeHtml(node.name || nodeId)}</span>
+        </h3>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px;" onclick="refreshNodeLogs('${nodeId}')">🔄 Refresh</button>
+          <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
+        </div>
+      </div>
+      <div id="node-logs-container" style="background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 14px; height: 350px; overflow-y: auto; font-family: monospace; font-size: 12px; line-height: 1.6; color: #cbd5e1;">
+        <div style="color: #64748b;">Loading hardware logs from node...</div>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding-top: 10px; border-top: 1px solid #1e293b;">
+        <span style="font-size: 11px; color: #64748b;">Source: Microcontroller RAM circular log buffer (/api/logs)</span>
+        <button class="btn btn-primary" onclick="closeModal()">Close</button>
+      </div>
+    </div>
+  `;
+  openModal(html);
+  await refreshNodeLogs(nodeId);
+}
+
+async function refreshNodeLogs(nodeId) {
+  const container = document.getElementById("node-logs-container");
+  if (!container) return;
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/hardware-logs`);
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to fetch hardware logs');
+    const logs = data.logs || [];
+    if (logs.length === 0) {
+      container.innerHTML = '<div style="color: #64748b; text-align: center; padding: 40px 0;">No log entries recorded yet in microcontroller memory.</div>';
+      return;
+    }
+    container.innerHTML = logs.map(l => {
+      const up = l.uptimeMs != null ? `[+${(l.uptimeMs / 1000).toFixed(2)}s]` : (l.time || '');
+      const msg = escapeHtml(l.msg || l.message || JSON.stringify(l));
+      let color = '#cbd5e1';
+      if (msg.includes('ERR') || msg.includes('fail') || msg.includes('error')) color = '#f87171';
+      else if (msg.includes('WARN')) color = '#fbbf24';
+      else if (msg.includes('OK') || msg.includes('started') || msg.includes('paired')) color = '#34d399';
+      return `<div style="display: flex; gap: 8px;"><span style="color: #64748b; user-select: none;">${escapeHtml(up)}</span><span style="color: ${color};">${msg}</span></div>`;
+    }).join('');
+    container.scrollTop = container.scrollHeight;
+  } catch (err) {
+    container.innerHTML = `<div style="color: #ef4444;">Error reading hardware logs: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// --------------------------------------------------------------------------
+// INFRARED (IR) CONTROLLER & LEARNER
+// --------------------------------------------------------------------------
+let irTrainingTimer = null;
+let capturedIrData = null;
+
+function stopIrTrainingTimer() {
+  if (irTrainingTimer) {
+    clearInterval(irTrainingTimer);
+    irTrainingTimer = null;
+  }
+}
+
+async function showNodeIrModal(nodeId) {
+  const node = (fleetData.nodes || []).find(n => n.node_id === nodeId) || { node_id: nodeId };
+  const html = `
+    <div class="modal-content" style="max-width: 680px; width: 90%; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 22px; box-shadow: 0 10px 30px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: #fff; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+          <span>📡 Infrared (IR) Controller & Learner</span>
+          <span style="font-size: 11px; color: #38bdf8; font-weight: normal;">${escapeHtml(node.name || nodeId)}</span>
+        </h3>
+        <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="stopIrTrainingTimer(); closeModal();">&times;</button>
+      </div>
+
+      <!-- Section 1: Direct Signal Blaster -->
+      <div style="background: #090e1a; padding: 14px; border-radius: 10px; border: 1px solid #1e293b; margin-bottom: 16px;">
+        <h4 style="margin: 0 0 10px 0; color: #cbd5e1; font-size: 13px; display: flex; align-items: center; gap: 6px;">
+          <span>⚡ Direct IR Signal Blaster</span>
+        </h4>
+        <div style="display: grid; grid-template-columns: 1fr 2fr 1fr auto; gap: 8px; align-items: end;">
+          <div>
+            <label style="font-size: 11px; color: #94a3b8; display: block; margin-bottom: 4px;">Protocol</label>
+            <select id="ir-blast-protocol" class="filter-select-enhanced" style="width: 100%; font-size: 12px; padding: 6px;">
+              <option value="NEC">NEC</option>
+              <option value="SONY">SONY</option>
+              <option value="RC5">RC5</option>
+              <option value="RC6">RC6</option>
+              <option value="PANASONIC">PANASONIC</option>
+              <option value="SAMSUNG">SAMSUNG</option>
+              <option value="LG">LG</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size: 11px; color: #94a3b8; display: block; margin-bottom: 4px;">Hex Code (e.g. 0xFFA25D)</label>
+            <input type="text" id="ir-blast-code" class="settings-input" style="width: 100%; font-size: 12px; padding: 6px; font-family: monospace;" placeholder="0xFFA25D" value="0xFFA25D">
+          </div>
+          <div>
+            <label style="font-size: 11px; color: #94a3b8; display: block; margin-bottom: 4px;">Bits</label>
+            <input type="number" id="ir-blast-bits" class="settings-input" style="width: 100%; font-size: 12px; padding: 6px;" value="32">
+          </div>
+          <div>
+            <button class="btn btn-primary" style="font-size: 12px; padding: 7px 14px;" onclick="handleBlastIr('${nodeId}')">🚀 Blast</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section 2: Hardware IR Code Learner -->
+      <div style="background: #090e1a; padding: 14px; border-radius: 10px; border: 1px solid #1e293b; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+          <h4 style="margin: 0; color: #cbd5e1; font-size: 13px;">🎯 Remote Code Learner (Train from Physical Remote)</h4>
+          <button id="btn-start-ir-train" class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px;" onclick="handleStartIrTraining('${nodeId}')">🎯 Start Learning</button>
+        </div>
+        <div id="ir-train-status-box" style="background: #020617; border: 1px dashed #334155; border-radius: 8px; padding: 12px; text-align: center; color: #64748b; font-size: 12px;">
+          Click "Start Learning" and aim any physical IR remote at the node's IR receiver pin.
+        </div>
+        <div id="ir-save-container" style="display: none; margin-top: 12px; gap: 8px; align-items: center;">
+          <input type="text" id="ir-save-btn-name" class="settings-input" style="flex: 1; font-size: 12px; padding: 6px;" placeholder="Button Name (e.g. TV Power, AC Off)">
+          <button class="btn btn-primary" style="font-size: 12px; padding: 6px 14px;" onclick="handleSaveLearnedButton('${nodeId}')">💾 Save Button</button>
+        </div>
+      </div>
+
+      <!-- Section 3: Saved Virtual Remote Buttons -->
+      <div>
+        <h4 style="margin: 0 0 10px 0; color: #cbd5e1; font-size: 13px;">📱 Saved Virtual Remote Buttons</h4>
+        <div id="ir-saved-remotes-container" style="max-height: 160px; overflow-y: auto; background: #090e1a; border-radius: 8px; border: 1px solid #1e293b; padding: 8px;">
+          <div style="color: #64748b; text-align: center; padding: 16px; font-size: 12px;">Loading stored remotes...</div>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; margin-top: 16px; padding-top: 12px; border-top: 1px solid #1e293b;">
+        <button class="btn btn-primary" onclick="stopIrTrainingTimer(); closeModal();">Close</button>
+      </div>
+    </div>
+  `;
+  openModal(html);
+  await loadSavedIrRemotes(nodeId);
+}
+
+async function handleBlastIr(nodeId) {
+  const protocol = document.getElementById("ir-blast-protocol")?.value || 'NEC';
+  const code = (document.getElementById("ir-blast-code")?.value || '').trim();
+  const bits = Number(document.getElementById("ir-blast-bits")?.value) || 32;
+  if (!code) { alert('Please enter a valid hex code (e.g. 0xFFA25D)'); return; }
+
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/ir/transmit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocol, code, bits })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Transmit failed');
+    alert(`IR Signal Dispatched!\nProtocol: ${protocol}\nCode: ${code} (${bits} bits)`);
+  } catch (err) {
+    alert('IR Blast error: ' + err.message);
+  }
+}
+
+async function handleStartIrTraining(nodeId) {
+  stopIrTrainingTimer();
+  capturedIrData = null;
+  const statusBox = document.getElementById("ir-train-status-box");
+  const saveContainer = document.getElementById("ir-save-container");
+  const btnStart = document.getElementById("btn-start-ir-train");
+  if (saveContainer) saveContainer.style.display = 'none';
+
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/ir/train/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timeoutSec: 25 })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to start learning');
+
+    let secondsLeft = 25;
+    if (btnStart) btnStart.disabled = true;
+    if (statusBox) {
+      statusBox.innerHTML = `
+        <div style="color: #38bdf8; font-weight: 600; font-size: 13px;">📡 Listening for IR Signal (${secondsLeft}s)...</div>
+        <div style="color: #94a3b8; margin-top: 4px;">Point remote at receiver and press any button firmly.</div>
+      `;
+    }
+
+    irTrainingTimer = setInterval(async () => {
+      secondsLeft--;
+      try {
+        const pollRes = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/ir/train/result`);
+        const pollData = await pollRes.json();
+        if (pollData.captured || pollData.code) {
+          stopIrTrainingTimer();
+          if (btnStart) btnStart.disabled = false;
+          capturedIrData = {
+            protocol: pollData.protocol || 'NEC',
+            code: pollData.code || pollData.hexCode,
+            bits: pollData.bits || 32
+          };
+          if (statusBox) {
+            statusBox.innerHTML = `
+              <div style="color: #10b981; font-weight: 600; font-size: 13px;">✅ IR Code Captured!</div>
+              <div style="font-family: monospace; color: #fff; font-size: 14px; margin-top: 4px;">${escapeHtml(capturedIrData.code)} <span style="font-size: 11px; color: #38bdf8;">(${capturedIrData.protocol}, ${capturedIrData.bits} bits)</span></div>
+            `;
+          }
+          if (saveContainer) saveContainer.style.display = 'flex';
+          return;
+        }
+      } catch (pollErr) {}
+
+      if (secondsLeft <= 0) {
+        stopIrTrainingTimer();
+        if (btnStart) btnStart.disabled = false;
+        if (statusBox) {
+          statusBox.innerHTML = '<div style="color: #f87171;">⏱️ Learning session timed out. No valid signal detected.</div>';
+        }
+      } else {
+        const timeHeader = statusBox?.querySelector('div');
+        if (timeHeader) timeHeader.textContent = `📡 Listening for IR Signal (${secondsLeft}s)...`;
+      }
+    }, 1000);
+  } catch (err) {
+    if (btnStart) btnStart.disabled = false;
+    alert('Start training error: ' + err.message);
+  }
+}
+
+async function handleSaveLearnedButton(nodeId) {
+  if (!capturedIrData) { alert('No captured IR code to save.'); return; }
+  const btnName = (document.getElementById("ir-save-btn-name")?.value || '').trim();
+  if (!btnName) { alert('Please enter a name for this button (e.g. TV Power)'); return; }
+
+  try {
+    const payload = {
+      remoteName: 'Virtual Remote',
+      buttonName: btnName,
+      protocol: capturedIrData.protocol,
+      code: capturedIrData.code,
+      bits: capturedIrData.bits
+    };
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/ir/remotes/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to save button');
+    alert(`Button '${btnName}' saved successfully to microcontroller!`);
+    document.getElementById("ir-save-container").style.display = 'none';
+    capturedIrData = null;
+    await loadSavedIrRemotes(nodeId);
+  } catch (err) {
+    alert('Save button error: ' + err.message);
+  }
+}
+
+async function loadSavedIrRemotes(nodeId) {
+  const container = document.getElementById("ir-saved-remotes-container");
+  if (!container) return;
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/ir/remotes`);
+    const data = await res.json();
+    const remotes = (data.remotes && data.remotes.remotes) || (Array.isArray(data.remotes) ? data.remotes : []);
+    
+    let allButtons = [];
+    remotes.forEach(r => {
+      (r.buttons || []).forEach(b => {
+        allButtons.push({ remote: r.name || 'Remote', ...b });
+      });
+    });
+
+    if (allButtons.length === 0) {
+      container.innerHTML = '<div style="color: #64748b; text-align: center; padding: 16px; font-size: 12px;">No virtual remote buttons saved yet.</div>';
+      return;
+    }
+
+    container.innerHTML = `
+      <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px;">
+        ${allButtons.map(b => `
+          <div style="background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 8px 10px; display: flex; justify-content: space-between; align-items: center;">
+            <div style="overflow: hidden;">
+              <div style="color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">${escapeHtml(b.name || b.buttonName)}</div>
+              <div style="font-family: monospace; font-size: 10px; color: #38bdf8;">${escapeHtml(b.code || b.hexCode || '')}</div>
+            </div>
+            <div style="display: flex; gap: 4px;">
+              <button class="btn btn-primary" style="font-size: 11px; padding: 3px 8px;" title="Transmit" onclick="blastSavedIrButton('${nodeId}', '${b.protocol || 'NEC'}', '${b.code || b.hexCode}', ${b.bits || 32})">▶</button>
+              <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 6px; color: #ef4444;" title="Delete" onclick="handleDeleteIrButton('${nodeId}', '${escapeHtml(b.remote || 'Virtual Remote')}', '${escapeHtml(b.name || b.buttonName)}')">&times;</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  } catch (err) {
+    container.innerHTML = `<div style="color: #f87171; text-align: center; padding: 12px; font-size: 11px;">Error loading remotes: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function blastSavedIrButton(nodeId, protocol, code, bits) {
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/ir/transmit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocol, code, bits })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Blast failed');
+  } catch (err) {
+    alert('Transmit error: ' + err.message);
+  }
+}
+
+async function handleDeleteIrButton(nodeId, remoteName, buttonName) {
+  if (!confirm(`Delete button '${buttonName}'?`)) return;
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/ir/remotes/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remoteName, buttonName })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Failed to delete');
+    await loadSavedIrRemotes(nodeId);
+  } catch (err) {
+    alert('Delete error: ' + err.message);
+  }
 }
 
 function handleNodeDiagnostics(nodeId) {

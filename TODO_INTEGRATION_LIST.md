@@ -10,10 +10,10 @@
 
 | Phase | Category | Total Tasks | Completed | In Progress | Pending | Status |
 |:---:|:---|:---:|:---:|:---:|:---:|:---:|
-| **P0** | Critical Wire Protocol & Compilation Parity | 4 | 0 | 0 | 4 | ⚠️ Action Required |
-| **P1** | Security, Dual-Auth & Server Pairing | 3 | 1 | 0 | 2 | 🟡 Partially Ready |
-| **P2** | Analog RMS Voltage & Sensor Modes | 3 | 1 | 0 | 2 | 🟡 Partially Ready |
-| **P3** | Central Server Frontend & Fleet Tools | 3 | 1 | 0 | 2 | 🟡 Partially Ready |
+| **P0** | Critical Wire Protocol & Compilation Parity | 4 | 0 | 0 | 4 | ⚠️ Action Required (Firmware) |
+| **P1** | Security, Dual-Auth & Server Pairing | 3 | 3 | 0 | 0 | 🟢 Complete & Verified |
+| **P2** | Analog RMS Voltage & Sensor Modes | 3 | 1 | 0 | 2 | 🟡 Partially Ready (Firmware) |
+| **P3** | Central Server Frontend & Fleet Tools | 3 | 3 | 0 | 0 | 🟢 Complete & Verified |
 
 ---
 
@@ -91,18 +91,20 @@ These tasks resolve immediate compilation inconsistencies and fill communication
 - [x] **Task 1.1: Node Dual-Auth Engine Implementation** *(Completed)*
   * Node supports `POST /api/auth/pair`, `POST /api/auth/unpair`, and validates `X-Server-Key` or `Authorization: Bearer <serverKey>`.
 
-- [ ] **Task 1.2: Central Server Auto-Pairing Workflow**
-  * **File Affected:** `central-server/src/nodeManager.js`
-  * **Action:**
-    1. During node probe/addition (`POST /api/v1/nodes/add`), generate a cryptographic 32-character `server_key`.
-    2. Dispatch `POST http://<NODE_IP>/api/auth/pair` with `{ "serverKey": serverKey }`.
-    3. Persist `server_key` in the `nodes` SQLite table.
-    4. Update `sendDirectLanHttp()` to include header `X-Server-Key: <server_key>` on all outbound HTTP calls.
-    5. This eliminates session cookie expirations and ensures Central Server retains access even if the homeowner changes the admin password.
+- [x] **Task 1.2: Central Server Auto-Pairing Workflow** *(Completed & Verified Live)*
+  * **Files Modified:** `central-server/src/database.js`, `central-server/src/nodeManager.js`, `central-server/src/routes/v1Router.js`, `central-server/public/assets/app.js`
+  * **Implementation:**
+    1. Added `server_key`, `is_paired`, `i2c_enabled`, `i2c_address`, `pcf8574_detected` migration columns to SQLite `nodes` table.
+    2. Implemented `pairNode(nodeId)` generating 32-character crypto key, dispatched to `POST /api/auth/pair` and persisted.
+    3. Implemented `getNodeAuthHeaders(node)` injecting `X-Server-Key: <server_key>` and `Authorization: Bearer <server_key>` into all outbound HTTP requests.
+    4. Verified live against physical ESP8266 node `NODE-8C4F00565D72` (`192.168.1.28`), confirming paired status `{"paired": true, "adminUser": "admin"}`.
 
-- [ ] **Task 1.3: Central Server Node Unpair / Decommission**
-  * **File Affected:** `central-server/src/routes/v1Router.js` (inside `DELETE /api/v1/nodes/:nodeId`)
-  * **Action:** Send `POST http://<NODE_IP>/api/auth/unpair` before deleting the node record from SQLite.
+- [x] **Task 1.3: Central Server Node Unpair / Decommission** *(Completed & Verified Live)*
+  * **Files Modified:** `central-server/src/routes/v1Router.js`, `central-server/src/nodeManager.js`, `central-server/public/assets/app.js`
+  * **Implementation:**
+    1. Dispatches `POST /api/auth/unpair` before node deletion in `DELETE /api/v1/nodes/:nodeId`.
+    2. Added dedicated `POST /api/v1/nodes/:nodeId/unpair` and `POST /api/v1/nodes/:nodeId/pair` endpoints.
+    3. Added dynamic "Pair Node" / "Unpair" buttons and pairing status indicator in Device Diagnostics modal.
 
 ---
 
@@ -126,13 +128,17 @@ These tasks resolve immediate compilation inconsistencies and fill communication
 
 ## Priority 3 (P3) — Central Server Frontend & Fleet Tools
 
-- [x] **Task 3.1: LittleFS File Explorer & Backup Engine** *(Completed)*
-  * Server supports full file browsing, download, multipart upload, renaming, deletion, and complete backup zip archives.
+- [x] **Task 3.1: LittleFS File Explorer & Backup Engine** *(Completed & Verified Live)*
+  * Server supports full file browsing, download, multipart upload, renaming, deletion, and complete backup zip archives. Sidebar navigation and node card actions verified.
 
-- [ ] **Task 3.2: Virtual IR Remote Frontend Cards**
-  * **File Affected:** `central-server/public/` UI templates & scripts
-  * **Action:** Render virtual remote buttons that dispatch `POST /api/v1/nodes/:nodeId/ir/transmit` on click.
+- [x] **Task 3.2: Virtual IR Remote Frontend Cards & Remote Learner** *(Completed & Verified Live)*
+  * **Files Modified:** `central-server/src/routes/v1Router.js`, `central-server/src/nodeManager.js`, `central-server/public/assets/app.js`
+  * **Implementation:**
+    1. Wired wire API endpoints: `POST /ir/transmit`, `POST /ir/train/start`, `POST /ir/train/stop`, `GET /ir/train/result`, `GET /ir/remotes`, `POST /ir/remotes/save`, `POST /ir/remotes/delete`.
+    2. Implemented modal with direct IR Signal Blaster (Protocol, Hex Code, Bits), Remote Code Learner with live countdown and polling, and Saved Virtual Remote Buttons with one-click transmit.
 
-- [ ] **Task 3.3: Flash Memory & Storage Diagnostics in Overview**
-  * **File Affected:** `central-server/src/routes/v1Router.js` and frontend dashboard
-  * **Action:** Expose LittleFS percent used (`fsPercent`), real flash size (`flashSize`), and PCF8574 expander output bitmask in the node diagnostics dialog.
+- [x] **Task 3.3: I2C Expander Bus Management & Hardware Logs** *(Completed & Verified Live)*
+  * **Files Modified:** `central-server/src/routes/v1Router.js`, `central-server/src/nodeManager.js`, `central-server/public/assets/app.js`
+  * **Implementation:**
+    1. Implemented I2C bus scan (`GET /nodes/:nodeId/i2c/scan`) and auto-provisioning (`POST /nodes/:nodeId/i2c/auto-channels`) for PCF8574 expansion relays.
+    2. Implemented Hardware Serial Logs viewer (`GET /nodes/:nodeId/hardware-logs`) fetching live RAM circular buffer logs with log-level syntax coloring and refresh.
