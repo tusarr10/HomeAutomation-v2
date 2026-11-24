@@ -56,8 +56,8 @@
       <!-- Navigation Tabs Sidebar -->
       <nav class="nav-sidebar">
         <button class="nav-tab active" data-tab="tab-overview">📊 Overview</button>
-        <button class="nav-tab" data-tab="tab-wifi">📶 Wi-Fi Setup</button>
-        <button class="nav-tab" data-tab="tab-gpio">🖲️ GPIO / Relays</button>
+        <button class="nav-tab" data-tab="tab-gpio">🖲️ Relays / Outputs</button>
+        <button class="nav-tab" data-tab="tab-sensors">📡 Sensors & Remotes</button>
         <button class="nav-tab" data-tab="tab-automation">⏱️ Automation</button>
         <button class="nav-tab" data-tab="tab-settings">⚙️ Settings</button>
         <button class="nav-tab" data-tab="tab-ota">🛠️ Firmware (OTA)</button>
@@ -112,10 +112,173 @@
           </div>
         </section>
 
-        <!-- 2. WI-FI CONFIGURATION TAB -->
-        <section id="tab-wifi" class="tab-pane">
+        <!-- 2. RELAY & ACTUATOR OUTPUTS TAB (ONLY RELAYS) -->
+        <section id="tab-gpio" class="tab-pane">
           <div class="section-header">
-            <h2>Wi-Fi Management</h2>
+            <div>
+              <h2>GPIO Relays & Outputs</h2>
+              <p style="color: var(--text-muted); font-size: 0.85rem; margin: 4px 0 0 0;">Dedicated physical relays, PCF8574 expander outputs, and power actuators</p>
+            </div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <button class="btn btn-sm btn-secondary" onclick="app.loadGpios()">🔄 Refresh</button>
+              <button id="open-add-gpio-btn" class="btn btn-sm btn-primary">➕ Add Relay Output</button>
+              <button class="btn btn-sm btn-secondary" onclick="app.switchTab('tab-settings')">⚙️ Manage in Settings</button>
+            </div>
+          </div>
+
+          <div id="gpio-cards-container" class="gpio-grid">
+            <!-- Dynamically populated with ONLY Relay / Actuator cards -->
+          </div>
+        </section>
+
+        <!-- 3. SENSORS & INFRARED REMOTES TAB (ALL SENSORS & IR FEATURES) -->
+        <section id="tab-sensors" class="tab-pane">
+          <div class="section-header">
+            <div>
+              <h2>Sensors & Infrared Remotes</h2>
+              <p style="color: var(--text-muted); font-size: 0.85rem; margin: 4px 0 0 0;">IR Receiver demodulator, IR Blaster transmitter, Voltage ADC, and motion telemetry</p>
+            </div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <button class="btn btn-sm btn-secondary" onclick="app.refreshSensors()">🔄 Refresh Sensors</button>
+              <button class="btn btn-sm btn-primary" onclick="app.openAddSensorModal()">➕ Add Sensor Pin</button>
+              <button class="btn btn-sm btn-secondary" onclick="app.openSavedRemotesModal()">📋 View Saved Keys</button>
+            </div>
+          </div>
+
+          <div id="sensors-cards-container" class="gpio-grid">
+            <!-- Dynamically populated with IR Receiver, IR Transmitter, Voltage ADC, PIR, Door cards -->
+          </div>
+        </section>
+        <!-- 4. AUTOMATION RULES TAB -->
+        <section id="tab-automation" class="tab-pane">
+          <div class="section-header">
+            <h2>Automation Rules</h2>
+            <button id="open-add-rule-btn" class="btn btn-primary">➕ Add Rule</button>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h3>Configured Rules</h3>
+            </div>
+            <div id="rules-container">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </section>
+
+        <!-- 5. SETTINGS TAB -->
+        <section id="tab-settings" class="tab-pane">
+          <div class="section-header">
+            <h2>Device Settings</h2>
+          </div>
+
+          <!-- 1. GPIO Channel Provisioning & Pin Allocation Card (Moved to Settings) -->
+          <div class="card">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+              <div>
+                <h3 style="margin: 0;">🖲️ GPIO Channel Configuration & Provisioning</h3>
+                <small style="color: var(--text-muted);">Manage assigned physical pins, expander relays, and input sensors</small>
+              </div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button type="button" class="btn btn-sm btn-primary" onclick="app.openAddGpioModal()">➕ Add GPIO Channel</button>
+                <button type="button" class="btn btn-sm btn-success" onclick="app.populatePcfChannels()">⚡ Add 8 PCF Relays</button>
+                <button type="button" class="btn btn-sm btn-secondary" onclick="app.loadGpios()">🔄 Refresh</button>
+              </div>
+            </div>
+            
+            <div class="table-responsive" style="margin-top: 12px;">
+              <table class="data-table" id="settings-gpio-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Pin & Label</th>
+                    <th>Name</th>
+                    <th>Room</th>
+                    <th>Function</th>
+                    <th>Direction / Type</th>
+                    <th>Status / Value</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody id="settings-gpio-tbody">
+                  <tr><td colspan="8" style="text-align:center; padding: 16px; color: var(--text-muted);">Loading channels...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 2. I2C Bus & PCF8574 Pin Expander Configuration Card (Moved to Settings) -->
+          <!-- I2C Bus & PCF8574 Pin Expander Configuration Card -->
+          <div class="card" id="i2c-config-card" style="margin-bottom: 24px;">
+            <div class="card-header" style="cursor: pointer;" onclick="app.toggleI2cPanel()">
+              <h3 style="margin: 0; display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                <span>🔌 I2C Pin Expander (PCF8574) & Bus Settings</span>
+                <span id="i2c-status-badge" class="badge badge-secondary">Disabled (D1 & D2 Free)</span>
+              </h3>
+            </div>
+            <div id="i2c-panel-body">
+              <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 8px;">
+                Enable I2C communication on custom pins to connect an 8-Channel PCF8574 I2C Expander module. When enabled, extended pins P0 through P7 (pins 100–107) are available for relays, and SDA/SCL pins are reserved for the bus. When disabled, SDA and SCL pins function as normal relay outputs.
+              </p>
+              <form id="i2c-settings-form" onsubmit="event.preventDefault(); app.saveI2cSettings();">
+                <div class="form-group checkbox-group" style="margin-bottom: 12px;">
+                  <label style="display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer;">
+                    <input type="checkbox" id="i2c-enabled" onchange="app.onI2cToggle(this.checked)">
+                    <span>Enable I2C Expander (PCF8574)</span>
+                  </label>
+                </div>
+
+                <div id="i2c-disabled-note" style="padding: 10px; background: var(--bg-hover); border-radius: 6px; margin-bottom: 12px; font-size: 0.9rem; color: var(--text-muted); display: none;">
+                  ℹ️ I2C is currently <strong>Disabled</strong>. Pins D1 (GPIO 5) and D2 (GPIO 4) are free to be used as regular relay outputs. Click <strong>Save I2C Settings</strong> below to apply.
+                </div>
+
+                <div id="i2c-options-fields">
+                  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                    <div class="form-group">
+                      <label for="i2c-sda-select">SDA Pin (Data)</label>
+                      <select id="i2c-sda-select">
+                        <option value="4" selected>D2 (GPIO 4) - Default Safe</option>
+                        <option value="5">D1 (GPIO 5)</option>
+                        <option value="12">D6 (GPIO 12)</option>
+                        <option value="14">D5 (GPIO 14)</option>
+                        <option value="0">D3 (GPIO 0)</option>
+                        <option value="2">D4 (GPIO 2)</option>
+                      </select>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="i2c-scl-select">SCL Pin (Clock)</label>
+                      <select id="i2c-scl-select">
+                        <option value="5" selected>D1 (GPIO 5) - Default Safe</option>
+                        <option value="4">D2 (GPIO 4)</option>
+                        <option value="14">D5 (GPIO 14)</option>
+                        <option value="12">D6 (GPIO 12)</option>
+                        <option value="0">D3 (GPIO 0)</option>
+                        <option value="2">D4 (GPIO 2)</option>
+                      </select>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="i2c-addr-input">Preferred I2C Address</label>
+                      <input type="text" id="i2c-addr-input" value="0x20" placeholder="0x20 or 0x27">
+                    </div>
+                  </div>
+
+                  <div id="i2c-scan-result" style="margin-top: 10px; font-size: 0.9rem; padding: 10px; border-radius: 6px; background: var(--bg-hover); display: none;"></div>
+                </div>
+
+                <!-- Action buttons are always visible whether enabled or disabled! -->
+                <div class="action-buttons" style="margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap;">
+                  <button type="submit" class="btn btn-primary btn-sm">💾 Save I2C Settings</button>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="app.saveI2cSettings(true)">🔄 Save & Reboot Node</button>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="app.scanI2cBus()">🔍 Scan I2C Bus</button>
+                  <button type="button" class="btn btn-success btn-sm" onclick="app.populatePcfChannels()">⚡ Add 8 PCF Relays (P0-P7)</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- 3. Wi-Fi Management & IP Configuration (Moved to Settings) -->
           </div>
 
           <div class="card">
@@ -224,112 +387,6 @@
                 <button type="button" id="btn-reset-wifi" class="btn btn-danger float-right">Reset Wi-Fi Credentials</button>
               </div>
             </form>
-          </div>
-        </section>
-
-        <!-- 3. GPIO & RELAY MANAGEMENT TAB -->
-        <section id="tab-gpio" class="tab-pane">
-          <div class="section-header">
-            <h2>GPIO & Relay Management</h2>
-            <button id="open-add-gpio-btn" class="btn btn-primary">➕ Add GPIO Output</button>
-          </div>
-
-          <!-- I2C Bus & PCF8574 Pin Expander Configuration Card -->
-          <div class="card" id="i2c-config-card" style="margin-bottom: 24px;">
-            <div class="card-header" style="cursor: pointer;" onclick="app.toggleI2cPanel()">
-              <h3 style="margin: 0; display: flex; align-items: center; justify-content: space-between; width: 100%;">
-                <span>🔌 I2C Pin Expander (PCF8574) & Bus Settings</span>
-                <span id="i2c-status-badge" class="badge badge-secondary">Disabled (D1 & D2 Free)</span>
-              </h3>
-            </div>
-            <div id="i2c-panel-body">
-              <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 8px;">
-                Enable I2C communication on custom pins to connect an 8-Channel PCF8574 I2C Expander module. When enabled, extended pins P0 through P7 (pins 100–107) are available for relays, and SDA/SCL pins are reserved for the bus. When disabled, SDA and SCL pins function as normal relay outputs.
-              </p>
-              <form id="i2c-settings-form" onsubmit="event.preventDefault(); app.saveI2cSettings();">
-                <div class="form-group checkbox-group" style="margin-bottom: 12px;">
-                  <label style="display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer;">
-                    <input type="checkbox" id="i2c-enabled" onchange="app.onI2cToggle(this.checked)">
-                    <span>Enable I2C Expander (PCF8574)</span>
-                  </label>
-                </div>
-
-                <div id="i2c-disabled-note" style="padding: 10px; background: var(--bg-hover); border-radius: 6px; margin-bottom: 12px; font-size: 0.9rem; color: var(--text-muted); display: none;">
-                  ℹ️ I2C is currently <strong>Disabled</strong>. Pins D1 (GPIO 5) and D2 (GPIO 4) are free to be used as regular relay outputs. Click <strong>Save I2C Settings</strong> below to apply.
-                </div>
-
-                <div id="i2c-options-fields">
-                  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
-                    <div class="form-group">
-                      <label for="i2c-sda-select">SDA Pin (Data)</label>
-                      <select id="i2c-sda-select">
-                        <option value="4" selected>D2 (GPIO 4) - Default Safe</option>
-                        <option value="5">D1 (GPIO 5)</option>
-                        <option value="12">D6 (GPIO 12)</option>
-                        <option value="14">D5 (GPIO 14)</option>
-                        <option value="0">D3 (GPIO 0)</option>
-                        <option value="2">D4 (GPIO 2)</option>
-                      </select>
-                    </div>
-
-                    <div class="form-group">
-                      <label for="i2c-scl-select">SCL Pin (Clock)</label>
-                      <select id="i2c-scl-select">
-                        <option value="5" selected>D1 (GPIO 5) - Default Safe</option>
-                        <option value="4">D2 (GPIO 4)</option>
-                        <option value="14">D5 (GPIO 14)</option>
-                        <option value="12">D6 (GPIO 12)</option>
-                        <option value="0">D3 (GPIO 0)</option>
-                        <option value="2">D4 (GPIO 2)</option>
-                      </select>
-                    </div>
-
-                    <div class="form-group">
-                      <label for="i2c-addr-input">Preferred I2C Address</label>
-                      <input type="text" id="i2c-addr-input" value="0x20" placeholder="0x20 or 0x27">
-                    </div>
-                  </div>
-
-                  <div id="i2c-scan-result" style="margin-top: 10px; font-size: 0.9rem; padding: 10px; border-radius: 6px; background: var(--bg-hover); display: none;"></div>
-                </div>
-
-                <!-- Action buttons are always visible whether enabled or disabled! -->
-                <div class="action-buttons" style="margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap;">
-                  <button type="submit" class="btn btn-primary btn-sm">💾 Save I2C Settings</button>
-                  <button type="button" class="btn btn-secondary btn-sm" onclick="app.saveI2cSettings(true)">🔄 Save & Reboot Node</button>
-                  <button type="button" class="btn btn-secondary btn-sm" onclick="app.scanI2cBus()">🔍 Scan I2C Bus</button>
-                  <button type="button" class="btn btn-success btn-sm" onclick="app.populatePcfChannels()">⚡ Add 8 PCF Relays (P0-P7)</button>
-                </div>
-              </form>
-            </div>
-          </div>
-
-          <div id="gpio-cards-container" class="gpio-grid">
-            <!-- Dynamically populated -->
-          </div>
-        </section>
-
-        <!-- 4. AUTOMATION RULES TAB -->
-        <section id="tab-automation" class="tab-pane">
-          <div class="section-header">
-            <h2>Automation Rules</h2>
-            <button id="open-add-rule-btn" class="btn btn-primary">➕ Add Rule</button>
-          </div>
-
-          <div class="card">
-            <div class="card-header">
-              <h3>Configured Rules</h3>
-            </div>
-            <div id="rules-container">
-              <!-- Dynamically populated -->
-            </div>
-          </div>
-        </section>
-
-        <!-- 5. SETTINGS TAB -->
-        <section id="tab-settings" class="tab-pane">
-          <div class="section-header">
-            <h2>Device Settings</h2>
           </div>
 
           <div class="card">
@@ -812,6 +869,7 @@
           <select id="gpio-pin-select" required>
             <option value="5">D1 (GPIO 5) - Safe I2C SCL (Recommended)</option>
             <option value="4">D2 (GPIO 4) - Safe I2C SDA (Recommended)</option>
+            <option value="17">A0 (ADC / Pin 17) - Analog Voltage Input (0-3.3V)</option>
             <option value="14">D5 (GPIO 14) - Safe SPI SCLK</option>
             <option value="12">D6 (GPIO 12) - Safe SPI MISO</option>
             <option value="13">D7 (GPIO 13) - Safe SPI MOSI</option>

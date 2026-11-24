@@ -51,13 +51,20 @@ const app = {
 
         // Tab specific loading
         if (targetId === 'tab-logs') this.loadLogs();
-        if (targetId === 'tab-wifi') this.loadWifiStatus();
-        if (targetId === 'tab-settings') this.loadSettings();
+        if (targetId === 'tab-wifi') { this.switchTab('tab-settings'); }
+        if (targetId === 'tab-settings') { this.loadSettings(); this.loadWifiStatus(); this.loadI2cSettings(); this.renderSettingsGpioTable(); }
         if (targetId === 'tab-sysinfo') this.loadStatus();
-        if (targetId === 'tab-gpio') { this.loadGpios(); this.loadI2cSettings(); }
+        if (targetId === 'tab-gpio') { this.loadGpios(); }
+        if (targetId === 'tab-sensors') { this.loadGpios(); this.loadIrStatus(); this.loadIrRemotes(); }
         if (targetId === 'tab-users') this.loadPairingStatus();
       });
     });
+  },
+
+  switchTab(tabId) {
+    if (tabId === 'tab-wifi') tabId = 'tab-settings';
+    const tabBtn = document.querySelector(`.nav-tab[data-tab="${tabId}"]`);
+    if (tabBtn) tabBtn.click();
   },
 
   setupEventListeners() {
@@ -525,244 +532,482 @@ const app = {
 
   renderGpios() {
     const overviewContainer = document.getElementById('overview-gpio-grid');
-    const manageContainer = document.getElementById('gpio-cards-container');
+    const relaysContainer = document.getElementById('gpio-cards-container');
+    const sensorsContainer = document.getElementById('sensors-cards-container');
 
-    if (this.channels.length === 0) {
-      if (overviewContainer) {
+    // Also populate settings provisioning table
+    this.renderSettingsGpioTable();
+
+    const relays = this.channels.filter(ch => !ch.isSensor && ch.type !== 'IR_TRANSMITTER');
+    const sensors = this.channels.filter(ch => ch.isSensor || ch.type === 'IR_RECEIVER' || ch.type === 'IR_TRANSMITTER' || ch.type === 'VOLTAGE_ADC' || ch.direction === 'INPUT');
+
+    // 1. RENDER RELAYS / ACTUATORS (TAB: tab-gpio)
+    if (relaysContainer) {
+      if (relays.length === 0) {
+        relaysContainer.innerHTML = `
+          <div style="text-align: center; padding: 30px; color: var(--text-muted); grid-column: 1 / -1; background: var(--bg-hover); border-radius: 8px;">
+            <p style="margin-bottom: 12px; font-size: 1rem;">No GPIO relay channels configured.</p>
+            <button class="btn btn-primary btn-sm" onclick="app.openAddGpioModal()">➕ Add Relay Output</button>
+            <button class="btn btn-success btn-sm" style="margin-left: 8px;" onclick="app.populatePcfChannels()">⚡ Add 8 PCF Relays (P0-P7)</button>
+          </div>
+        `;
+      } else {
+        let rHtml = '';
+        relays.forEach(ch => {
+          const isOn = ch.state;
+          const statusClass = isOn ? 'on' : '';
+          const cardActiveClass = isOn ? 'active-on' : '';
+          const stateText = isOn ? 'ON' : 'OFF';
+
+          rHtml += `
+            <div class="gpio-card ${cardActiveClass}">
+              <div class="gpio-card-top">
+                <div class="gpio-title-group">
+                  <h4>${ch.name} <span class="badge" style="font-size:0.68rem; padding: 2px 5px; background: rgba(59,130,246,0.2); color:#60a5fa; border-radius: 4px;">${ch.function || 'Relay'}</span></h4>
+                  <span class="gpio-meta">Pin: <strong>${ch.label}</strong> &bull; Room: <strong>${ch.room}</strong></span>
+                  <span class="gpio-meta">${ch.activeLow ? 'Active-Low (Relay)' : 'Active-High'} &bull; Boot: <strong>${ch.initialMode === 1 ? 'Always OFF' : ch.initialMode === 2 ? 'Always ON' : 'Restore Last State'}</strong></span>
+                  ${ch.bootSensitive ? `<span class="hint-text text-warning">⚠️ ${ch.note}</span>` : ''}
+                </div>
+                <div style="text-align: right;">
+                  <span class="gpio-status-indicator ${statusClass}"></span>
+                  <strong>${stateText}</strong>
+                </div>
+              </div>
+              <div class="gpio-controls">
+                <button class="btn ${isOn ? 'btn-danger' : 'btn-success'} btn-sm" onclick="app.toggleGpio(${ch.id})">
+                  ${isOn ? 'Turn OFF' : 'Turn ON'}
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="app.pulseGpio(${ch.id}, 500)">
+                  Pulse (0.5s)
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
+              </div>
+            </div>
+          `;
+        });
+        relaysContainer.innerHTML = rHtml;
+      }
+    }
+
+    // 2. RENDER SENSORS & INFRARED (TAB: tab-sensors)
+    if (sensorsContainer) {
+      if (sensors.length === 0) {
+        sensorsContainer.innerHTML = `
+          <div style="text-align: center; padding: 36px 20px; color: var(--text-muted); grid-column: 1 / -1; background: var(--bg-hover); border-radius: 8px;">
+            <div style="font-size: 2.2rem; margin-bottom: 10px;">📡</div>
+            <h3 style="margin-bottom: 6px;">No Sensor Pins Configured</h3>
+            <p style="font-size: 0.9rem; margin-bottom: 16px; color: var(--text-muted);">Configure an IR Receiver to learn remote keys, an IR Blaster to transmit signals, or a Voltage ADC sensor.</p>
+            <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+              <button class="btn btn-primary btn-sm" onclick="app.quickAddSensor(14, 'IR Receiver Sensor', 'IR Receiver')">➕ Add D5 as IR Receiver</button>
+              <button class="btn btn-primary btn-sm" onclick="app.quickAddSensor(13, 'IR Blaster LED', 'IR Transmitter')">➕ Add D7 as IR Transmitter</button>
+              <button class="btn btn-primary btn-sm" onclick="app.quickAddSensor(17, 'Voltage Sensor', 'Voltage')">➕ Add A0 as Voltage Sensor</button>
+            </div>
+          </div>
+        `;
+      } else {
+        let sHtml = '';
+        sensors.forEach(ch => {
+          // A. IR RECEIVER CARD
+          if (ch.type === 'IR_RECEIVER' || (ch.function && ch.function.toLowerCase() === 'ir receiver')) {
+            const lastCodeText = ch.lastCode ? `${ch.protocol || 'NEC'} ${ch.lastCode} (${ch.bits || 32} bits)` : 'No code detected yet (Listening on 38kHz)';
+            const ageText = (ch.ageMs !== undefined) ? ` &bull; ${Math.round(ch.ageMs/1000)}s ago` : '';
+            sHtml += `
+              <div class="gpio-card" style="border-left: 4px solid #0ea5e9;">
+                <div class="gpio-card-top">
+                  <div class="gpio-title-group">
+                    <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #0ea5e9; color:#fff; border-radius: 4px;">🎯 IR RECEIVER</span></h4>
+                    <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; Mode: <strong>Demodulator / Learner</strong></span>
+                  </div>
+                  <div style="text-align: right;">
+                    <span class="badge badge-info" style="font-size:0.75rem; background: rgba(14, 165, 233, 0.2); color: #38bdf8;">🟢 Active Listening</span>
+                  </div>
+                </div>
+                <div style="background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; padding: 10px 14px; margin: 12px 0;">
+                  <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 3px; display: flex; justify-content: space-between;">
+                    <span>Last Captured IR Remote Signal:</span>
+                    <span>${ageText}</span>
+                  </div>
+                  <div style="font-family: monospace; font-size: 1rem; color: #38bdf8; font-weight: 700;">${lastCodeText}</div>
+                </div>
+                <div class="gpio-controls" style="display: flex; gap: 8px; flex-wrap: wrap;">
+                  <button class="btn btn-primary btn-sm" onclick="app.openIrTrainModal()">🎯 Train / Learn Key</button>
+                  <button class="btn btn-secondary btn-sm" onclick="app.openSavedRemotesModal()">📋 View Saved Keys (${app.getTotalSavedButtons()})</button>
+                  <button class="btn btn-secondary btn-sm" onclick="app.pollIrCode()">🔄 Sample / Poll IR</button>
+                  <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
+                  <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
+                </div>
+              </div>
+            `;
+            return;
+          }
+
+          // B. IR TRANSMITTER CARD
+          if (ch.type === 'IR_TRANSMITTER' || (ch.function && ch.function.toLowerCase() === 'ir transmitter')) {
+            let blasterPills = '';
+            if (app.savedRemotes && app.savedRemotes.length > 0) {
+              app.savedRemotes.forEach(r => {
+                if (r.buttons && r.buttons.length > 0) {
+                  r.buttons.forEach(b => {
+                    blasterPills += `<button class="btn btn-secondary btn-sm" style="font-size: 0.8rem; padding: 4px 10px; border: 1px solid rgba(245,158,11,0.3); background: rgba(245,158,11,0.1);" onclick="app.blastSavedKey('${r.name}', '${b.name}')">🚀 ${r.name}: ${b.name}</button>`;
+                  });
+                }
+              });
+            }
+            if (!blasterPills) {
+              blasterPills = `<span style="font-size: 0.8rem; color: var(--text-muted);">No saved remote buttons. Use an IR Receiver to learn keys, or blast manual hex below.</span>`;
+            }
+
+            sHtml += `
+              <div class="gpio-card" style="border-left: 4px solid #f59e0b;">
+                <div class="gpio-card-top">
+                  <div class="gpio-title-group">
+                    <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #f59e0b; color:#111; border-radius: 4px; font-weight: 700;">🚀 IR TRANSMITTER</span></h4>
+                    <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; IR Blaster LED</span>
+                  </div>
+                  <div style="text-align: right;">
+                    <span class="badge" style="font-size:0.75rem; background: rgba(245, 158, 11, 0.2); color: #f59e0b;">Ready to Blast</span>
+                  </div>
+                </div>
+                
+                <div style="margin: 12px 0;">
+                  <div style="font-size: 0.8rem; font-weight: 600; color: #f59e0b; margin-bottom: 6px;">⚡ Quick Blaster (Learned Keys):</div>
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                    ${blasterPills}
+                  </div>
+                </div>
+
+                <div style="background: rgba(0,0,0,0.22); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; padding: 10px; margin-top: 10px;">
+                  <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 6px; font-weight: 600;">Manual Code Blaster:</div>
+                  <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                    <select id="ir-tx-proto-${ch.id}" class="form-control" style="width: 110px; font-size: 0.82rem; padding: 4px 6px;">
+                      <option value="NEC">NEC</option>
+                      <option value="SAMSUNG">Samsung</option>
+                      <option value="SONY">Sony</option>
+                      <option value="RC5">RC5</option>
+                      <option value="LG">LG</option>
+                      <option value="PANASONIC">Panasonic</option>
+                    </select>
+                    <input id="ir-tx-hex-${ch.id}" class="form-control" placeholder="0x00FF807F" style="font-size: 0.82rem; padding: 4px 8px; flex: 1; min-width: 120px;">
+                    <button class="btn btn-warning btn-sm" onclick="app.blastManualKey(${ch.pin}, ${ch.id})">🚀 Blast</button>
+                  </div>
+                </div>
+
+                <div class="gpio-controls" style="margin-top: 12px;">
+                  <button class="btn btn-secondary btn-sm" onclick="app.openSavedRemotesModal()">📋 Manage Keys</button>
+                  <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
+                  <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
+                </div>
+              </div>
+            `;
+            return;
+          }
+
+          // C. VOLTAGE ADC SENSOR CARD
+          if (ch.type === 'VOLTAGE_ADC' || ch.pin === 17 || (ch.function && ch.function.toLowerCase() === 'voltage')) {
+            const voltVal = (ch.value !== undefined) ? Number(ch.value).toFixed(2) : '0.00';
+            const pct = Math.min(100, Math.max(0, (Number(ch.value || 0) / 3.3) * 100)).toFixed(1);
+            sHtml += `
+              <div class="gpio-card" style="border-left: 4px solid #10b981;">
+                <div class="gpio-card-top">
+                  <div class="gpio-title-group">
+                    <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #10b981; color:#fff; border-radius: 4px;">⚡ VOLTAGE ADC</span></h4>
+                    <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; Range: 0.00V - 3.30V</span>
+                  </div>
+                  <div style="text-align: right;">
+                    <span id="sensor-volt-val-${ch.id}" style="font-size: 1.4rem; font-weight: 800; color: #10b981; display: inline-block; transition: transform 0.2s;">${voltVal} V</span>
+                    <div id="sensor-volt-adc-${ch.id}" style="font-size: 0.75rem; color: var(--text-muted);">Raw ADC: ${ch.rawAdc || 0}/1023</div>
+                  </div>
+                </div>
+
+                <!-- Voltage Progress Bar -->
+                <div style="margin: 12px 0 6px 0; background: rgba(255,255,255,0.06); height: 8px; border-radius: 4px; overflow: hidden;">
+                  <div id="sensor-volt-bar-${ch.id}" style="height: 100%; width: ${pct}%; background: linear-gradient(90deg, #10b981, #34d399); border-radius: 4px; transition: width 0.4s ease;"></div>
+                </div>
+
+                <div class="gpio-controls" style="margin-top: 10px;">
+                  <button class="btn btn-success btn-sm" onclick="app.sampleVoltage(${ch.id})">⚡ Sample Live ADC</button>
+                  <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
+                  <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
+                </div>
+              </div>
+            `;
+            return;
+          }
+
+          // D. PIR MOTION SENSOR
+          if (ch.type === 'PIR_MOTION' || (ch.function && ch.function.toLowerCase().includes('motion'))) {
+            sHtml += `
+              <div class="gpio-card" style="border-left: 4px solid #8b5cf6;">
+                <div class="gpio-card-top">
+                  <div class="gpio-title-group">
+                    <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #8b5cf6; color:#fff; border-radius: 4px;">🚶 PIR MOTION</span></h4>
+                    <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; Direction: INPUT</span>
+                  </div>
+                  <div style="text-align: right;">
+                    <span class="badge ${ch.state ? 'badge-danger' : 'badge-success'}" style="font-size: 0.85rem; padding: 5px 10px;">
+                      ${ch.state ? '🚶 MOTION DETECTED' : '🟢 IDLE / CLEAR'}
+                    </span>
+                  </div>
+                </div>
+                <div class="gpio-controls" style="margin-top: 12px;">
+                  <button class="btn btn-secondary btn-sm" onclick="app.loadGpios()">🔄 Refresh</button>
+                  <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
+                  <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
+                </div>
+              </div>
+            `;
+            return;
+          }
+
+          // E. DOOR / WINDOW SENSOR
+          if (ch.type === 'DOOR_SENSOR' || (ch.function && (ch.function.toLowerCase().includes('door') || ch.function.toLowerCase().includes('window')))) {
+            sHtml += `
+              <div class="gpio-card" style="border-left: 4px solid #ec4899;">
+                <div class="gpio-card-top">
+                  <div class="gpio-title-group">
+                    <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #ec4899; color:#fff; border-radius: 4px;">🚪 CONTACT SENSOR</span></h4>
+                    <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; Direction: INPUT</span>
+                  </div>
+                  <div style="text-align: right;">
+                    <span class="badge ${ch.state ? 'badge-warning' : 'badge-success'}" style="font-size: 0.85rem; padding: 5px 10px;">
+                      ${ch.state ? '🚪 CONTACT OPEN' : '🔒 CLOSED / SECURE'}
+                    </span>
+                  </div>
+                </div>
+                <div class="gpio-controls" style="margin-top: 12px;">
+                  <button class="btn btn-secondary btn-sm" onclick="app.loadGpios()">🔄 Refresh</button>
+                  <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
+                  <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
+                </div>
+              </div>
+            `;
+            return;
+          }
+
+          // F. OTHER GENERIC SENSORS
+          sHtml += `
+            <div class="gpio-card" style="border-left: 4px solid #6366f1;">
+              <div class="gpio-card-top">
+                <div class="gpio-title-group">
+                  <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #6366f1; color:#fff; border-radius: 4px;">SENSOR</span></h4>
+                  <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; ${ch.function}</span>
+                </div>
+                <div style="text-align: right;">
+                  <span class="badge ${ch.state ? 'badge-info' : 'badge-secondary'}">${ch.state ? 'ACTIVE' : 'INACTIVE'}</span>
+                </div>
+              </div>
+              <div class="gpio-controls" style="margin-top: 10px;">
+                <button class="btn btn-secondary btn-sm" onclick="app.loadGpios()">🔄 Refresh</button>
+                <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
+              </div>
+            </div>
+          `;
+        });
+        sensorsContainer.innerHTML = sHtml;
+      }
+    }
+
+    // 3. RENDER OVERVIEW SWITCHES
+    if (overviewContainer) {
+      if (relays.length === 0) {
         overviewContainer.innerHTML = `
           <div style="text-align: center; padding: 20px; color: var(--text-muted); grid-column: 1 / -1;">
-            <p style="margin-bottom: 12px; font-size: 0.95rem;">No GPIO relay channels found.</p>
-            <button class="btn btn-primary btn-sm" onclick="app.openAddGpioModal()">➕ Add Relay Output</button>
-            <button class="btn btn-secondary btn-sm" style="margin-left: 8px;" onclick="app.loadGpios()">🔄 Refresh</button>
+            <p style="margin-bottom: 8px;">No relay outputs configured.</p>
+            <button class="btn btn-primary btn-sm" onclick="app.openAddGpioModal()">➕ Add Relay</button>
           </div>
         `;
+      } else {
+        let ovHtml = '';
+        relays.forEach(ch => {
+          const isOn = ch.state;
+          const statusClass = isOn ? 'on' : '';
+          const cardActiveClass = isOn ? 'active-on' : '';
+          const stateText = isOn ? 'ON' : 'OFF';
+
+          ovHtml += `
+            <div class="gpio-card ${cardActiveClass}">
+              <div class="gpio-card-top">
+                <div class="gpio-title-group">
+                  <h4>${ch.name}</h4>
+                  <span class="gpio-meta">${ch.room} &bull; ${ch.function} (${ch.label})</span>
+                </div>
+                <div>
+                  <span class="gpio-status-indicator ${statusClass}"></span>
+                  <strong>${stateText}</strong>
+                </div>
+              </div>
+              <div class="gpio-controls">
+                <button class="btn ${isOn ? 'btn-danger' : 'btn-success'}" onclick="app.toggleGpio(${ch.id})">
+                  ${isOn ? 'Turn OFF' : 'Turn ON'}
+                </button>
+                <button class="btn btn-secondary" onclick="app.pulseGpio(${ch.id}, 500)">
+                  Pulse (0.5s)
+                </button>
+              </div>
+            </div>
+          `;
+        });
+        overviewContainer.innerHTML = ovHtml;
       }
-      if (manageContainer) {
-        manageContainer.innerHTML = `
-          <div style="text-align: center; padding: 20px; color: var(--text-muted); grid-column: 1 / -1;">
-            <p style="margin-bottom: 12px;">No GPIO relay channels configured.</p>
-            <button class="btn btn-primary btn-sm" onclick="app.openAddGpioModal()">➕ Add New Channel</button>
-          </div>
-        `;
-      }
+    }
+  },
+
+  renderSettingsGpioTable() {
+    const tbody = document.getElementById('settings-gpio-tbody');
+    if (!tbody) return;
+
+    if (!this.channels || this.channels.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding: 18px; color: var(--text-muted);">No GPIO channels configured yet. Click <strong>➕ Add GPIO Channel</strong> or <strong>⚡ Add 8 PCF Relays</strong> above.</td></tr>`;
       return;
     }
 
-    let ovHtml = '';
-    let mgHtml = '';
-
+    let rows = '';
     this.channels.forEach(ch => {
-      // 1. DEDICATED IR RECEIVER CARD
-      if (ch.type === 'IR_RECEIVER' || (ch.function && ch.function.toLowerCase() === 'ir receiver')) {
-        const lastCodeText = ch.lastCode ? `${ch.protocol || 'NEC'} ${ch.lastCode} (${ch.bits || 32}b)` : 'No code detected yet (Listening)';
-        const cardContent = `
-          <div class="gpio-card" style="border-left: 4px solid #0ea5e9;">
-            <div class="gpio-card-top">
-              <div class="gpio-title-group">
-                <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #0ea5e9; color:#fff; border-radius: 4px;">🎯 IR RECEIVER</span></h4>
-                <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; Mode: <strong>Demodulator / Learner</strong></span>
-              </div>
-              <div style="text-align: right;">
-                <span class="badge badge-info" style="font-size:0.75rem; background: rgba(14, 165, 233, 0.2); color: #38bdf8;">🟢 Active Listening</span>
-              </div>
-            </div>
-            <div style="background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; padding: 8px 12px; margin: 10px 0;">
-              <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 2px;">Last Captured IR Code:</div>
-              <div style="font-family: monospace; font-size: 0.95rem; color: #38bdf8; font-weight: 600;">${lastCodeText}</div>
-            </div>
-            <div class="gpio-controls" style="display: flex; gap: 8px; flex-wrap: wrap;">
-              <button class="btn btn-primary btn-sm" onclick="app.openIrTrainModal()">🎯 Train / Learn Key</button>
-              <button class="btn btn-secondary btn-sm" onclick="app.openSavedRemotesModal()">📋 View Saved Keys (${app.getTotalSavedButtons()})</button>
-              <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
-              <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
-            </div>
-          </div>
-        `;
-        ovHtml += cardContent;
-        mgHtml += cardContent;
-        return;
+      const isSensor = ch.isSensor || ch.direction === 'INPUT';
+      const dirBadge = isSensor ? `<span class="badge" style="background: rgba(14,165,233,0.2); color: #0284c7; padding: 2px 6px;">INPUT</span>` : `<span class="badge" style="background: rgba(16,185,129,0.2); color: #059669; padding: 2px 6px;">OUTPUT</span>`;
+      
+      let valDisplay = '';
+      if (ch.type === 'VOLTAGE_ADC') {
+        valDisplay = `<strong>${Number(ch.value || 0).toFixed(2)} V</strong>`;
+      } else if (ch.type === 'IR_RECEIVER') {
+        valDisplay = ch.lastCode ? `<code style="font-size:0.75rem; color:#0284c7;">${ch.lastCode}</code>` : `<span style="color:var(--text-muted);">Listening</span>`;
+      } else if (ch.type === 'IR_TRANSMITTER') {
+        valDisplay = `<span style="color:#f59e0b;">Ready</span>`;
+      } else {
+        valDisplay = ch.state ? `<strong class="text-success">ON</strong>` : `<span class="text-muted">OFF</span>`;
       }
 
-      // 2. DEDICATED IR TRANSMITTER CARD
-      if (ch.type === 'IR_TRANSMITTER' || (ch.function && ch.function.toLowerCase() === 'ir transmitter')) {
-        let blasterPills = '';
-        if (app.savedRemotes && app.savedRemotes.length > 0) {
-          app.savedRemotes.forEach(r => {
-            if (r.buttons && r.buttons.length > 0) {
-              r.buttons.forEach(b => {
-                blasterPills += `<button class="btn btn-secondary btn-sm" style="font-size: 0.75rem; padding: 3px 8px;" onclick="app.blastSavedKey('${r.name}', '${b.name}')">🚀 ${r.name}: ${b.name}</button>`;
-              });
-            }
-          });
-        }
-        if (!blasterPills) {
-          blasterPills = `<span style="font-size: 0.8rem; color: var(--text-muted);">No saved remote buttons. Use an IR Receiver to learn keys, or blast manual hex below.</span>`;
-        }
-
-        const cardContent = `
-          <div class="gpio-card" style="border-left: 4px solid #f59e0b;">
-            <div class="gpio-card-top">
-              <div class="gpio-title-group">
-                <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #f59e0b; color:#111; border-radius: 4px; font-weight: 700;">🚀 IR TRANSMITTER</span></h4>
-                <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; IR Blaster LED</span>
-              </div>
-              <div style="text-align: right;">
-                <span class="badge" style="font-size:0.75rem; background: rgba(245, 158, 11, 0.2); color: #f59e0b;">Ready to Blast</span>
-              </div>
-            </div>
-            
-            <div style="margin: 10px 0;">
-              <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 6px;">⚡ Quick Key Blaster (Learned Keys):</div>
-              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                ${blasterPills}
-              </div>
-            </div>
-
-            <div style="background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; padding: 8px; margin-top: 8px;">
-              <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">Manual Code Transmitter:</div>
-              <div style="display: flex; gap: 6px;">
-                <select id="ir-tx-proto-${ch.id}" class="form-control" style="width: 105px; font-size: 0.8rem; padding: 4px;">
-                  <option value="NEC">NEC</option>
-                  <option value="SAMSUNG">Samsung</option>
-                  <option value="SONY">Sony</option>
-                  <option value="RC5">RC5</option>
-                  <option value="LG">LG</option>
-                  <option value="PANASONIC">Panasonic</option>
-                </select>
-                <input id="ir-tx-hex-${ch.id}" class="form-control" placeholder="0x00FF807F" style="font-size: 0.8rem; padding: 4px; flex: 1;">
-                <button class="btn btn-success btn-sm" onclick="app.blastManualKey(${ch.pin}, ${ch.id})">🚀 Blast</button>
-              </div>
-            </div>
-
-            <div class="gpio-controls" style="margin-top: 10px;">
-              <button class="btn btn-secondary btn-sm" onclick="app.openSavedRemotesModal()">📋 Manage Keys</button>
-              <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
-              <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
-            </div>
-          </div>
-        `;
-        ovHtml += cardContent;
-        mgHtml += cardContent;
-        return;
-      }
-
-      // 3. DEDICATED VOLTAGE ADC SENSOR CARD
-      if (ch.type === 'VOLTAGE_ADC' || ch.pin === 17 || (ch.function && ch.function.toLowerCase() === 'voltage')) {
-        const voltVal = (ch.value !== undefined) ? Number(ch.value).toFixed(2) : '0.00';
-        const cardContent = `
-          <div class="gpio-card" style="border-left: 4px solid #10b981;">
-            <div class="gpio-card-top">
-              <div class="gpio-title-group">
-                <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #10b981; color:#fff; border-radius: 4px;">⚡ VOLTAGE ADC</span></h4>
-                <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; Direction: INPUT</span>
-              </div>
-              <div style="text-align: right;">
-                <span style="font-size: 1.3rem; font-weight: 800; color: #10b981;">${voltVal} V</span>
-                <div style="font-size: 0.75rem; color: var(--text-muted);">Raw ADC: ${ch.rawAdc || 0}/1023</div>
-              </div>
-            </div>
-            <div class="gpio-controls" style="margin-top: 8px;">
-              <button class="btn btn-secondary btn-sm" onclick="app.loadGpios()">🔄 Sample Live</button>
-              <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
-              <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
-            </div>
-          </div>
-        `;
-        ovHtml += cardContent;
-        mgHtml += cardContent;
-        return;
-      }
-
-      // 4. PIR MOTION & DIGITAL SENSORS
-      if (ch.isSensor || ch.direction === 'INPUT') {
-        const isMotion = (ch.type === 'PIR_MOTION' || (ch.function && ch.function.toLowerCase().includes('motion')));
-        const cardContent = `
-          <div class="gpio-card" style="border-left: 4px solid #8b5cf6;">
-            <div class="gpio-card-top">
-              <div class="gpio-title-group">
-                <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #8b5cf6; color:#fff; border-radius: 4px;">SENSOR: ${ch.type}</span></h4>
-                <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong></span>
-              </div>
-              <div style="text-align: right;">
-                <span class="badge ${ch.state ? 'badge-danger' : 'badge-success'}" style="font-size: 0.85rem; padding: 4px 8px;">
-                  ${ch.state ? (isMotion ? '🚶 MOTION DETECTED' : 'ACTIVE') : (isMotion ? '🟢 CLEAR' : 'IDLE')}
-                </span>
-              </div>
-            </div>
-            <div class="gpio-controls" style="margin-top: 8px;">
-              <button class="btn btn-secondary btn-sm" onclick="app.loadGpios()">🔄 Refresh</button>
-              <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
-              <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
-            </div>
-          </div>
-        `;
-        ovHtml += cardContent;
-        mgHtml += cardContent;
-        return;
-      }
-
-      // 5. REGULAR RELAYS / ACTUATORS (LIGHT, FAN, RELAY)
-      const isOn = ch.state;
-      const statusClass = isOn ? 'on' : '';
-      const cardActiveClass = isOn ? 'active-on' : '';
-      const stateText = isOn ? 'ON' : 'OFF';
-
-      // Overview Card
-      ovHtml += `
-        <div class="gpio-card ${cardActiveClass}">
-          <div class="gpio-card-top">
-            <div class="gpio-title-group">
-              <h4>${ch.name}</h4>
-              <span class="gpio-meta">${ch.room} &bull; ${ch.function} (${ch.label})</span>
-            </div>
-            <div>
-              <span class="gpio-status-indicator ${statusClass}"></span>
-              <strong>${stateText}</strong>
-            </div>
-          </div>
-          <div class="gpio-controls">
-            <button class="btn ${isOn ? 'btn-danger' : 'btn-success'}" onclick="app.toggleGpio(${ch.id})">
-              ${isOn ? 'Turn OFF' : 'Turn ON'}
-            </button>
-            <button class="btn btn-secondary" onclick="app.pulseGpio(${ch.id}, 500)">
-              Pulse (0.5s)
-            </button>
-          </div>
-        </div>
-      `;
-
-      // Management Card
-      mgHtml += `
-        <div class="gpio-card ${cardActiveClass}">
-          <div class="gpio-card-top">
-            <div class="gpio-title-group">
-              <h4>${ch.name}</h4>
-              <span class="gpio-meta">Pin: <strong>${ch.label}</strong> &bull; Room: <strong>${ch.room}</strong></span>
-              <span class="gpio-meta">${ch.activeLow ? 'Active-Low (Relay)' : 'Active-High'} &bull; Boot: <strong>${ch.initialMode === 1 ? 'Always OFF' : ch.initialMode === 2 ? 'Always ON' : 'Restore Last State'}</strong></span>
-              ${ch.bootSensitive ? `<span class="hint-text text-warning">⚠️ ${ch.note}</span>` : ''}
-            </div>
-            <div>
-              <span class="gpio-status-indicator ${statusClass}"></span>
-              <strong>${stateText}</strong>
-            </div>
-          </div>
-          <div class="gpio-controls">
-            <button class="btn ${isOn ? 'btn-danger' : 'btn-success'} btn-sm" onclick="app.toggleGpio(${ch.id})">
-              ${isOn ? 'Turn OFF' : 'Turn ON'}
-            </button>
-            <button class="btn btn-secondary btn-sm" onclick="app.pulseGpio(${ch.id}, 500)">
-              Pulse (0.5s)
-            </button>
-            <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
-            <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
-          </div>
-        </div>
+      rows += `
+        <tr>
+          <td><strong>${ch.id}</strong></td>
+          <td><code>${ch.label || ('Pin ' + ch.pin)}</code></td>
+          <td><strong>${ch.name}</strong></td>
+          <td>${ch.room}</td>
+          <td>${ch.function}</td>
+          <td>${dirBadge} ${ch.type}</td>
+          <td>${valDisplay}</td>
+          <td>
+            <button class="btn btn-secondary btn-sm" style="padding: 2px 7px; font-size: 0.75rem;" onclick="app.editGpio(${ch.id})">Edit</button>
+            <button class="btn btn-danger btn-sm" style="padding: 2px 7px; font-size: 0.75rem;" onclick="app.deleteGpio(${ch.id})">Delete</button>
+          </td>
+        </tr>
       `;
     });
-
-    overviewContainer.innerHTML = ovHtml;
-    manageContainer.innerHTML = mgHtml;
+    tbody.innerHTML = rows;
   },
+
+  openAddSensorModal() {
+    this.openAddGpioModal();
+    const title = document.getElementById('gpio-modal-title');
+    if (title) title.innerText = 'Configure New Sensor Channel';
+    const funcSelect = document.getElementById('gpio-func-select');
+    if (funcSelect) funcSelect.value = 'IR Receiver';
+    const pinSelect = document.getElementById('gpio-pin-select');
+    if (pinSelect) pinSelect.value = '14';
+  },
+
+  async quickAddSensor(pin, name, func) {
+    try {
+      const res = await this.apiRequest('/api/gpio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pin: pin,
+          name: name,
+          room: 'Living Room',
+          function: func,
+          activeLow: true,
+          initialMode: 0
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        this.showToast(`Added ${name} on Pin ${pin}!`);
+        await this.loadGpios();
+        await this.loadIrStatus();
+      } else {
+        alert(data.error || 'Failed to add sensor channel');
+      }
+    } catch (e) {
+      alert('Error adding sensor: ' + e.message);
+    }
+  },
+
+  async sampleVoltage(chId) {
+    try {
+      const res = await this.apiRequest('/api/gpio');
+      if (res.ok) {
+        this.channels = await res.json();
+        const voltCh = this.channels.find(c => c.id === chId || c.pin === 17 || c.type === 'VOLTAGE_ADC');
+        if (voltCh) {
+          const valEl = document.getElementById(`sensor-volt-val-${voltCh.id}`);
+          const rawEl = document.getElementById(`sensor-volt-adc-${voltCh.id}`);
+          const barEl = document.getElementById(`sensor-volt-bar-${voltCh.id}`);
+          const v = Number(voltCh.value || 0).toFixed(2);
+          if (valEl) {
+            valEl.innerText = `${v} V`;
+            valEl.style.transform = 'scale(1.2)';
+            setTimeout(() => valEl.style.transform = 'scale(1)', 250);
+          }
+          if (rawEl) rawEl.innerText = `Raw ADC: ${voltCh.rawAdc || 0}/1023`;
+          if (barEl) barEl.style.width = `${Math.min(100, Math.max(0, (voltCh.value / 3.3) * 100))}%`;
+          this.showToast(`⚡ Voltage Sampled: ${v} V (Raw ADC: ${voltCh.rawAdc || 0}/1023)`);
+        } else {
+          this.renderGpios();
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  },
+
+  async pollIrCode() {
+    try {
+      const res = await this.apiRequest('/api/ir/train/result');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.hexCode) {
+          alert(`🎯 Last Demodulated IR Signal:\nProtocol: ${data.protocol}\nHex Code: ${data.hexCode}\nBits: ${data.bits}\nAge: ${Math.round((data.ageMs || 0)/1000)} seconds ago`);
+        } else {
+          alert('No IR signal received yet. Point your remote at Pin D5 and press any button, or click "Train / Learn Key".');
+        }
+      }
+    } catch (e) {
+      alert('Error reading IR code: ' + e.message);
+    }
+  },
+
+  async refreshSensors() {
+    await this.loadGpios();
+    await this.loadIrStatus();
+    await this.loadIrRemotes();
+    this.showToast('Sensors & remotes refreshed');
+  },
+
+  showToast(message, duration = 3000) {
+    let container = document.getElementById('toast-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'toast-container';
+      container.style.cssText = 'position: fixed; bottom: 20px; right: 20px; z-index: 99999; display: flex; flex-direction: column; gap: 8px; pointer-events: none;';
+      document.body.appendChild(container);
+    }
+
+    const toast = document.createElement('div');
+    toast.style.cssText = 'background: #0f172a; color: #fff; border: 1px solid #38bdf8; border-radius: 6px; padding: 10px 16px; font-size: 0.88rem; box-shadow: 0 4px 12px rgba(0,0,0,0.5); pointer-events: auto; display: flex; align-items: center; gap: 8px;';
+    toast.innerHTML = message;
+    container.appendChild(toast);
+
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transition = 'opacity 0.3s ease';
+      setTimeout(() => toast.remove(), 300);
+    }, duration);
+  },
+
+
 
   async toggleGpio(id) {
     try {
@@ -2281,7 +2526,7 @@ const app = {
       const data = await res.json();
       if (data.success) {
         console.log(`[IR] Blasted: ${remoteName} -> ${buttonName}`);
-        alert(`🚀 IR Signal Blasted: ${remoteName} -> ${buttonName}!`);
+        this.showToast(`🚀 IR Signal Blasted: <strong>${remoteName}</strong> &bull; ${buttonName}!`);
       } else {
         alert(data.error || 'Failed to blast IR signal');
       }
