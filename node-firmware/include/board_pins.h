@@ -201,11 +201,26 @@ static const PinSafetyInfo PIN_SAFETY_MAP[] = {
 #define SD3 10
 #endif
 
+#define PCF_PIN_BASE            100
+#define IS_PCF_PIN(p)           ((p) >= PCF_PIN_BASE && (p) <= (PCF_PIN_BASE + 7))
+#define PCF_PIN_INDEX(p)        ((p) - PCF_PIN_BASE)
+#define NODEMCU_I2C_SDA         D2
+#define NODEMCU_I2C_SCL         D1
+#define PCF8574_DEFAULT_ADDR    0x27
+
 #define FACTORY_RESET_PIN       D3
 #define ONBOARD_LED_PIN         D4
 #define MAX_GPIO_CHANNELS       16
 
 static const PinSafetyInfo PIN_SAFETY_MAP[] = {
+    { 100, "P0 (PCF8574 Relay 1)", true,  false, "I2C Expander Pin P0 (Safe isolated relay output)" },
+    { 101, "P1 (PCF8574 Relay 2)", true,  false, "I2C Expander Pin P1 (Safe isolated relay output)" },
+    { 102, "P2 (PCF8574 Relay 3)", true,  false, "I2C Expander Pin P2 (Safe isolated relay output)" },
+    { 103, "P3 (PCF8574 Relay 4)", true,  false, "I2C Expander Pin P3 (Safe isolated relay output)" },
+    { 104, "P4 (PCF8574 Relay 5)", true,  false, "I2C Expander Pin P4 (Safe isolated relay output)" },
+    { 105, "P5 (PCF8574 Relay 6)", true,  false, "I2C Expander Pin P5 (Safe isolated relay output)" },
+    { 106, "P6 (PCF8574 Relay 7)", true,  false, "I2C Expander Pin P6 (Safe isolated relay output)" },
+    { 107, "P7 (PCF8574 Relay 8)", true,  false, "I2C Expander Pin P7 (Safe isolated relay output)" },
     { D1,  "D1 (GPIO5)",   true,  false, "Safe I2C SCL, boot-neutral" },
     { D2,  "D2 (GPIO4)",   true,  false, "Safe I2C SDA, boot-neutral" },
     { D5,  "D5 (GPIO14)",  true,  false, "Safe SPI CLK, boot-neutral" },

@@ -239,6 +239,15 @@ public:
 
     void registerStateChangeCallback(GpioStateChangeCallback cb) { _stateCallback = cb; }
 
+    bool isI2cEnabled() const { return _i2cEnabled; }
+    uint8_t getI2cSdaPin() const { return _i2cSdaPin; }
+    uint8_t getI2cSclPin() const { return _i2cSclPin; }
+    uint8_t getI2cAddress() const { return _i2cAddress; }
+    bool isPcfDetected() const;
+    uint8_t getPcfAddress() const;
+    uint8_t getPcfOutputByte() const;
+    bool setI2cConfig(bool enabled, uint8_t sdaPin, uint8_t sclPin, uint8_t addr);
+
     void toJson(JsonArray& arr);
     bool fromJson(JsonArray& arr);
 
@@ -247,6 +256,10 @@ private:
     std::vector<GpioChannel> _channels;
     GpioStateChangeCallback _stateCallback;
     uint8_t _nextId;
+    bool _i2cEnabled;
+    uint8_t _i2cSdaPin;
+    uint8_t _i2cSclPin;
+    uint8_t _i2cAddress;
 
     void applyPhysicalPin(const GpioChannel& channel);
     void loadFromStorage();

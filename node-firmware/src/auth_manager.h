@@ -28,6 +28,10 @@ public:
     String getAdminPassword() const { return _adminPasswordHash; }
     bool checkCredentials(const String& username, const String& password) const;
     void setAdminCredentials(const String& username, const String& passwordHash);
+    bool setServerPairingKey(const String& newKey);
+    bool clearServerPairingKey();
+    bool isPaired() const { return _serverKeyHash.length() > 0; }
+    String getServerKeyHash() const { return _serverKeyHash; }
 
     static String sha256(const String& input);
 
@@ -35,6 +39,7 @@ private:
     AuthManager();
     String _adminUser;
     String _adminPasswordHash;
+    String _serverKeyHash;
     AuthSession _currentSession;
     uint8_t _failedAttempts;
     unsigned long _lockoutUntil;
@@ -70,6 +75,11 @@ public:
     
     String getAdminUsername() const { return _adminUser; }
     void setAdminCredentials(const String& username, const String& passwordHash);
+    bool setServerPairingKey(const String& newKey);
+    bool clearServerPairingKey();
+    bool isPaired() const { return _serverKeyHash.length() > 0; }
+    String getServerKeyHash() const { return _serverKeyHash; }
+    bool checkCredentials(const String& username, const String& password) const;
 
     static String sha256(const String& input);
 
@@ -77,6 +87,7 @@ private:
     AuthManager();
     String _adminUser;
     String _adminPasswordHash;
+    String _serverKeyHash;
     AuthSession _currentSession;
     uint8_t _failedAttempts;
     unsigned long _lockoutUntil;

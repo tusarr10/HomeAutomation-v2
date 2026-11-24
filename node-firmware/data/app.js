@@ -637,6 +637,44 @@ const app = {
     document.getElementById('gpio-func-select').value = 'Light';
     document.getElementById('gpio-active-low').checked = true;
     document.getElementById('gpio-init-mode').value = '0';
+
+    // Populate pins dynamically based on I2C state
+    const pinSelect = document.getElementById('gpio-pin-select');
+    if (pinSelect) {
+      const i2c = this.i2cConfig || {};
+      let html = '';
+      if (i2c.enabled) {
+        html += '<optgroup label="PCF8574 I2C Expander Pins (Active)">';
+        for (let p = 100; p <= 107; p++) {
+          html += `<option value="${p}">P${p - 100} (Pin ${p}) - PCF8574 Relay ${p - 99}</option>`;
+        }
+        html += '</optgroup>';
+      }
+
+      html += '<optgroup label="ESP8266 Native Pins">';
+      const nativePins = [
+        { pin: 5, label: 'D1 (GPIO 5) - SCL' },
+        { pin: 4, label: 'D2 (GPIO 4) - SDA' },
+        { pin: 14, label: 'D5 (GPIO 14) - SPI SCLK' },
+        { pin: 12, label: 'D6 (GPIO 12) - SPI MISO' },
+        { pin: 13, label: 'D7 (GPIO 13) - SPI MOSI' },
+        { pin: 16, label: 'D0 (GPIO 16) - WAKE Pin' },
+        { pin: 0, label: 'D3 (GPIO 0) - Boot Sensitive' },
+        { pin: 2, label: 'D4 (GPIO 2) - Boot Sensitive' },
+        { pin: 15, label: 'D8 (GPIO 15) - Boot Sensitive' }
+      ];
+
+      nativePins.forEach(p => {
+        if (i2c.enabled && (p.pin === i2c.sdaPin || p.pin === i2c.sclPin)) {
+          html += `<option value="${p.pin}" disabled>${p.label} (Reserved for I2C)</option>`;
+        } else {
+          html += `<option value="${p.pin}">${p.label}</option>`;
+        }
+      });
+      html += '</optgroup>';
+      pinSelect.innerHTML = html;
+    }
+
     document.getElementById('gpio-modal').classList.remove('hidden');
   },
 
@@ -1608,6 +1646,208 @@ const app = {
   closeModal(id) {
     document.getElementById(id).classList.add('hidden');
   }
+
+  // ==== I2C EXPANDER & DUAL-AUTH PAIRING ====
+  i2cConfig: { enabled: false, sdaPin: 4, sclPin: 5, address: 39, detected: false, detectedAddress: 0 },
+
+  async loadI2cSettings() {
+    try {
+      const res = await this.apiRequest('/api/i2c');
+      if (res.ok) {
+        this.i2cConfig = await res.json();
+        this.renderI2cSettings();
+      }
+    } catch (e) {
+      console.warn('[I2C] Failed to load I2C settings:', e);
+    }
+  },
+
+  renderI2cSettings() {
+    const c = this.i2cConfig;
+    const badge = document.getElementById('i2c-status-badge');
+    const enabledCb = document.getElementById('i2c-enabled');
+    const fields = document.getElementById('i2c-options-fields');
+    const sdaSel = document.getElementById('i2c-sda-select');
+    const sclSel = document.getElementById('i2c-scl-select');
+    const addrInp = document.getElementById('i2c-addr-input');
+
+    if (enabledCb) enabledCb.checked = !!c.enabled;
+    if (fields) fields.style.display = c.enabled ? 'block' : 'none';
+    if (sdaSel) sdaSel.value = String(c.sdaPin || 4);
+    if (sclSel) sclSel.value = String(c.sclPin || 5);
+    if (addrInp) addrInp.value = c.addressHex || '0x27';
+
+    if (badge) {
+      if (c.enabled) {
+        if (c.detected) {
+          badge.className = 'badge badge-success';
+          badge.innerText = `Active @ ${c.addressHex || '0x27'} (PCF8574 Detected)`;
+        } else {
+          badge.className = 'badge badge-warning';
+          badge.innerText = 'I2C Bus Enabled (Expander not detected)';
+        }
+      } else {
+        badge.className = 'badge badge-secondary';
+        badge.innerText = 'Disabled';
+      }
+    }
+  },
+
+  onI2cToggle(enabled) {
+    const fields = document.getElementById('i2c-options-fields');
+    if (fields) fields.style.display = enabled ? 'block' : 'none';
+  },
+
+  toggleI2cPanel() {
+    const body = document.getElementById('i2c-panel-body');
+    if (body) {
+      body.style.display = (body.style.display === 'none') ? 'block' : 'none';
+    }
+  },
+
+  async saveI2cSettings(reboot = false) {
+    const enabled = document.getElementById('i2c-enabled').checked;
+    const sdaPin = parseInt(document.getElementById('i2c-sda-select').value);
+    const sclPin = parseInt(document.getElementById('i2c-scl-select').value);
+    let addrStr = document.getElementById('i2c-addr-input').value.trim();
+    let addr = 39;
+    if (addrStr.startsWith('0x') || addrStr.startsWith('0X')) {
+      addr = parseInt(addrStr, 16);
+    } else {
+      addr = parseInt(addrStr, 10);
+    }
+    if (isNaN(addr) || addr < 1 || addr > 127) addr = 39;
+
+    try {
+      const res = await this.apiRequest('/api/i2c', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, sdaPin, sclPin, address: addr, reboot })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message || (reboot ? 'Settings saved. Device restarting...' : 'I2C settings saved!'));
+        if (!reboot) {
+          await this.loadI2cSettings();
+          await this.loadGpios();
+        }
+      } else {
+        alert(data.error || 'Failed to save I2C settings');
+      }
+    } catch (e) {
+      alert('Error saving I2C settings: ' + e.message);
+    }
+  },
+
+  async scanI2cBus() {
+    const sdaPin = parseInt(document.getElementById('i2c-sda-select').value);
+    const sclPin = parseInt(document.getElementById('i2c-scl-select').value);
+    const resultEl = document.getElementById('i2c-scan-result');
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      resultEl.innerHTML = '<em>Scanning I2C bus on SDA=' + sdaPin + ', SCL=' + sclPin + '...</em>';
+    }
+
+    try {
+      const res = await this.apiRequest(`/api/i2c/scan?sda=${sdaPin}&scl=${sclPin}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.devices && data.devices.length > 0) {
+          let html = `<strong>Found ${data.devices.length} I2C Device(s):</strong><ul style="margin: 6px 0 0 18px; padding: 0;">`;
+          data.devices.forEach(d => {
+            html += `<li><strong>${d.hex}</strong> (${d.type})</li>`;
+          });
+          html += '</ul>';
+          resultEl.innerHTML = html;
+        } else {
+          resultEl.innerHTML = '<span class="text-warning">⚠️ No I2C devices responded on this bus. Check wiring (SDA/SCL) and pull-up resistors.</span>';
+        }
+      } else {
+        resultEl.innerHTML = '<span class="text-danger">Scan error from device.</span>';
+      }
+    } catch (e) {
+      if (resultEl) resultEl.innerHTML = '<span class="text-danger">Failed to scan I2C bus: ' + e.message + '</span>';
+    }
+  },
+
+  async loadPairingStatus() {
+    try {
+      const res = await this.apiRequest('/api/auth/pair');
+      if (res.ok) {
+        const data = await res.json();
+        const badge = document.getElementById('pairing-status-badge');
+        const unpairBtn = document.getElementById('unpair-server-btn');
+        if (badge) {
+          if (data.paired) {
+            badge.className = 'badge badge-success';
+            badge.innerText = 'Paired (Dual-Auth Active)';
+          } else {
+            badge.className = 'badge badge-secondary';
+            badge.innerText = 'Unpaired';
+          }
+        }
+        if (unpairBtn) {
+          unpairBtn.style.display = data.paired ? 'inline-block' : 'none';
+        }
+      }
+    } catch (e) {
+      console.warn('[Pairing] Status check failed:', e);
+    }
+  },
+
+  async submitServerPairing() {
+    const key = document.getElementById('server-pair-key').value.trim();
+    if (!key || key.length < 6) {
+      alert('Server pairing key must be at least 6 characters');
+      return;
+    }
+
+    const payload = { serverKey: key };
+    const adminPassInput = document.getElementById('pair-admin-pass');
+    if (adminPassInput && adminPassInput.value) {
+      payload.adminPassword = adminPassInput.value;
+    }
+
+    try {
+      const res = await this.apiRequest('/api/auth/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('Node successfully paired to Central Server! Server key is now active for login.');
+        document.getElementById('server-pair-key').value = '';
+        if (adminPassInput) adminPassInput.value = '';
+        await this.loadPairingStatus();
+      } else {
+        alert(data.error || 'Failed to pair server key');
+      }
+    } catch (e) {
+      alert('Error pairing server key: ' + e.message);
+    }
+  },
+
+  async unpairServerKey() {
+    if (!confirm('Are you sure you want to unpair this node from the Central Server? The server pairing key will be invalidated.')) {
+      return;
+    }
+
+    try {
+      const res = await this.apiRequest('/api/auth/unpair', {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert('Node successfully unpaired.');
+        await this.loadPairingStatus();
+      } else {
+        alert(data.error || 'Failed to unpair');
+      }
+    } catch (e) {
+      alert('Error unpairing: ' + e.message);
+    }
+  },
 };
 
 document.addEventListener('DOMContentLoaded', () => app.init());

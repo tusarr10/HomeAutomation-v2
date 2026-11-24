@@ -234,6 +234,70 @@
             <button id="open-add-gpio-btn" class="btn btn-primary">➕ Add GPIO Output</button>
           </div>
 
+          <!-- I2C Bus & PCF8574 Pin Expander Configuration Card -->
+          <div class="card" id="i2c-config-card" style="margin-bottom: 24px;">
+            <div class="card-header" style="cursor: pointer;" onclick="app.toggleI2cPanel()">
+              <h3 style="margin: 0; display: flex; align-items: center; justify-content: space-between; width: 100%;">
+                <span>🔌 I2C Pin Expander (PCF8574) & Bus Settings</span>
+                <span id="i2c-status-badge" class="badge badge-secondary">Disabled</span>
+              </h3>
+            </div>
+            <div id="i2c-panel-body">
+              <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 8px;">
+                Enable I2C communication on custom pins to connect an 8-Channel PCF8574 I2C Expander module. Extended pins P0 through P7 (pins 100–107) will automatically unlock in the GPIO list.
+              </p>
+              <form id="i2c-settings-form" onsubmit="event.preventDefault(); app.saveI2cSettings();">
+                <div class="form-group checkbox-group" style="margin-bottom: 12px;">
+                  <label style="display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer;">
+                    <input type="checkbox" id="i2c-enabled" onchange="app.onI2cToggle(this.checked)">
+                    <span>Enable I2C Expander (PCF8574)</span>
+                  </label>
+                </div>
+
+                <div id="i2c-options-fields" style="display: none;">
+                  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                    <div class="form-group">
+                      <label for="i2c-sda-select">SDA Pin (Data)</label>
+                      <select id="i2c-sda-select">
+                        <option value="4" selected>D2 (GPIO 4) - Default Safe</option>
+                        <option value="5">D1 (GPIO 5)</option>
+                        <option value="12">D6 (GPIO 12)</option>
+                        <option value="14">D5 (GPIO 14)</option>
+                        <option value="0">D3 (GPIO 0)</option>
+                        <option value="2">D4 (GPIO 2)</option>
+                      </select>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="i2c-scl-select">SCL Pin (Clock)</label>
+                      <select id="i2c-scl-select">
+                        <option value="5" selected>D1 (GPIO 5) - Default Safe</option>
+                        <option value="4">D2 (GPIO 4)</option>
+                        <option value="14">D5 (GPIO 14)</option>
+                        <option value="12">D6 (GPIO 12)</option>
+                        <option value="0">D3 (GPIO 0)</option>
+                        <option value="2">D4 (GPIO 2)</option>
+                      </select>
+                    </div>
+
+                    <div class="form-group">
+                      <label for="i2c-addr-input">Preferred I2C Address</label>
+                      <input type="text" id="i2c-addr-input" value="0x27" placeholder="0x27 (Default)">
+                    </div>
+                  </div>
+
+                  <div id="i2c-scan-result" style="margin-top: 10px; font-size: 0.9rem; padding: 10px; border-radius: 6px; background: var(--bg-hover); display: none;"></div>
+
+                  <div class="action-buttons" style="margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap;">
+                    <button type="submit" class="btn btn-primary btn-sm">💾 Save I2C Settings</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="app.saveI2cSettings(true)">🔄 Save & Reboot Node</button>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="app.scanI2cBus()">🔍 Scan I2C Bus</button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
+
           <div id="gpio-cards-container" class="gpio-grid">
             <!-- Dynamically populated -->
           </div>
@@ -276,7 +340,7 @@
                 <input type="text" id="settings-ap-ssid" required placeholder="e.g. SmartHome-Setup-XXXX">
               </div>
               <div class="form-group">
-                <label for="settings-ap-pass">Setup AP Password (min 8 chars, blank = open)</label>
+                <label for="settings-ap-pass">Setup AP Hotspot Password (WPA2 min 8 chars, default: smarthome1234)</label>
                 <input type="password" id="settings-ap-pass" placeholder="Optional security">
               </div>
               <div class="form-group">
@@ -681,6 +745,34 @@
                 <input type="password" id="confirm-pass" required placeholder="Repeat new password">
               </div>
               <button type="submit" class="btn btn-primary">Update Password</button>
+            </form>
+          </div>
+
+          <!-- Central Server Pairing Card -->
+          <div class="card" style="margin-top: 24px;">
+            <div class="card-header">
+              <h3 style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                <span>🔗 Central Server Pairing & Dual-Authentication</span>
+                <span id="pairing-status-badge" class="badge badge-secondary">Unpaired</span>
+              </h3>
+            </div>
+            <p style="color: var(--text-muted); font-size: 0.9rem;">
+              When paired, a central server (e.g. Raspberry Pi, Node-RED, or Master Server) can control this node using its assigned pairing key as the login password (username: <code>admin</code>), or via the <code>X-Server-Key</code> HTTP header. Your personal administrator password remains active simultaneously.
+            </p>
+            <form id="pair-server-form" onsubmit="event.preventDefault(); app.submitServerPairing();">
+              <div class="form-group">
+                <label for="server-pair-key">Server Pairing Key / Secret</label>
+                <input type="password" id="server-pair-key" placeholder="Enter server pairing key (min 6 characters)" autocomplete="off">
+                <small class="hint-text">Provided by your central multi-node server or dashboard.</small>
+              </div>
+              <div class="form-group" id="pair-admin-pass-group" style="display: none;">
+                <label for="pair-admin-pass">Current Admin Password (required for authorization)</label>
+                <input type="password" id="pair-admin-pass" placeholder="Enter admin password">
+              </div>
+              <div class="action-buttons" style="display: flex; gap: 10px; margin-top: 15px;">
+                <button type="submit" class="btn btn-primary">Pair Server Key</button>
+                <button type="button" id="unpair-server-btn" class="btn btn-danger" style="display: none;" onclick="app.unpairServerKey()">Unpair Node</button>
+              </div>
             </form>
           </div>
         </section>

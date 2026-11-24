@@ -118,6 +118,23 @@ uint8_t Pcf8574Driver::readInputs() {
     return _outputByte;
 }
 
+std::vector<uint8_t> Pcf8574Driver::scanBus(uint8_t sdaPin, uint8_t sclPin) {
+    std::vector<uint8_t> found;
+    pinMode(sdaPin, INPUT_PULLUP);
+    pinMode(sclPin, INPUT_PULLUP);
+    delayMicroseconds(50);
+    Wire.begin(sdaPin, sclPin);
+    Wire.setClock(100000);
+
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            found.push_back(addr);
+        }
+    }
+    return found;
+}
+
 bool Pcf8574Driver::reinit(uint8_t sdaPin, uint8_t sclPin, uint8_t defaultAddr) {
     return begin(sdaPin, sclPin, defaultAddr);
 }

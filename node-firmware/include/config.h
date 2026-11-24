@@ -5,7 +5,7 @@
 #include "board_pins.h"
 
 // Default Access Point Settings
-#define DEFAULT_AP_PASS         ""               // Blank by default for captive setup
+#define DEFAULT_AP_PASS         "smarthome1234"  // Default WPA2 security for captive AP
 #define DEFAULT_AP_CHANNEL      1
 #define DEFAULT_AP_IP           IPAddress(192, 168, 4, 1)
 #define DEFAULT_AP_SUBNET       IPAddress(255, 255, 255, 0)
@@ -28,6 +28,7 @@ enum WifiSystemMode {
 #define FILE_GPIO_CONFIG        "/config/gpio.json"
 #define FILE_RULES_CONFIG       "/config/rules.json"
 #define FILE_RECEIVER_CONFIG    "/config/receiver.json"
+#define FILE_I2C_CONFIG         "/config/i2c.json"
 
 // Physical Button Timing
 #define FACTORY_RESET_HOLD_MS   5000
