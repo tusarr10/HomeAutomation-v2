@@ -1,5 +1,9 @@
 #include "ir_manager.h"
 #include "storage_manager.h"
+#if !defined(TARGET_ESP01_1M) && !defined(TARGET_ESP01_PCF8574)
+#include "receiver_client.h"
+#include "gpio_manager.h"
+#endif
 #include <IRrecv.h>
 #include <IRsend.h>
 #include <IRutils.h>
@@ -105,6 +109,13 @@ void IrManager::loop() {
                 Serial.printf("[IR] Training captured: %s %s (%u bits)\n",
                               _lastProtocol.c_str(), _lastHexCode.c_str(), _lastBits);
             }
+#if !defined(TARGET_ESP01_1M) && !defined(TARGET_ESP01_PCF8574) && !defined(TARGET_NODEMCU_PCF8574)
+            uint8_t rxChId = 0;
+            for (const auto& ch : GpioManager::getInstance().getChannels()) {
+                if (ch.pin == _rxPin) { rxChId = ch.id; break; }
+            }
+            ReceiverClient::getInstance().pushSensorEvent("IR_RECEIVER", _lastHexCode.c_str(), _lastProtocol.c_str(), _rxPin, rxChId);
+#endif
         }
         recv->resume();
     }

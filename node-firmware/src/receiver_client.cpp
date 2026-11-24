@@ -945,6 +945,7 @@ bool ReceiverClient::saveToStorage() {
 #include "storage_manager.h"
 #include "wifi_manager.h"
 #include "gpio_manager.h"
+#include "ir_manager.h"
 #include "automation.h"
 #include "web_server.h" // For Logger
 #include <ESP8266HTTPClient.h>
@@ -957,6 +958,10 @@ ReceiverClient::ReceiverClient()
       _stateStartTime(0),
       _activeEventType(""),
       _rxLen(0),
+      _pendingSensorEvent(false),
+      _lastSensorPushTime(0),
+      _sensorPin(255),
+      _sensorChannelId(0),
       _packetsSent(0),
       _packetsFailed(0),
       _lastSyncTimestamp("Never"),
@@ -965,6 +970,9 @@ ReceiverClient::ReceiverClient()
       _lastStatusCode(0),
       _ackCount(0) {
     _rxBuf[0] = '\0';
+    _sensorType[0] = '\0';
+    _sensorValue[0] = '\0';
+    _sensorProto[0] = '\0';
 }
 
 ReceiverClient& ReceiverClient::getInstance() {
@@ -1003,7 +1011,15 @@ void ReceiverClient::loop() {
 
     switch (_state) {
         case RC_STATE_IDLE: {
-            // 1. Debounced event push on GPIO state change
+            // 1. Immediate sensor / IR event push (debounced 350ms)
+            if (_pendingSensorEvent && (now - _lastSensorPushTime >= 350)) {
+                _pendingSensorEvent = false;
+                _lastSensorPushTime = now;
+                startAsyncPush("sensor_event");
+                break;
+            }
+
+            // 2. Debounced event push on GPIO state change
             if (_pendingStateChange) {
                 if (now - _lastStateChangePushTime >= 400) {
                     _pendingStateChange = false;
@@ -1141,6 +1157,19 @@ void ReceiverClient::onGpioStateChanged(uint8_t gpioId, bool newState) {
     }
 }
 
+void ReceiverClient::pushSensorEvent(const char* sensorType, const char* strValue, const char* protocol, uint8_t pin, uint8_t channelId) {
+    if (!_config.enabled) return;
+    strncpy(_sensorType, sensorType ? sensorType : "", sizeof(_sensorType) - 1);
+    _sensorType[sizeof(_sensorType) - 1] = '\0';
+    strncpy(_sensorValue, strValue ? strValue : "", sizeof(_sensorValue) - 1);
+    _sensorValue[sizeof(_sensorValue) - 1] = '\0';
+    strncpy(_sensorProto, protocol ? protocol : "", sizeof(_sensorProto) - 1);
+    _sensorProto[sizeof(_sensorProto) - 1] = '\0';
+    _sensorPin = pin;
+    _sensorChannelId = channelId;
+    _pendingSensorEvent = true;
+}
+
 void ReceiverClient::fillTelemetryDoc(DynamicJsonDocument& doc, const char* eventType) {
     doc["nodeId"] = _config.nodeId;
     doc["nodeName"] = _config.nodeName;
@@ -1155,31 +1184,36 @@ void ReceiverClient::fillTelemetryDoc(DynamicJsonDocument& doc, const char* even
     doc["uptimeSec"] = millis() / 1000UL;
     doc["freeHeap"] = ESP.getFreeHeap();
     doc["firmwareVersion"] = FIRMWARE_VERSION;
+    doc["hardware"] = F(HARDWARE_TARGET);
+
+#if FEATURE_PCF8574
+    if (GpioManager::getInstance().isI2cEnabled()) {
+        doc["pcf8574Detected"] = GpioManager::getInstance().isPcfDetected();
+        char addrHex[8];
+        snprintf(addrHex, sizeof(addrHex), "0x%02X", GpioManager::getInstance().getPcfAddress());
+        doc["pcf8574Address"] = addrHex;
+        doc["pcf8574Output"] = GpioManager::getInstance().getPcfOutputByte();
+    }
+#endif
 
     if (_config.authToken.length() > 0) {
         doc["token"] = _config.authToken;
     }
 
-    // Channels payload
-    JsonArray gpios = doc.createNestedArray("channels");
-    GpioManager::getInstance().toJson(gpios);
-
-    // Dedicated Sensors Array (for pure inputs)
-    JsonArray sensors = doc.createNestedArray("sensors");
-    for (JsonObject chObj : gpios) {
-        if (chObj["isSensor"] | false) {
-            JsonObject s = sensors.createNestedObject();
-            s["id"] = chObj["id"];
-            s["pin"] = chObj["pin"];
-            s["name"] = chObj["name"];
-            s["room"] = chObj["room"];
-            s["direction"] = "INPUT";
-            s["type"] = chObj["type"];
-            s["unit"] = chObj["unit"];
-            s["value"] = chObj["value"];
-            if (chObj.containsKey("rawAdc")) s["rawAdc"] = chObj["rawAdc"];
+    if (strcmp(eventType, "sensor_event") == 0 && _sensorType[0] != '\0') {
+        doc["sensor_type"] = _sensorType;
+        doc["pin"] = _sensorPin;
+        if (_sensorChannelId > 0) doc["channel_id"] = _sensorChannelId;
+        if (strcmp(_sensorType, "IR_RECEIVER") == 0) {
+            doc["ir_code"] = _sensorValue;
+            doc["ir_protocol"] = _sensorProto;
         }
     }
+
+    // Lean telemetry channels & sensors arrays (avoids 3KB overflow on 12+ channels)
+    JsonArray gpios = doc.createNestedArray("channels");
+    JsonArray sensors = doc.createNestedArray("sensors");
+    GpioManager::getInstance().toTelemetryJson(gpios, sensors);
 
     // Application-Level Command Acknowledgements
     if (_ackCount > 0) {
@@ -1363,6 +1397,14 @@ void ReceiverClient::processServerCommands(const char* response) {
             }
             success = true;
             Logger::log(F("[RECEIVER] Remote cmd syncConfig processed"));
+        } else if (action.equalsIgnoreCase("send_ir")) {
+            uint8_t txPin = cmd["pin"] | IrManager::getInstance().getTransmitterPin();
+            String protocol = cmd["protocol"] | "NEC";
+            String hexCode = cmd.containsKey("hexCode") ? cmd["hexCode"].as<String>() : (cmd["code"] | "");
+            uint16_t bits = cmd["bits"] | 32;
+            uint8_t repeat = cmd["repeat"] | 0;
+            success = IrManager::getInstance().transmit(txPin, protocol, hexCode, bits, repeat);
+            Logger::log(success ? F("[RECEIVER] Remote cmd send_ir executed") : F("[RECEIVER] Remote cmd send_ir failed"));
         }
 
         if (cmdUuid.length() > 0 && _ackCount < MAX_PENDING_ACKS) {

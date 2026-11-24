@@ -56,8 +56,8 @@ private:
 #include <vector>
 #include "config.h"
 
-#define LOG_RING_CAPACITY     30
-#define LOG_MSG_MAX_LEN       112
+#define LOG_RING_CAPACITY     20
+#define LOG_MSG_MAX_LEN       88
 
 struct LogEntry {
     uint32_t timestampMs;
@@ -100,6 +100,7 @@ private:
 
     bool handleFileRead(String path);
     void sendJsonResponse(int code, bool success, const String& message);
+    void sendJsonDoc(int code, const JsonDocument& doc);
     bool checkAuthOrReject();
 
     // Embedded Fallback Web Assets in PROGMEM

@@ -978,6 +978,103 @@ uint8_t GpioManager::getPcfOutputByte() const {
 #include "drivers/pcf8574_driver.h"
 #endif
 
+struct ProgPinSafety {
+    uint8_t gpio;
+    bool bootSensitive;
+    const char* label;
+    const char* bootNote;
+};
+
+static const char PIN_LBL_D1[]  PROGMEM = "D1 (GPIO5)";
+static const char PIN_NTE_D1[]  PROGMEM = "Safe I2C SCL, boot-neutral";
+static const char PIN_LBL_D2[]  PROGMEM = "D2 (GPIO4)";
+static const char PIN_NTE_D2[]  PROGMEM = "Safe I2C SDA, boot-neutral";
+static const char PIN_LBL_D5[]  PROGMEM = "D5 (GPIO14)";
+static const char PIN_NTE_D5[]  PROGMEM = "Safe SPI CLK, boot-neutral";
+static const char PIN_LBL_D6[]  PROGMEM = "D6 (GPIO12)";
+static const char PIN_NTE_D6[]  PROGMEM = "Safe SPI MISO, boot-neutral";
+static const char PIN_LBL_D7[]  PROGMEM = "D7 (GPIO13)";
+static const char PIN_NTE_D7[]  PROGMEM = "Safe SPI MOSI, boot-neutral";
+static const char PIN_LBL_D0[]  PROGMEM = "D0 (GPIO16)";
+static const char PIN_NTE_D0[]  PROGMEM = "WAKE pin, HIGH at boot";
+static const char PIN_LBL_D8[]  PROGMEM = "D8 (GPIO15)";
+static const char PIN_NTE_D8[]  PROGMEM = "Boot config (pulled LOW), must be LOW at boot";
+static const char PIN_LBL_D3[]  PROGMEM = "D3 (GPIO0)";
+static const char PIN_NTE_D3[]  PROGMEM = "Boot config (Flash button), must be HIGH at boot";
+static const char PIN_LBL_D4[]  PROGMEM = "D4 (GPIO2)";
+static const char PIN_NTE_D4[]  PROGMEM = "Boot config (TXD1/LED), must be HIGH at boot";
+static const char PIN_LBL_RX[]  PROGMEM = "RX (GPIO3)";
+static const char PIN_NTE_RX[]  PROGMEM = "UART0 RX, serial debug input";
+static const char PIN_LBL_TX[]  PROGMEM = "TX (GPIO1)";
+static const char PIN_NTE_TX[]  PROGMEM = "UART0 TX, serial debug output (HIGH at boot)";
+static const char PIN_LBL_SD2[] PROGMEM = "SD2 (GPIO9)";
+static const char PIN_NTE_SD2[] PROGMEM = "Flash IO SD2 (usable in DIO/DOUT mode)";
+static const char PIN_LBL_SD3[] PROGMEM = "SD3 (GPIO10)";
+static const char PIN_NTE_SD3[] PROGMEM = "Flash IO SD3 (usable in DIO/DOUT mode)";
+static const char PIN_LBL_A0[]  PROGMEM = "A0 (ADC0)";
+static const char PIN_NTE_A0[]  PROGMEM = "Dedicated Analog Voltage Input (0-3.3V / 0-1023)";
+
+static const ProgPinSafety PROG_PIN_MAP[] PROGMEM = {
+    { D1,  false, PIN_LBL_D1,  PIN_NTE_D1 },
+    { D2,  false, PIN_LBL_D2,  PIN_NTE_D2 },
+    { D5,  false, PIN_LBL_D5,  PIN_NTE_D5 },
+    { D6,  false, PIN_LBL_D6,  PIN_NTE_D6 },
+    { D7,  false, PIN_LBL_D7,  PIN_NTE_D7 },
+    { D0,  true,  PIN_LBL_D0,  PIN_NTE_D0 },
+    { D8,  true,  PIN_LBL_D8,  PIN_NTE_D8 },
+    { D3,  true,  PIN_LBL_D3,  PIN_NTE_D3 },
+    { D4,  true,  PIN_LBL_D4,  PIN_NTE_D4 },
+    { RX,  true,  PIN_LBL_RX,  PIN_NTE_RX },
+    { TX,  true,  PIN_LBL_TX,  PIN_NTE_TX },
+    { SD2, true,  PIN_LBL_SD2, PIN_NTE_SD2 },
+    { SD3, true,  PIN_LBL_SD3, PIN_NTE_SD3 },
+    { 17,  false, PIN_LBL_A0,  PIN_NTE_A0 },
+};
+
+static bool lookupPinSafetyProg(uint8_t pin, String& label, String& note, bool& bootSens) {
+    if (IS_PCF_PIN(pin)) {
+        uint8_t idx = PCF_PIN_INDEX(pin);
+        label = String(F("P")) + String(idx) + F(" (PCF8574 Relay ") + String(idx + 1) + F(")");
+        note = String(F("I2C Expander Pin P")) + String(idx) + F(" (Safe isolated relay output)");
+        bootSens = false;
+        return true;
+    }
+    for (size_t i = 0; i < sizeof(PROG_PIN_MAP) / sizeof(PROG_PIN_MAP[0]); i++) {
+        uint8_t g = pgm_read_byte(&PROG_PIN_MAP[i].gpio);
+        if (g == pin) {
+            bootSens = pgm_read_byte(&PROG_PIN_MAP[i].bootSensitive) != 0;
+            label = FPSTR((PGM_P)pgm_read_ptr(&PROG_PIN_MAP[i].label));
+            note = FPSTR((PGM_P)pgm_read_ptr(&PROG_PIN_MAP[i].bootNote));
+            return true;
+        }
+    }
+    label = String(F("GPIO")) + String(pin);
+    note = F("Pin is reserved by ESP8266 system/SPI-flash/UART");
+    bootSens = true;
+    return false;
+}
+
+static void sampleAnalogA0(float& outDcVolt, float& outAcRmsVolt, int& outRawAvg) {
+    const int kSamples = 64; // ~20ms window across one 50Hz mains cycle
+    int samples[kSamples];
+    long sum = 0;
+    for (int i = 0; i < kSamples; i++) {
+        int s = analogRead(A0);
+        samples[i] = s;
+        sum += s;
+        delayMicroseconds(300);
+    }
+    float mean = (float)sum / (float)kSamples;
+    float sumSq = 0.0f;
+    for (int i = 0; i < kSamples; i++) {
+        float diff = (float)samples[i] - mean;
+        sumSq += diff * diff;
+    }
+    outRawAvg = (int)(mean + 0.5f);
+    outDcVolt = (mean * 3.3f) / 1024.0f;
+    outAcRmsVolt = (sqrtf(sumSq / (float)kSamples) * 3.3f) / 1024.0f;
+}
+
 GpioManager::GpioManager()
     : _stateCallback(nullptr),
       _nextId(1),
@@ -994,7 +1091,7 @@ GpioManager& GpioManager::getInstance() {
 bool GpioManager::isPinSafe(uint8_t pin, String& note, bool& bootSensitive) {
     if (IS_PCF_PIN(pin)) {
         if (_i2cEnabled) {
-            note = "I2C PCF8574 Pin P" + String(PCF_PIN_INDEX(pin)) + " (Safe isolated expander output)";
+            note = String(F("I2C PCF8574 Pin P")) + String(PCF_PIN_INDEX(pin)) + F(" (Safe isolated expander output)");
             bootSensitive = false;
             return true;
         } else {
@@ -1010,16 +1107,8 @@ bool GpioManager::isPinSafe(uint8_t pin, String& note, bool& bootSensitive) {
         return false;
     }
 
-    for (size_t i = 0; i < PIN_SAFETY_MAP_COUNT; i++) {
-        if (PIN_SAFETY_MAP[i].gpio == pin) {
-            note = PIN_SAFETY_MAP[i].bootNote;
-            bootSensitive = PIN_SAFETY_MAP[i].isBootSensitive;
-            return true;
-        }
-    }
-    note = F("Pin is reserved by ESP8266 system/SPI-flash/UART");
-    bootSensitive = true;
-    return false;
+    String lbl;
+    return lookupPinSafetyProg(pin, lbl, note, bootSensitive);
 }
 
 bool GpioManager::isPinAssigned(uint8_t pin, uint8_t excludeId) {
@@ -1223,6 +1312,31 @@ void GpioManager::loop() {
             saveToStorage();
         }
     }
+    // 3. Poll digital input sensors (PIR / Door / generic INPUT) every 80ms
+    static unsigned long lastInputPollMs = 0;
+    if (now - lastInputPollMs >= 80) {
+        lastInputPollMs = now;
+        for (auto& ch : _channels) {
+            if (!ch.enabled || IS_PCF_PIN(ch.pin) || ch.pin > 16) continue;
+            if (_i2cEnabled && (ch.pin == _i2cSdaPin || ch.pin == _i2cSclPin)) continue;
+
+            bool isSensor = false;
+            const char* type = nullptr;
+            const char* unit = nullptr;
+            classifyChannel(ch.pin, ch.function, isSensor, type, unit);
+            if (!isSensor || strcmp(type, "IR_RECEIVER") == 0) continue;
+
+            bool raw = (digitalRead(ch.pin) == HIGH);
+            bool logical = ch.activeLow ? !raw : raw;
+            if (logical != ch.currentState) {
+                ch.currentState = logical;
+                Serial.printf("[SENSOR] Channel %u (%s) -> %s\n", ch.id, ch.name.c_str(), logical ? "ACTIVE" : "IDLE");
+                if (_stateCallback) {
+                    _stateCallback(ch.id, logical);
+                }
+            }
+        }
+    }
 }
 
 bool GpioManager::addChannel(uint8_t pin, const String& name, const String& room, const String& function,
@@ -1351,8 +1465,14 @@ GpioChannel* GpioManager::getChannel(uint8_t id) {
     return nullptr;
 }
 
-void GpioManager::toJson(JsonArray& arr) {
+void GpioManager::toJson(JsonArray& arr, bool sensorsOnly) {
     for (const auto& ch : _channels) {
+        bool isSensor = false;
+        const char* type = "RELAY";
+        const char* unit = "BOOL";
+        classifyChannel(ch.pin, ch.function, isSensor, type, unit);
+        if (sensorsOnly && !isSensor) continue;
+
         JsonObject obj = arr.createNestedObject();
         obj["id"] = ch.id;
         obj["pin"] = ch.pin;
@@ -1365,33 +1485,14 @@ void GpioManager::toJson(JsonArray& arr) {
         obj["activeLow"] = ch.activeLow;
         obj["initialMode"] = ch.initialMode;
 
-        // Find pin label & notes with zero dynamic pool allocation
-        const char* pLabel = nullptr;
-        const char* pNote = "";
+        String pLabel, pNote;
         bool bootSens = false;
-        for (size_t i = 0; i < PIN_SAFETY_MAP_COUNT; i++) {
-            if (PIN_SAFETY_MAP[i].gpio == ch.pin) {
-                pLabel = PIN_SAFETY_MAP[i].label;
-                pNote = PIN_SAFETY_MAP[i].bootNote;
-                bootSens = PIN_SAFETY_MAP[i].isBootSensitive;
-                break;
-            }
-        }
-        if (pLabel) {
-            obj["label"] = pLabel;
-        } else {
-            obj["label"] = String(F("GPIO")) + String(ch.pin);
-        }
+        lookupPinSafetyProg(ch.pin, pLabel, pNote, bootSens);
+        obj["label"] = pLabel;
         obj["note"] = pNote;
         obj["bootSensitive"] = bootSens;
 
-        // Sensor & Actuator Direction/Type Descriptors
-        bool isSensor = false;
-        const char* type = "RELAY";
-        const char* unit = "BOOL";
-        classifyChannel(ch.pin, ch.function, isSensor, type, unit);
         const char* direction = isSensor ? "INPUT" : "OUTPUT";
-
         obj["direction"] = direction;
         obj["type"] = type;
         obj["isSensor"] = isSensor;
@@ -1402,9 +1503,15 @@ void GpioManager::toJson(JsonArray& arr) {
             caps.add("read");
             if (strcmp(type, "VOLTAGE_ADC") == 0) {
                 caps.add("telemetry");
-                int rawAdc = analogRead(A0);
-                float volt = (rawAdc * 3.3f) / 1024.0f;
-                obj["value"] = volt;
+                float dcVolt = 0.0f, acRms = 0.0f;
+                int rawAdc = 0;
+                sampleAnalogA0(dcVolt, acRms, rawAdc);
+                String fnLower = ch.function;
+                fnLower.toLowerCase();
+                bool useRms = (fnLower.indexOf("rms") >= 0 || fnLower.indexOf("ac") >= 0);
+                obj["value"] = useRms ? acRms : dcVolt;
+                obj["dcVoltage"] = dcVolt;
+                obj["acRms"] = acRms;
                 obj["rawAdc"] = rawAdc;
             } else if (strcmp(type, "IR_RECEIVER") == 0) {
                 caps.add("ir_learn");
@@ -1432,6 +1539,61 @@ void GpioManager::toJson(JsonArray& arr) {
             caps.add("toggle");
             caps.add("pulse");
             obj["value"] = ch.currentState ? 1 : 0;
+        }
+    }
+}
+
+void GpioManager::toTelemetryJson(JsonArray& channels, JsonArray& sensors) {
+    for (const auto& ch : _channels) {
+        bool isSensor = false;
+        const char* type = "RELAY";
+        const char* unit = "BOOL";
+        classifyChannel(ch.pin, ch.function, isSensor, type, unit);
+        const char* direction = isSensor ? "INPUT" : "OUTPUT";
+
+        JsonObject c = channels.createNestedObject();
+        c["id"] = ch.id;
+        c["pin"] = ch.pin;
+        c["enabled"] = ch.enabled;
+        c["state"] = ch.currentState;
+        c["name"] = ch.name;
+        c["room"] = ch.room;
+        c["function"] = ch.function;
+        c["direction"] = direction;
+        c["type"] = type;
+        c["isSensor"] = isSensor;
+
+        if (isSensor) {
+            JsonObject s = sensors.createNestedObject();
+            s["id"] = ch.id;
+            s["channel_id"] = ch.id;
+            s["pin"] = ch.pin;
+            s["name"] = ch.name;
+            s["room"] = ch.room;
+            s["direction"] = "INPUT";
+            s["type"] = type;
+            s["unit"] = unit;
+
+            if (strcmp(type, "VOLTAGE_ADC") == 0) {
+                float dcVolt = 0.0f, acRms = 0.0f;
+                int rawAdc = 0;
+                sampleAnalogA0(dcVolt, acRms, rawAdc);
+                s["value"] = dcVolt;
+                s["acRms"] = acRms;
+                s["rawAdc"] = rawAdc;
+            } else if (strcmp(type, "IR_RECEIVER") == 0) {
+                String proto, hexCode;
+                uint16_t bits;
+                unsigned long age;
+                if (IrManager::getInstance().getLastCaptured(proto, hexCode, bits, age)) {
+                    s["code"] = hexCode;
+                    s["strValue"] = hexCode;
+                    s["protocol"] = proto;
+                }
+                s["value"] = 0;
+            } else {
+                s["value"] = ch.currentState ? 1 : 0;
+            }
         }
     }
 }

@@ -53,6 +53,7 @@ public:
 
     // Event hooks
     void onGpioStateChanged(uint8_t gpioId, bool newState);
+    void pushSensorEvent(const char* sensorType, const char* strValue, const char* protocol, uint8_t pin, uint8_t channelId = 0);
 
 private:
     ReceiverClient();
@@ -76,8 +77,17 @@ private:
     unsigned long _stateStartTime;
     String _activeEventType;
     WiFiClient _tcpClient;
-    char _rxBuf[256];
+    char _rxBuf[128];
     size_t _rxLen;
+
+    // Non-blocking sensor / IR event push state
+    bool _pendingSensorEvent;
+    unsigned long _lastSensorPushTime;
+    char _sensorType[16];
+    char _sensorValue[24];
+    char _sensorProto[14];
+    uint8_t _sensorPin;
+    uint8_t _sensorChannelId;
 
     // Telemetry Statistics
     unsigned long _packetsSent;
@@ -88,10 +98,10 @@ private:
     int _lastStatusCode;
 
     struct CommandAck {
-        char commandUuid[48];
+        char commandUuid[36];
         bool success;
     };
-    static const size_t MAX_PENDING_ACKS = 8;
+    static const size_t MAX_PENDING_ACKS = 4;
     CommandAck _pendingAcks[MAX_PENDING_ACKS];
     size_t _ackCount;
 };

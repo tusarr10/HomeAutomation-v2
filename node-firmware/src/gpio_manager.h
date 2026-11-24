@@ -249,7 +249,8 @@ public:
     bool setI2cConfig(bool enabled, uint8_t sdaPin, uint8_t sclPin, uint8_t addr);
     bool addPcfChannels();
 
-    void toJson(JsonArray& arr);
+    void toJson(JsonArray& arr, bool sensorsOnly = false);
+    void toTelemetryJson(JsonArray& channels, JsonArray& sensors);
     bool fromJson(JsonArray& arr);
 
 private:

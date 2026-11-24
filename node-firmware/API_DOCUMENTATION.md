@@ -493,6 +493,8 @@ For telemetry monitoring loops and sensor graphs, this endpoint returns exclusiv
           "telemetry"
         ],
         "value": 2.45,
+        "dcVoltage": 2.45,
+        "acRms": 0.012,
         "rawAdc": 760
       }
     ]
@@ -715,7 +717,7 @@ For telemetry monitoring loops and sensor graphs, this endpoint returns exclusiv
 ### 5. Remote Command Execution
 
 #### Direct Command Dispatch (`/api/commands/execute` or `/api/command`)
-Used by automation servers to issue high-level commands and receive an instant execution confirmation.
+Used by automation servers to issue high-level commands (`setState`, `toggle`, `pulse`, `reboot`, `readInfo`, `syncConfig`, `send_ir`, `configure_pin`, `read_sensor`) and receive an instant execution confirmation.
 * **Endpoint:** `POST /api/commands/execute`
 * **Auth Required:** Yes
 * **Request ("Send"):**

@@ -2846,6 +2846,14 @@ bool WebServerManager::checkAuthOrReject() {
     return false;
 }
 
+void WebServerManager::sendJsonDoc(int code, const JsonDocument& doc) {
+    _server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
+    _server.setContentLength(measureJson(doc));
+    _server.send(code, "application/json", String());
+    WiFiClient client = _server.client();
+    serializeJson(doc, client);
+}
+
 void WebServerManager::sendJsonResponse(int code, bool success, const String& message) {
     StaticJsonDocument<256> doc;
     doc["success"] = success;
@@ -2854,10 +2862,7 @@ void WebServerManager::sendJsonResponse(int code, bool success, const String& me
     } else {
         doc["error"] = message;
     }
-    String out;
-    serializeJson(doc, out);
-    _server.sendHeader(F("Access-Control-Allow-Origin"), F("*"));
-    _server.send(code, "application/json", out);
+    sendJsonDoc(code, doc);
 }
 
 void WebServerManager::registerRoutes() {
@@ -2932,9 +2937,7 @@ void WebServerManager::registerApiRoutes() {
             resp["success"] = true;
             resp["token"] = token;
             resp["username"] = user;
-            String out;
-            serializeJson(resp, out);
-            _server.send(200, "application/json", out);
+            sendJsonDoc(200, resp);
             Logger::log(String(F("[AUTH] User '")) + user + F("' authenticated"));
         } else {
             sendJsonResponse(401, false, F("Invalid username or password"));
@@ -2946,9 +2949,7 @@ void WebServerManager::registerApiRoutes() {
         StaticJsonDocument<128> resp;
         resp["authenticated"] = authed;
         resp["adminUser"] = AuthManager::getInstance().getAdminUsername();
-        String out;
-        serializeJson(resp, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, resp);
     });
 
     _server.on("/api/auth/logout", HTTP_POST, [this]() {
@@ -2961,9 +2962,7 @@ void WebServerManager::registerApiRoutes() {
         StaticJsonDocument<128> doc;
         doc["paired"] = AuthManager::getInstance().isPaired();
         doc["adminUser"] = AuthManager::getInstance().getAdminUsername();
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/auth/pair", HTTP_POST, [this]() {
@@ -3106,9 +3105,7 @@ void WebServerManager::registerApiRoutes() {
         doc["receiverEnabled"] = ReceiverClient::getInstance().getConfig().enabled;
         doc["receiverServer"] = ReceiverClient::getInstance().getConfig().serverHost + ":" + String(ReceiverClient::getInstance().getConfig().serverPort);
 
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     // === API DISCOVERY & CATALOG ===
@@ -3123,9 +3120,7 @@ void WebServerManager::registerApiRoutes() {
         DynamicJsonDocument doc(512);
         JsonObject obj = doc.to<JsonObject>();
         WifiManager::getInstance().getStatusJson(obj);
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/wifi/scan", HTTP_GET, [this]() {
@@ -3151,9 +3146,7 @@ void WebServerManager::registerApiRoutes() {
                 default:            o["encryption"] = "Secured"; break;
             }
         }
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/wifi/connect", HTTP_POST, [this]() {
@@ -3224,27 +3217,15 @@ void WebServerManager::registerApiRoutes() {
         DynamicJsonDocument doc(6144);
         JsonArray arr = doc.to<JsonArray>();
         GpioManager::getInstance().toJson(arr);
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/sensors", HTTP_GET, [this]() {
         _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
-        DynamicJsonDocument doc(6144);
-        JsonArray allCh = doc.createNestedArray("all");
-        GpioManager::getInstance().toJson(allCh);
-
-        DynamicJsonDocument resp(4096);
+        DynamicJsonDocument resp(2048);
         JsonArray arr = resp.createNestedArray("sensors");
-        for (JsonObject ch : allCh) {
-            if (ch["isSensor"] | false) {
-                arr.add(ch);
-            }
-        }
-        String out;
-        serializeJson(resp, out);
-        _server.send(200, "application/json", out);
+        GpioManager::getInstance().toJson(arr, true);
+        sendJsonDoc(200, resp);
     });
 
     _server.on("/api/gpio", HTTP_POST, [this]() {
@@ -3352,9 +3333,7 @@ void WebServerManager::registerApiRoutes() {
             pins.add(p);
         }
 
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/i2c", HTTP_POST, [this]() {
@@ -3419,9 +3398,7 @@ void WebServerManager::registerApiRoutes() {
                 dev["type"] = "Unknown I2C Device";
             }
         }
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
 #else
         sendJsonResponse(501, false, F("I2C feature not compiled"));
 #endif
@@ -3432,9 +3409,7 @@ void WebServerManager::registerApiRoutes() {
         DynamicJsonDocument doc(1024);
         JsonArray arr = doc.to<JsonArray>();
         AutomationEngine::getInstance().toJson(arr);
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/automation", HTTP_POST, [this]() {
@@ -3498,9 +3473,7 @@ void WebServerManager::registerApiRoutes() {
                 doc["timezoneOffset"] = stored["tzOffset"].as<int32_t>();
             }
         }
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/settings/ntp-sync", HTTP_POST, [this]() {
@@ -3512,9 +3485,7 @@ void WebServerManager::registerApiRoutes() {
         res["message"] = F("NTP synchronization triggered.");
         res["formattedTime"] = AutomationEngine::getInstance().getFormattedTime();
         res["isTimeSet"] = AutomationEngine::getInstance().isTimeSynced();
-        String out;
-        serializeJson(res, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, res);
     });
 
     _server.on("/api/settings", HTTP_POST, [this]() {
@@ -3568,9 +3539,7 @@ void WebServerManager::registerApiRoutes() {
         DynamicJsonDocument doc(1024);
         JsonObject obj = doc.to<JsonObject>();
         ReceiverClient::getInstance().getStatusJson(obj);
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/receiver", HTTP_POST, [this]() {
@@ -3581,6 +3550,20 @@ void WebServerManager::registerApiRoutes() {
 
         ReceiverConfig cfg = ReceiverClient::getInstance().getConfig();
         if (doc.containsKey("enabled")) cfg.enabled = doc["enabled"].as<bool>();
+        if (doc.containsKey("server")) {
+            String srv = doc["server"].as<String>();
+            srv.trim();
+            if (srv.length() > 0) {
+                int colonIdx = srv.indexOf(':');
+                if (colonIdx > 0) {
+                    cfg.serverHost = srv.substring(0, colonIdx);
+                    uint16_t p = (uint16_t)srv.substring(colonIdx + 1).toInt();
+                    if (p > 0) cfg.serverPort = p;
+                } else {
+                    cfg.serverHost = srv;
+                }
+            }
+        }
         if (doc.containsKey("serverHost")) cfg.serverHost = doc["serverHost"].as<String>();
         if (doc.containsKey("serverPort")) cfg.serverPort = doc["serverPort"].as<uint16_t>();
         if (doc.containsKey("protocol")) cfg.protocol = (ReceiverProtocol)doc["protocol"].as<int>();
@@ -3616,9 +3599,7 @@ void WebServerManager::registerApiRoutes() {
             resp["message"] = String(F("Test failed: ")) + result;
         }
 
-        String out;
-        serializeJson(resp, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, resp);
     });
 
     _server.on("/api/receiver/push", HTTP_POST, [this]() {
@@ -3634,18 +3615,14 @@ void WebServerManager::registerApiRoutes() {
         resp["response"] = result;
         resp["message"] = ok ? F("Telemetry pushed successfully") : F("Failed to push telemetry");
 
-        String out;
-        serializeJson(resp, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, resp);
     });
 
     _server.on("/api/logs", HTTP_GET, [this]() {
         DynamicJsonDocument doc(2560);
         JsonArray arr = doc.to<JsonArray>();
         Logger::getLogsJson(arr);
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/system/reboot", HTTP_POST, [this]() {
@@ -3891,9 +3868,7 @@ void WebServerManager::registerApiRoutes() {
             doc["maxPathLength"] = fs_info.maxPathLength;
         }
 
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/fs/download", HTTP_GET, [this]() {
@@ -3950,6 +3925,51 @@ void WebServerManager::registerApiRoutes() {
         }
     });
 
+    _server.on("/api/fs/save-content", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        String body = _server.arg("plain");
+        if (body.length() > 6144) {
+            sendJsonResponse(413, false, F("Payload exceeds 6KB limit"));
+            return;
+        }
+        DynamicJsonDocument doc(6144);
+        DeserializationError err = deserializeJson(doc, body);
+        if (err) {
+            sendJsonResponse(400, false, F("Invalid JSON payload"));
+            return;
+        }
+        String path = doc["path"] | "";
+        if (path.length() == 0 || path.indexOf("..") >= 0) {
+            sendJsonResponse(400, false, F("Invalid or prohibited file path"));
+            return;
+        }
+        if (!path.startsWith("/")) path = "/" + path;
+        String content = doc["content"] | "";
+        if (content.length() > 5120) {
+            sendJsonResponse(413, false, F("Content exceeds 5KB safety limit"));
+            return;
+        }
+        int lastSlash = path.lastIndexOf('/');
+        if (lastSlash > 0) {
+            String dir = path.substring(0, lastSlash);
+            if (!LittleFS.exists(dir)) LittleFS.mkdir(dir);
+        }
+        File file = LittleFS.open(path, "w");
+        if (!file) {
+            sendJsonResponse(500, false, F("Failed to open LittleFS file for writing"));
+            return;
+        }
+        size_t written = file.print(content);
+        file.flush();
+        file.close();
+        Logger::log(String(F("[FS] Saved file: ")) + path);
+        StaticJsonDocument<192> resp;
+        resp["success"] = true;
+        resp["path"] = path;
+        resp["bytes"] = written;
+        sendJsonDoc(200, resp);
+    });
+
     _server.on("/api/fs/rename", HTTP_POST, [this]() {
         if (!checkAuthOrReject()) return;
 
@@ -3993,7 +4013,7 @@ void WebServerManager::registerApiRoutes() {
         String action = doc["action"] | doc["command_type"] | "";
         uint8_t gpioId = doc["id"] | (uint8_t)(doc["channel_id"] | 0);
 
-        DynamicJsonDocument resp(1024);
+        DynamicJsonDocument resp(2048);
         resp["commandId"] = cmdId;
         resp["nodeId"] = ReceiverClient::getInstance().getConfig().nodeId;
         resp["status"] = "ACKNOWLEDGED";
@@ -4002,8 +4022,7 @@ void WebServerManager::registerApiRoutes() {
         if (action.equalsIgnoreCase("reboot")) {
             resp["success"] = true;
             resp["message"] = F("Node will restart");
-            String out; serializeJson(resp, out);
-            _server.send(200, "application/json", out);
+            sendJsonDoc(200, resp);
             delay(500);
             ESP.restart();
             return;
@@ -4035,14 +4054,54 @@ void WebServerManager::registerApiRoutes() {
             resp["success"] = true;
             resp["message"] = F("Configuration synchronized");
             ok = true;
+        } else if (action.equalsIgnoreCase("send_ir")) {
+            uint8_t txPin = doc["pin"] | IrManager::getInstance().getTransmitterPin();
+            String protocol = doc["protocol"] | "NEC";
+            String hexCode = doc.containsKey("hexCode") ? doc["hexCode"].as<String>() : (doc["code"] | "");
+            uint16_t bits = doc["bits"] | 32;
+            uint8_t repeat = doc["repeat"] | 0;
+            ok = IrManager::getInstance().transmit(txPin, protocol, hexCode, bits, repeat);
+            resp["success"] = ok;
+            resp["message"] = ok ? F("IR signal transmitted") : F("IR transmission failed");
+        } else if (action.equalsIgnoreCase("configure_pin")) {
+            uint8_t id = doc["id"] | 0;
+            GpioChannel* existing = GpioManager::getInstance().getChannel(id);
+            if (!existing) {
+                resp["success"] = false;
+                resp["error"] = F("Channel not found");
+            } else {
+                String name = doc.containsKey("name") ? doc["name"].as<String>() : existing->name;
+                String room = doc.containsKey("room") ? doc["room"].as<String>() : existing->room;
+                String fn = doc.containsKey("function") ? doc["function"].as<String>() : existing->function;
+                bool activeLow = doc.containsKey("activeLow") ? doc["activeLow"].as<bool>() : existing->activeLow;
+                uint8_t initMode = doc.containsKey("initialMode") ? doc["initialMode"].as<uint8_t>() : existing->initialMode;
+                bool enabled = doc.containsKey("enabled") ? doc["enabled"].as<bool>() : existing->enabled;
+                String outErr;
+                ok = GpioManager::getInstance().updateChannel(id, name, room, fn, activeLow, initMode, enabled, outErr);
+                resp["success"] = ok;
+                if (ok) resp["message"] = F("Pin configured");
+                else resp["error"] = outErr;
+            }
+        } else if (action.equalsIgnoreCase("read_sensor")) {
+            uint8_t id = doc["id"] | 0;
+            resp["success"] = true;
+            JsonArray arr = resp.createNestedArray("sensors");
+            GpioManager::getInstance().toJson(arr, true);
+            if (id > 0) {
+                for (JsonObject s : arr) {
+                    if ((s["id"] | 0) == id) {
+                        resp["sensor"] = s;
+                        break;
+                    }
+                }
+            }
+            ok = true;
         } else {
             resp["success"] = false;
             resp["error"] = F("Unknown command action");
         }
 
-        String out;
-        serializeJson(resp, out);
-        _server.send(ok ? 200 : 400, "application/json", out);
+        sendJsonDoc(ok ? 200 : 400, resp);
     });
 
     // === INFRARED (IR) REMOTE LEARNING & TRANSMISSION ===
@@ -4067,9 +4126,7 @@ void WebServerManager::registerApiRoutes() {
             last["ageMs"] = ageMs;
         }
 
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/ir/train/start", HTTP_POST, [this]() {
@@ -4103,9 +4160,7 @@ void WebServerManager::registerApiRoutes() {
             doc["ageMs"] = ageMs;
         }
 
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/ir/transmit", HTTP_POST, [this]() {
@@ -4147,9 +4202,7 @@ void WebServerManager::registerApiRoutes() {
         DynamicJsonDocument doc(2048);
         JsonArray arr = doc.createNestedArray("remotes");
         IrManager::getInstance().getRemotesJson(arr);
-        String out;
-        serializeJson(doc, out);
-        _server.send(200, "application/json", out);
+        sendJsonDoc(200, doc);
     });
 
     _server.on("/api/ir/remotes/save", HTTP_POST, [this]() {
@@ -4260,32 +4313,34 @@ bool WebServerManager::handleFileRead(String path) {
 }
 
 // Built-in lightweight fallback SPA if LittleFS data files have not been uploaded yet
+static const char FALLBACK_DASHBOARD_HTML[] PROGMEM =
+    "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>SmartHome Setup</title><style>"
+    "body{font-family:sans-serif;background:#121820;color:#e2e8f0;padding:20px;text-align:center;}"
+    ".card{background:#1c2430;border-radius:12px;padding:24px;max-width:480px;margin:30px auto;border:1px solid #2e3846;text-align:left;}"
+    "h2{color:#3b82f6;margin-top:0;}input,button{width:100%;padding:12px;margin:8px 0;box-sizing:border-box;border-radius:8px;border:1px solid #2e3846;background:#121820;color:#fff;}"
+    "button{background:#3b82f6;border:none;font-weight:bold;cursor:pointer;}button:hover{background:#2563eb;}"
+    ".note{color:#94a3b8;font-size:0.85rem;line-height:1.4;margin:12px 0;}"
+    "</style></head><body><div class='card'>"
+    "<h2>⚡ SmartHome Quick Setup</h2>"
+    "<p class='note'>Flash files from <code>/data</code> not detected in LittleFS. Use this setup portal to connect your Wi-Fi, control relays, or upload full web assets via OTA.</p>"
+    "<form method='POST' action='/api/wifi/connect' onsubmit='event.preventDefault();connect();'>"
+    "<label>Router SSID:</label><input id='ssid' placeholder='Wi-Fi Name' required>"
+    "<label>Password:</label><input type='password' id='pass' placeholder='Wi-Fi Password'>"
+    "<button type='submit'>Connect to Wi-Fi</button>"
+    "</form><div id='msg' style='margin-top:15px;color:#10b981;font-weight:bold;'></div>"
+    "<hr style='border:0;border-top:1px solid #2e3846;margin:20px 0;'>"
+    "<p class='note'>Admin Default: <strong>admin / admin</strong></p>"
+    "<p class='note'>Upload complete dashboard with PlatformIO: <code>pio run --target uploadfs</code></p>"
+    "</div><script>"
+    "function connect(){"
+    "fetch('/api/wifi/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:document.getElementById('ssid').value,password:document.getElementById('pass').value})})"
+    ".then(r=>r.json()).then(d=>{document.getElementById('msg').innerText=d.message||'Connecting...';})"
+    ".catch(e=>{document.getElementById('msg').innerText='Error sending connection request';});}"
+    "</script></body></html>";
+
 void WebServerManager::serveEmbeddedDashboard() {
-    String html = F("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-                    "<title>SmartHome Setup</title><style>"
-                    "body{font-family:sans-serif;background:#121820;color:#e2e8f0;padding:20px;text-align:center;}"
-                    ".card{background:#1c2430;border-radius:12px;padding:24px;max-width:480px;margin:30px auto;border:1px solid #2e3846;text-align:left;}"
-                    "h2{color:#3b82f6;margin-top:0;}input,button{width:100%;padding:12px;margin:8px 0;box-sizing:border-box;border-radius:8px;border:1px solid #2e3846;background:#121820;color:#fff;}"
-                    "button{background:#3b82f6;border:none;font-weight:bold;cursor:pointer;}button:hover{background:#2563eb;}"
-                    ".note{color:#94a3b8;font-size:0.85rem;line-height:1.4;margin:12px 0;}"
-                    "</style></head><body><div class='card'>"
-                    "<h2>⚡ SmartHome Quick Setup</h2>"
-                    "<p class='note'>Flash files from <code>/data</code> not detected in LittleFS. Use this setup portal to connect your Wi-Fi, control relays, or upload full web assets via OTA.</p>"
-                    "<form method='POST' action='/api/wifi/connect' onsubmit='event.preventDefault();connect();'>"
-                    "<label>Router SSID:</label><input id='ssid' placeholder='Wi-Fi Name' required>"
-                    "<label>Password:</label><input type='password' id='pass' placeholder='Wi-Fi Password'>"
-                    "<button type='submit'>Connect to Wi-Fi</button>"
-                    "</form><div id='msg' style='margin-top:15px;color:#10b981;font-weight:bold;'></div>"
-                    "<hr style='border:0;border-top:1px solid #2e3846;margin:20px 0;'>"
-                    "<p class='note'>Admin Default: <strong>admin / admin</strong></p>"
-                    "<p class='note'>Upload complete dashboard with PlatformIO: <code>pio run --target uploadfs</code></p>"
-                    "</div><script>"
-                    "function connect(){"
-                    "fetch('/api/wifi/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:document.getElementById('ssid').value,password:document.getElementById('pass').value})})"
-                    ".then(r=>r.json()).then(d=>{document.getElementById('msg').innerText=d.message||'Connecting...';})"
-                    ".catch(e=>{document.getElementById('msg').innerText='Error sending connection request';});}"
-                    "</script></body></html>");
-    _server.send(200, "text/html; charset=UTF-8", html);
+    _server.send_P(200, "text/html; charset=UTF-8", FALLBACK_DASHBOARD_HTML);
 }
 
 #endif
@@ -4311,12 +4366,12 @@ extern const char API_CATALOG_JSON[] PROGMEM = R"rawliteral({
     {"method":"POST","path":"/api/wifi/mode","auth":true,"description":"Set Wi-Fi mode (0=AP, 1=Router, 2=AP+Router)","body":{"mode":2}},
     {"method":"POST","path":"/api/wifi/reset","auth":true,"description":"Erase Wi-Fi credentials and start setup AP"},
     {"method":"GET","path":"/api/gpio","auth":false,"description":"List all relays, sensors, IR pins, and states"},
-    {"method":"GET","path":"/api/sensors","auth":false,"description":"List only input sensors with live ADC/sensor values"},
+    {"method":"GET","path":"/api/sensors","auth":false,"description":"List only input sensors with live dcVoltage, acRms, rawAdc & IR values"},
     {"method":"POST","path":"/api/gpio","auth":true,"description":"Add relay output, sensor input, or IR pin","body":{"pin":5,"name":"...","room":"...","function":"Relay|Light|Fan|Voltage|PIR Motion|Door Sensor|IR Receiver|IR Transmitter","activeLow":true,"initialMode":0}},
     {"method":"POST","path":"/api/gpio/update","auth":true,"description":"Update channel configuration","body":{"id":1,"name":"...","room":"...","function":"Relay","activeLow":true,"initialMode":0,"enabled":true}},
     {"method":"POST","path":"/api/gpio/delete","auth":true,"description":"Delete GPIO channel","body":{"id":1}},
     {"method":"POST","path":"/api/gpio/state","auth":true,"description":"Control GPIO output","body":{"id":1,"state":true,"action":"setState|toggle|pulse","duration":500}},
-    {"method":"POST","path":"/api/commands/execute","auth":true,"description":"Unified command dispatcher (setState, toggle, pulse, reboot, readInfo, syncConfig)","body":{"commandId":"...","action":"setState","id":1,"state":true}},
+    {"method":"POST","path":"/api/commands/execute","auth":true,"description":"Unified command dispatcher (setState, toggle, pulse, reboot, readInfo, syncConfig, send_ir, configure_pin, read_sensor)","body":{"commandId":"...","action":"setState","id":1,"state":true}},
     {"method":"GET","path":"/api/i2c","auth":false,"description":"Get I2C bus and PCF8574 expander status"},
     {"method":"POST","path":"/api/i2c","auth":true,"description":"Configure I2C pins, PCF8574 address, and enable state","body":{"enabled":true,"sdaPin":4,"sclPin":5,"address":32,"reboot":false}},
     {"method":"POST","path":"/api/i2c/auto-channels","auth":true,"description":"Auto-populate 8 PCF8574 relay channels (P0-P7 / pins 100-107)"},
@@ -4350,6 +4405,7 @@ extern const char API_CATALOG_JSON[] PROGMEM = R"rawliteral({
     {"method":"GET","path":"/api/fs/list","auth":true,"description":"List files and sizes in LittleFS"},
     {"method":"GET","path":"/api/fs/download","auth":true,"description":"Download file from LittleFS (?path=/...)"},
     {"method":"POST","path":"/api/fs/upload","auth":true,"description":"Multipart upload file into LittleFS"},
+    {"method":"POST","path":"/api/fs/save-content","auth":true,"description":"Write small text/JSON file to LittleFS (<=5KB)","body":{"path":"/config/custom.json","content":"{}"}},
     {"method":"POST","path":"/api/fs/delete","auth":true,"description":"Delete file from LittleFS","body":{"path":"/config/..."}},
     {"method":"POST","path":"/api/fs/rename","auth":true,"description":"Rename file in LittleFS","body":{"oldPath":"/a.json","newPath":"/b.json"}}
   ]
