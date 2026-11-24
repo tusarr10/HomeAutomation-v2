@@ -49,3 +49,6 @@ example/data/
 *~
 .DS_Store
 Thumbs.db
+
+# Node local Wi-Fi config (preserved for uploadfs during dev)
+node-firmware/data/config/wifi.json
