@@ -8,13 +8,12 @@ const app = {
   irTimeRemaining: 25,
   refreshTimer: null,
 
-  init() {
+  async init() {
     this.setupTheme();
     this.setupTabs();
     this.setupEventListeners();
+    await this.checkAuth();
     this.startDashboard();
-    this.checkAuth();
-    this.loadIrRemotes();
   },
 
   setupTheme() {
@@ -58,7 +57,7 @@ const app = {
         }
         if (targetId === 'tab-sysinfo') this.loadStatus();
         if (targetId === 'tab-gpio') { this.loadGpios(); }
-        if (targetId === 'tab-sensors') { this.loadGpios(); this.loadIrStatus(); this.loadIrRemotes(); }
+        if (targetId === 'tab-sensors') { this.refreshSensors(true); }
         if (targetId === 'tab-users') this.loadPairingStatus();
       });
     });
@@ -234,7 +233,6 @@ const app = {
         if (remember) {
           const authed = await this.autoLogin(savedUser, savedPass);
           if (authed) {
-            this.refreshAll();
             return;
           }
         }
@@ -355,13 +353,18 @@ const app = {
     this.refreshTimer = setInterval(() => this.pollStatus(), 4000);
   },
 
-  refreshAll() {
-    this.loadStatus();
-    this.loadGpios();
-    this.loadRules();
-    this.loadWifiStatus();
-    this.loadI2cSettings();
-    this.loadPairingStatus();
+  async refreshAll() {
+    if (this._isRefreshing) return;
+    this._isRefreshing = true;
+    try {
+      await this.loadStatus();
+      await this.loadGpios();
+      await this.loadI2cSettings();
+      await this.loadIrRemotes();
+      await this.loadRules();
+    } finally {
+      this._isRefreshing = false;
+    }
   },
 
   async pollStatus() {
@@ -987,11 +990,11 @@ const app = {
     }
   },
 
-  async refreshSensors() {
+  async refreshSensors(silent = false) {
     await this.loadGpios();
     await this.loadIrStatus();
     await this.loadIrRemotes();
-    this.showToast('Sensors & remotes refreshed');
+    if (!silent) this.showToast('Sensors & remotes refreshed');
   },
 
   showToast(message, duration = 3000) {
@@ -2314,6 +2317,17 @@ const app = {
   },
 
   // ==== INFRARED (IR) REMOTE LEARNING & TRANSMISSION ====
+  async loadIrStatus() {
+    try {
+      const res = await this.apiRequest('/api/ir/status');
+      if (res.ok) {
+        this.irStatus = await res.json();
+      }
+    } catch (e) {
+      console.warn('Error loading IR status:', e);
+    }
+  },
+
   async loadIrRemotes() {
     try {
       const res = await this.apiRequest('/api/ir/remotes');
