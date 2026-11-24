@@ -2078,6 +2078,11 @@ const app = {
     }
   },
 
+  openModal(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('hidden');
+  },
+
   closeModal(id) {
     const el = document.getElementById(id);
     if (el) el.classList.add('hidden');
@@ -2086,6 +2091,9 @@ const app = {
       if (editIdEl) editIdEl.value = '';
       const form = document.getElementById('gpio-form');
       if (form) form.reset();
+    }
+    if (id === 'ir-train-modal') {
+      this.stopIrTraining();
     }
   },
 
@@ -2348,6 +2356,11 @@ const app = {
   openIrTrainModal() {
     const modal = document.getElementById('ir-train-modal');
     if (!modal) return;
+    const form = document.getElementById('ir-save-key-form');
+    if (form) form.reset();
+    document.getElementById('ir-train-proto').value = '';
+    document.getElementById('ir-train-hex').value = '';
+    document.getElementById('ir-train-bits').value = '32';
     document.getElementById('ir-captured-section').classList.add('hidden');
     document.getElementById('ir-save-btn').classList.add('hidden');
     document.getElementById('ir-start-listen-btn').classList.remove('hidden');
@@ -2458,8 +2471,8 @@ const app = {
       });
       const data = await res.json();
       if (data.success) {
-        alert(`Saved "${buttonName}" for remote "${remoteName}"!`);
         this.closeModal('ir-train-modal');
+        this.showToast(`💾 Saved "${buttonName}" for remote "${remoteName}"!`);
         await this.loadIrRemotes();
         this.renderGpios();
       } else {
@@ -2470,9 +2483,11 @@ const app = {
     }
   },
 
-  openSavedRemotesModal() {
+  async openSavedRemotesModal() {
     this.renderSavedRemotesModal();
     this.openModal('ir-remotes-modal');
+    await this.loadIrRemotes();
+    this.renderSavedRemotesModal();
   },
 
   renderSavedRemotesModal() {

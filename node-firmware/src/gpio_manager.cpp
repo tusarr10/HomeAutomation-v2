@@ -1034,22 +1034,57 @@ bool GpioManager::isPinAssigned(uint8_t pin, uint8_t excludeId) {
     return false;
 }
 
+static void classifyChannel(uint8_t pin, const String& function, bool& isSensor, const char*& type, const char*& unit) {
+    String fn = function;
+    fn.toLowerCase();
+
+    isSensor = (pin == 17) ||
+               (fn.indexOf("voltage") >= 0) ||
+               (fn.indexOf("ir receiver") >= 0) ||
+               (fn.indexOf("pir") >= 0) ||
+               (fn.indexOf("motion") >= 0) ||
+               (fn.indexOf("door") >= 0) ||
+               (fn.indexOf("window") >= 0) ||
+               (fn.indexOf("sensor") >= 0);
+
+    type = "RELAY";
+    unit = "BOOL";
+
+    if (pin == 17 || fn.indexOf("voltage") >= 0) {
+        type = "VOLTAGE_ADC";
+        unit = "V";
+    } else if (fn.indexOf("ir receiver") >= 0) {
+        type = "IR_RECEIVER";
+        unit = "HEX";
+    } else if (fn.indexOf("ir transmitter") >= 0) {
+        type = "IR_TRANSMITTER";
+        unit = "HEX";
+    } else if (fn.indexOf("pir") >= 0 || fn.indexOf("motion") >= 0) {
+        type = "PIR_MOTION";
+        unit = "STATE";
+    } else if (fn.indexOf("door") >= 0 || fn.indexOf("window") >= 0) {
+        type = "DOOR_SENSOR";
+        unit = "STATE";
+    } else if (fn == "light") {
+        type = "LIGHT";
+        unit = "BOOL";
+    } else if (fn == "fan") {
+        type = "FAN";
+        unit = "BOOL";
+    }
+}
+
 void GpioManager::applyPhysicalPin(const GpioChannel& channel) {
     // If I2C is enabled and this channel pin is assigned to I2C SDA or SCL, NEVER set it to OUTPUT!
     if (_i2cEnabled && (channel.pin == _i2cSdaPin || channel.pin == _i2cSclPin)) {
         return;
     }
 
-    bool isSensor = (channel.pin == 17) || 
-                    channel.function.equalsIgnoreCase("Voltage") || 
-                    channel.function.equalsIgnoreCase("Sensor") || 
-                    channel.function.equalsIgnoreCase("PIR") || 
-                    channel.function.equalsIgnoreCase("Motion") || 
-                    channel.function.equalsIgnoreCase("IR Receiver") ||
-                    channel.function.equalsIgnoreCase("Door") ||
-                    channel.function.equalsIgnoreCase("Window");
-
-    bool isIrTx = channel.function.equalsIgnoreCase("IR Transmitter");
+    bool isSensor = false;
+    const char* type = nullptr;
+    const char* unit = nullptr;
+    classifyChannel(channel.pin, channel.function, isSensor, type, unit);
+    bool isIrTx = (strcmp(type, "IR_TRANSMITTER") == 0);
 
     if (!channel.enabled) {
         // Disabled channel defaults to safe off (high-impedance input for native pins)
@@ -1351,41 +1386,11 @@ void GpioManager::toJson(JsonArray& arr) {
         obj["bootSensitive"] = bootSens;
 
         // Sensor & Actuator Direction/Type Descriptors
-        bool isSensor = (ch.pin == 17) || 
-                        ch.function.equalsIgnoreCase("Voltage") || 
-                        ch.function.equalsIgnoreCase("Sensor") || 
-                        ch.function.equalsIgnoreCase("PIR") || 
-                        ch.function.equalsIgnoreCase("Motion") || 
-                        ch.function.equalsIgnoreCase("IR Receiver") ||
-                        ch.function.equalsIgnoreCase("Door") ||
-                        ch.function.equalsIgnoreCase("Window");
-
-        const char* direction = isSensor ? "INPUT" : "OUTPUT";
+        bool isSensor = false;
         const char* type = "RELAY";
         const char* unit = "BOOL";
-
-        if (ch.pin == 17 || ch.function.equalsIgnoreCase("Voltage")) {
-            type = "VOLTAGE_ADC";
-            unit = "V";
-        } else if (ch.function.equalsIgnoreCase("IR Receiver")) {
-            type = "IR_RECEIVER";
-            unit = "HEX";
-        } else if (ch.function.equalsIgnoreCase("IR Transmitter")) {
-            type = "IR_TRANSMITTER";
-            unit = "HEX";
-        } else if (ch.function.equalsIgnoreCase("PIR") || ch.function.equalsIgnoreCase("Motion")) {
-            type = "PIR_MOTION";
-            unit = "STATE";
-        } else if (ch.function.equalsIgnoreCase("Door") || ch.function.equalsIgnoreCase("Window")) {
-            type = "DOOR_SENSOR";
-            unit = "STATE";
-        } else if (ch.function.equalsIgnoreCase("Light")) {
-            type = "LIGHT";
-            unit = "BOOL";
-        } else if (ch.function.equalsIgnoreCase("Fan")) {
-            type = "FAN";
-            unit = "BOOL";
-        }
+        classifyChannel(ch.pin, ch.function, isSensor, type, unit);
+        const char* direction = isSensor ? "INPUT" : "OUTPUT";
 
         obj["direction"] = direction;
         obj["type"] = type;
