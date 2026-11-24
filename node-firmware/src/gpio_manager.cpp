@@ -1022,6 +1022,11 @@ bool GpioManager::isPinAssigned(uint8_t pin, uint8_t excludeId) {
 }
 
 void GpioManager::applyPhysicalPin(const GpioChannel& channel) {
+    // If I2C is enabled and this channel pin is assigned to I2C SDA or SCL, NEVER set it to OUTPUT!
+    if (_i2cEnabled && (channel.pin == _i2cSdaPin || channel.pin == _i2cSclPin)) {
+        return;
+    }
+
     if (!channel.enabled) {
         // Disabled channel defaults to safe off (high-impedance input for native pins)
         if (!IS_PCF_PIN(channel.pin) && channel.pin <= 16) {
@@ -1047,6 +1052,19 @@ void GpioManager::applyPhysicalPin(const GpioChannel& channel) {
     }
 }
 
+bool GpioManager::addPcfChannels() {
+    String err;
+    bool anyAdded = false;
+    for (uint8_t i = 0; i < 8; i++) {
+        uint8_t pin = PCF_PIN_BASE + i;
+        if (!isPinAssigned(pin)) {
+            addChannel(pin, "PCF Relay " + String(i + 1), "General", "Relay", true, INITIAL_MODE_RESTORE_LAST, err);
+            anyAdded = true;
+        }
+    }
+    return anyAdded;
+}
+
 bool GpioManager::begin() {
     // 1. Load I2C Configuration
     DynamicJsonDocument i2cDoc(256);
@@ -1065,6 +1083,10 @@ bool GpioManager::begin() {
         if (Pcf8574Driver::getInstance().isDetected()) {
             _i2cAddress = Pcf8574Driver::getInstance().getAddress();
             Serial.printf("[GPIO] PCF8574 Expander active at 0x%02X\n", _i2cAddress);
+            if (!i2cDoc.containsKey("address") || i2cDoc["address"].as<uint8_t>() != _i2cAddress) {
+                i2cDoc["address"] = _i2cAddress;
+                StorageManager::getInstance().saveJsonFile(FILE_I2C_CONFIG, i2cDoc);
+            }
         }
     } else {
         Serial.println(F("[GPIO] I2C Expander is disabled. Pins D1 (GPIO 5) and D2 (GPIO 4) are free for regular outputs."));
@@ -1076,16 +1098,26 @@ bool GpioManager::begin() {
     if (_channels.empty()) {
         // Only create initial default safe outputs if /config/gpio.json does NOT exist on flash
         if (!LittleFS.exists(FILE_GPIO_CONFIG)) {
-            Serial.println(F("[GPIO] No saved config found, creating initial default outputs (D1 & D2)"));
-            String err;
-            addChannel(D1, F("Living Room Light"), F("Living Room"), F("Light"), true, INITIAL_MODE_RESTORE_LAST, err);
-            addChannel(D2, F("Bedroom Fan"), F("Bedroom"), F("Fan"), true, INITIAL_MODE_RESTORE_LAST, err);
+            if (_i2cEnabled) {
+                Serial.println(F("[GPIO] Creating initial PCF8574 8-Channel outputs (P0-P7)"));
+                addPcfChannels();
+            } else {
+                Serial.println(F("[GPIO] No saved config found, creating initial default outputs (D1 & D2)"));
+                String err;
+                addChannel(D1, F("Living Room Light"), F("Living Room"), F("Light"), true, INITIAL_MODE_RESTORE_LAST, err);
+                addChannel(D2, F("Bedroom Fan"), F("Bedroom"), F("Fan"), true, INITIAL_MODE_RESTORE_LAST, err);
+            }
         } else {
             Serial.println(F("[GPIO] Existing gpio.json file found but 0 channels loaded. Preserving file."));
         }
     } else {
         // Initialize all loaded channels according to power-on behavior
         for (auto& ch : _channels) {
+            if (_i2cEnabled && (ch.pin == _i2cSdaPin || ch.pin == _i2cSclPin)) {
+                ch.enabled = false;
+                Serial.printf("[GPIO] Channel %u pin GPIO%u conflicts with I2C bus; deactivated.\n", ch.id, ch.pin);
+            }
+
             if (ch.initialMode == INITIAL_MODE_OFF) {
                 ch.currentState = false;
             } else if (ch.initialMode == INITIAL_MODE_ON) {
@@ -1347,7 +1379,9 @@ bool GpioManager::fromJson(JsonArray& arr) {
 
 bool GpioManager::isPcfDetected() const {
 #if FEATURE_PCF8574
-    return _i2cEnabled && Pcf8574Driver::getInstance().isDetected();
+    if (!_i2cEnabled) return false;
+    if (Pcf8574Driver::getInstance().isDetected()) return true;
+    return const_cast<Pcf8574Driver&>(Pcf8574Driver::getInstance()).probe(_i2cAddress);
 #else
     return false;
 #endif
@@ -1375,20 +1409,23 @@ bool GpioManager::setI2cConfig(bool enabled, uint8_t sdaPin, uint8_t sclPin, uin
     _i2cSclPin = sclPin;
     _i2cAddress = addr;
 
-    DynamicJsonDocument doc(256);
-    doc["enabled"] = _i2cEnabled;
-    doc["sdaPin"] = _i2cSdaPin;
-    doc["sclPin"] = _i2cSclPin;
-    doc["address"] = _i2cAddress;
-    StorageManager::getInstance().saveJsonFile(FILE_I2C_CONFIG, doc);
-
 #if FEATURE_PCF8574
     if (_i2cEnabled) {
         Pcf8574Driver::getInstance().begin(_i2cSdaPin, _i2cSclPin, _i2cAddress);
         if (Pcf8574Driver::getInstance().isDetected()) {
             _i2cAddress = Pcf8574Driver::getInstance().getAddress();
         }
-        Serial.printf("[GPIO] I2C Enabled at 0x%02X (SDA=%u, SCL=%u)\n", _i2cAddress, _i2cSdaPin, _i2cSclPin);
+        Serial.printf("[GPIO] I2C Enabled at 0x%02X (SDA=%u, SCL=%u, Detected=%s)\n",
+                      _i2cAddress, _i2cSdaPin, _i2cSclPin,
+                      Pcf8574Driver::getInstance().isDetected() ? "YES" : "NO");
+
+        // Deactivate conflicting channels on SDA/SCL pins
+        for (auto& ch : _channels) {
+            if (ch.pin == _i2cSdaPin || ch.pin == _i2cSclPin) {
+                ch.enabled = false;
+            }
+        }
+        saveToStorage();
     } else {
         // I2C Disabled: release pins so they can be driven as normal GPIO outputs
         pinMode(_i2cSdaPin, INPUT);
@@ -1396,5 +1433,13 @@ bool GpioManager::setI2cConfig(bool enabled, uint8_t sdaPin, uint8_t sclPin, uin
         Serial.printf("[GPIO] I2C Disabled. Pins %u and %u released for regular GPIO use.\n", _i2cSdaPin, _i2cSclPin);
     }
 #endif
+
+    DynamicJsonDocument doc(256);
+    doc["enabled"] = _i2cEnabled;
+    doc["sdaPin"] = _i2cSdaPin;
+    doc["sclPin"] = _i2cSclPin;
+    doc["address"] = _i2cAddress;
+    StorageManager::getInstance().saveJsonFile(FILE_I2C_CONFIG, doc);
+
     return true;
 }

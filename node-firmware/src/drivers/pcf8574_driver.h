@@ -20,19 +20,22 @@
 #endif
 
 #ifndef PCF8574_DEFAULT_ADDR
-#define PCF8574_DEFAULT_ADDR 0x27
+#define PCF8574_DEFAULT_ADDR 0x20
 #endif
 
 class Pcf8574Driver {
 public:
     static Pcf8574Driver& getInstance();
 
+    void resetBus(uint8_t sdaPin, uint8_t sclPin);
     bool begin(uint8_t sdaPin = DEFAULT_I2C_SDA, uint8_t sclPin = DEFAULT_I2C_SCL, uint8_t defaultAddr = PCF8574_DEFAULT_ADDR);
     bool setPin(uint8_t pinIndex, bool physicalLevel);
     bool getPin(uint8_t pinIndex) const;
     uint8_t readInputs();
 
     bool writeByte(uint8_t byteVal);
+    bool probe(uint8_t addr = 0);
+    uint8_t scanAddress(uint8_t preferredAddr = 0);
 
     bool isDetected() const { return _detected; }
     uint8_t getAddress() const { return _i2cAddress; }
@@ -50,8 +53,6 @@ private:
     uint8_t _outputByte;
     uint8_t _sdaPin;
     uint8_t _sclPin;
-
-    uint8_t scanAddress(uint8_t preferredAddr);
 };
 
 #endif // FEATURE_PCF8574

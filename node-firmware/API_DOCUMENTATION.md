@@ -332,7 +332,19 @@ When a PCF8574 / PCF8574A 8-bit expander is attached to the I2C bus:
 
 ---
 
-### GPIO & Relay Channel Control
+#### 4. Auto-Populate PCF8574 Extended Channels
+Automatically populates all 8 relay channels mapped to PCF8574 extended pins P0 through P7 (virtual pin IDs 100 to 107) with active-low logic.
+- **Endpoint:** `POST /api/i2c/auto-channels`
+- **Auth Required:** Yes
+- **Response (200 OK):**
+```json
+{
+  "success": true,
+  "message": "Added 8 PCF8574 relay channels (P0-P7)"
+}
+```
+
+---
 
 #### 1. List All Configured Channels
 - **Endpoint:** `GET /api/gpio`

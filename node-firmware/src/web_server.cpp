@@ -3252,7 +3252,7 @@ void WebServerManager::registerApiRoutes() {
         bool enabled = doc["enabled"] | false;
         uint8_t sdaPin = doc["sdaPin"] | 4;
         uint8_t sclPin = doc["sclPin"] | 5;
-        uint8_t addr = doc["address"] | 0x27;
+        uint8_t addr = doc["address"] | 0x20;
         bool reboot = doc["reboot"] | false;
 
         GpioManager::getInstance().setI2cConfig(enabled, sdaPin, sclPin, addr);
@@ -3265,6 +3265,12 @@ void WebServerManager::registerApiRoutes() {
             delay(500);
             ESP.restart();
         }
+    });
+
+    _server.on("/api/i2c/auto-channels", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        bool res = GpioManager::getInstance().addPcfChannels();
+        sendJsonResponse(200, true, res ? F("Added 8 PCF8574 relay channels (P0-P7)") : F("PCF8574 channels already populated"));
     });
 
     _server.on("/api/i2c/scan", HTTP_GET, [this]() {

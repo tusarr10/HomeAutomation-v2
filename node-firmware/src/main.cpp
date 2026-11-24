@@ -482,7 +482,11 @@ void loop() {
 
     if (Serial.available()) {
         char c = Serial.read();
-        if (c == 'h' || c == 'H') {
+        if (c == 'r' || c == 'R') {
+            Serial.println(F("[REBOOT] Soft rebooting via ESP.restart()..."));
+            delay(500);
+            ESP.restart();
+        } else if (c == 'h' || c == 'H') {
             Serial.printf("[HEAP] Free: %u bytes, Max Block: %u bytes, Frag: %u%%\n",
                           ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation());
         } else if (c == 'i' || c == 'I' || c == 's' || c == 'S') {

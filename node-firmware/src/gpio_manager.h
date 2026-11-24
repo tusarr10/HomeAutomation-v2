@@ -247,6 +247,7 @@ public:
     uint8_t getPcfAddress() const;
     uint8_t getPcfOutputByte() const;
     bool setI2cConfig(bool enabled, uint8_t sdaPin, uint8_t sclPin, uint8_t addr);
+    bool addPcfChannels();
 
     void toJson(JsonArray& arr);
     bool fromJson(JsonArray& arr);

@@ -1652,7 +1652,7 @@ const app = {
   },
 
   // ==== I2C EXPANDER & DUAL-AUTH PAIRING ====
-  i2cConfig: { enabled: false, sdaPin: 4, sclPin: 5, address: 39, detected: false, detectedAddress: 0 },
+  i2cConfig: { enabled: false, sdaPin: 4, sclPin: 5, address: 32, addressHex: '0x20', detected: false, detectedAddress: 32 },
 
   async loadI2cSettings() {
     try {
@@ -1679,13 +1679,20 @@ const app = {
     if (fields) fields.style.display = c.enabled ? 'block' : 'none';
     if (sdaSel) sdaSel.value = String(c.sdaPin || 4);
     if (sclSel) sclSel.value = String(c.sclPin || 5);
-    if (addrInp) addrInp.value = c.addressHex || '0x27';
+    if (addrInp) {
+      if (c.detectedAddress) {
+        addrInp.value = '0x' + c.detectedAddress.toString(16).toUpperCase();
+      } else {
+        addrInp.value = c.addressHex || '0x20';
+      }
+    }
 
     if (badge) {
       if (c.enabled) {
         if (c.detected) {
+          const hex = c.detectedAddress ? ('0x' + c.detectedAddress.toString(16).toUpperCase()) : (c.addressHex || '0x20');
           badge.className = 'badge badge-success';
-          badge.innerText = `Active @ ${c.addressHex || '0x27'} (PCF8574 Detected)`;
+          badge.innerText = `Active @ ${hex} (PCF8574 Detected)`;
         } else {
           badge.className = 'badge badge-warning';
           badge.innerText = 'I2C Bus Enabled (Expander not detected)';
@@ -1714,13 +1721,13 @@ const app = {
     const sdaPin = parseInt(document.getElementById('i2c-sda-select').value);
     const sclPin = parseInt(document.getElementById('i2c-scl-select').value);
     let addrStr = document.getElementById('i2c-addr-input').value.trim();
-    let addr = 39;
+    let addr = 32;
     if (addrStr.startsWith('0x') || addrStr.startsWith('0X')) {
       addr = parseInt(addrStr, 16);
     } else {
       addr = parseInt(addrStr, 10);
     }
-    if (isNaN(addr) || addr < 1 || addr > 127) addr = 39;
+    if (isNaN(addr) || addr < 1 || addr > 127) addr = 32;
 
     try {
       const res = await this.apiRequest('/api/i2c', {
@@ -1744,6 +1751,18 @@ const app = {
     }
   },
 
+  async populatePcfChannels() {
+    if (!confirm('Populate all 8 PCF8574 relay channels (P0-P7 / Pins 100-107)?')) return;
+    try {
+      const res = await this.apiRequest('/api/i2c/auto-channels', { method: 'POST' });
+      const data = await res.json();
+      alert(data.message || 'PCF8574 channels processed!');
+      await this.loadGpios();
+    } catch (e) {
+      alert('Error populating channels: ' + e.message);
+    }
+  },
+
   async scanI2cBus() {
     const sdaPin = parseInt(document.getElementById('i2c-sda-select').value);
     const sclPin = parseInt(document.getElementById('i2c-scl-select').value);
@@ -1761,9 +1780,14 @@ const app = {
           let html = `<strong>Found ${data.devices.length} I2C Device(s):</strong><ul style="margin: 6px 0 0 18px; padding: 0;">`;
           data.devices.forEach(d => {
             html += `<li><strong>${d.hex}</strong> (${d.type})</li>`;
+            if (d.type && d.type.includes('PCF8574')) {
+              const addrInp = document.getElementById('i2c-addr-input');
+              if (addrInp) addrInp.value = d.hex;
+            }
           });
           html += '</ul>';
           resultEl.innerHTML = html;
+          await this.loadI2cSettings();
         } else {
           resultEl.innerHTML = '<span class="text-warning">⚠️ No I2C devices responded on this bus. Check wiring (SDA/SCL) and pull-up resistors.</span>';
         }

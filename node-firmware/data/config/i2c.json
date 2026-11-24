@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "sdaPin": 4,
+  "sclPin": 5,
+  "address": 32
+}
