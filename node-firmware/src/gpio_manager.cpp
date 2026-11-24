@@ -911,9 +911,20 @@ void GpioManager::loadFromStorage() {
 }
 
 void GpioManager::saveToStorage() {
-    DynamicJsonDocument doc(4096);
+    DynamicJsonDocument doc(2048);
     JsonArray arr = doc.to<JsonArray>();
-    toJson(arr);
+    for (const auto& ch : _channels) {
+        JsonObject obj = arr.createNestedObject();
+        obj["id"] = ch.id;
+        obj["pin"] = ch.pin;
+        obj["name"] = ch.name;
+        obj["room"] = ch.room;
+        obj["function"] = ch.function;
+        obj["activeLow"] = ch.activeLow;
+        obj["initialMode"] = ch.initialMode;
+        obj["enabled"] = ch.enabled;
+        obj["state"] = ch.currentState;
+    }
     StorageManager::getInstance().saveJsonFile(FILE_GPIO_CONFIG, doc);
 }
 
@@ -961,6 +972,7 @@ uint8_t GpioManager::getPcfOutputByte() const {
 #else
 #include "gpio_manager.h"
 #include "storage_manager.h"
+#include "ir_manager.h"
 #if FEATURE_PCF8574
 #include "drivers/pcf8574_driver.h"
 #endif
@@ -1027,12 +1039,40 @@ void GpioManager::applyPhysicalPin(const GpioChannel& channel) {
         return;
     }
 
+    bool isSensor = (channel.pin == 17) || 
+                    channel.function.equalsIgnoreCase("Voltage") || 
+                    channel.function.equalsIgnoreCase("Sensor") || 
+                    channel.function.equalsIgnoreCase("PIR") || 
+                    channel.function.equalsIgnoreCase("Motion") || 
+                    channel.function.equalsIgnoreCase("IR Receiver") ||
+                    channel.function.equalsIgnoreCase("Door") ||
+                    channel.function.equalsIgnoreCase("Window");
+
+    bool isIrTx = channel.function.equalsIgnoreCase("IR Transmitter");
+
     if (!channel.enabled) {
         // Disabled channel defaults to safe off (high-impedance input for native pins)
         if (!IS_PCF_PIN(channel.pin) && channel.pin <= 16) {
             pinMode(channel.pin, INPUT);
         }
         return;
+    }
+
+    if (isSensor) {
+        if (!IS_PCF_PIN(channel.pin) && channel.pin <= 16) {
+            pinMode(channel.pin, (channel.pin == 17) ? INPUT : INPUT_PULLUP);
+            if (channel.function.equalsIgnoreCase("IR Receiver")) {
+                IrManager::getInstance().setReceiverPin(channel.pin);
+            }
+        }
+        return; // Guard: NEVER drive sensors as digital outputs!
+    }
+
+    if (isIrTx) {
+        if (!IS_PCF_PIN(channel.pin) && channel.pin <= 16) {
+            IrManager::getInstance().setTransmitterPin(channel.pin);
+        }
+        return; // Managed by IrManager IRsend
     }
 
     int physicalLevel = channel.activeLow ? (channel.currentState ? LOW : HIGH) : (channel.currentState ? HIGH : LOW);
@@ -1283,26 +1323,31 @@ void GpioManager::toJson(JsonArray& arr) {
         obj["enabled"] = ch.enabled;
         obj["state"] = ch.currentState;
 
-        // Find pin label
-        String label = String("GPIO") + String(ch.pin);
-        String note = "";
-        bool bootSens = false;
-        for (size_t i = 0; i < PIN_SAFETY_MAP_COUNT; i++) {
-            if (PIN_SAFETY_MAP[i].gpio == ch.pin) {
-                label = PIN_SAFETY_MAP[i].label;
-                note = PIN_SAFETY_MAP[i].bootNote;
-                bootSens = PIN_SAFETY_MAP[i].isBootSensitive;
-                break;
-            }
-        }
-        obj["label"] = label;
-        obj["note"] = note;
-        obj["bootSensitive"] = bootSens;
         obj["name"] = (ch.name.length() > 0) ? ch.name : String(F("Output ")) + String(ch.id);
         obj["room"] = (ch.room.length() > 0) ? ch.room : F("General");
         obj["function"] = (ch.function.length() > 0) ? ch.function : F("Relay");
         obj["activeLow"] = ch.activeLow;
         obj["initialMode"] = ch.initialMode;
+
+        // Find pin label & notes with zero dynamic pool allocation
+        const char* pLabel = nullptr;
+        const char* pNote = "";
+        bool bootSens = false;
+        for (size_t i = 0; i < PIN_SAFETY_MAP_COUNT; i++) {
+            if (PIN_SAFETY_MAP[i].gpio == ch.pin) {
+                pLabel = PIN_SAFETY_MAP[i].label;
+                pNote = PIN_SAFETY_MAP[i].bootNote;
+                bootSens = PIN_SAFETY_MAP[i].isBootSensitive;
+                break;
+            }
+        }
+        if (pLabel) {
+            obj["label"] = pLabel;
+        } else {
+            obj["label"] = String(F("GPIO")) + String(ch.pin);
+        }
+        obj["note"] = pNote;
+        obj["bootSensitive"] = bootSens;
 
         // Sensor & Actuator Direction/Type Descriptors
         bool isSensor = (ch.pin == 17) || 
@@ -1355,10 +1400,27 @@ void GpioManager::toJson(JsonArray& arr) {
                 float volt = (rawAdc * 3.3f) / 1024.0f;
                 obj["value"] = volt;
                 obj["rawAdc"] = rawAdc;
+            } else if (strcmp(type, "IR_RECEIVER") == 0) {
+                caps.add("ir_learn");
+                caps.add("event_stream");
+                String proto, hexCode;
+                uint16_t bits;
+                unsigned long age;
+                if (IrManager::getInstance().getLastCaptured(proto, hexCode, bits, age)) {
+                    obj["lastCode"] = hexCode;
+                    obj["protocol"] = proto;
+                    obj["bits"] = bits;
+                    obj["ageMs"] = age;
+                }
+                obj["isTraining"] = IrManager::getInstance().isTraining();
+                obj["value"] = 0;
             } else {
                 caps.add("event_stream");
                 obj["value"] = ch.currentState ? 1 : 0;
             }
+        } else if (strcmp(type, "IR_TRANSMITTER") == 0) {
+            caps.add("ir_transmit");
+            obj["value"] = 0;
         } else {
             caps.add("write");
             caps.add("toggle");

@@ -4,6 +4,7 @@
 #include "storage_manager.h"
 #include "auth_manager.h"
 #include "gpio_manager.h"
+#include "ir_manager.h"
 #include "wifi_manager.h"
 #include "automation.h"
 #include "ota_manager.h"
@@ -97,6 +98,9 @@ void setup() {
     // 9. Initialize Embedded Web Server & REST API
     WebServerManager::getInstance().begin();
 
+    // 10. Initialize Infrared Remote Engine
+    IrManager::getInstance().begin();
+
     Serial.println(F("[INIT] SmartHome Controller is fully ready!"));
     Serial.printf ("[INIT] Setup Access Point IP: %s (SSID: %s)\n",
                    WiFi.softAPIP().toString().c_str(),
@@ -112,6 +116,7 @@ void loop() {
     WifiManager::getInstance().loop();
     WebServerManager::getInstance().loop();
     GpioManager::getInstance().loop();
+    IrManager::getInstance().loop();
     AutomationEngine::getInstance().loop();
     ReceiverClient::getInstance().loop();
     OtaManager::getInstance().loop();

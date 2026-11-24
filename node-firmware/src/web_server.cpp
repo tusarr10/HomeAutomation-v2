@@ -1658,7 +1658,7 @@ void WebServerManager::registerApiRoutes() {
     // === GPIO / RELAY MANAGEMENT ===
     _server.on("/api/gpio", HTTP_GET, [this]() {
         _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
-        DynamicJsonDocument doc(4096);
+        DynamicJsonDocument doc(6144);
         JsonArray arr = doc.to<JsonArray>();
         GpioManager::getInstance().toJson(arr);
         String out;
@@ -1668,7 +1668,7 @@ void WebServerManager::registerApiRoutes() {
 
     _server.on("/api/sensors", HTTP_GET, [this]() {
         _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
-        DynamicJsonDocument doc(4096);
+        DynamicJsonDocument doc(6144);
         JsonArray allCh = doc.createNestedArray("all");
         GpioManager::getInstance().toJson(allCh);
 
@@ -2475,6 +2475,155 @@ void WebServerManager::registerApiRoutes() {
         serializeJson(resp, out);
         _server.send(ok ? 200 : 400, "application/json", out);
     });
+
+    // === INFRARED (IR) REMOTE LEARNING & TRANSMISSION ===
+    _server.on("/api/ir/status", HTTP_GET, [this]() {
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
+        DynamicJsonDocument doc(512);
+        doc["rxPin"] = IrManager::getInstance().getReceiverPin();
+        doc["txPin"] = IrManager::getInstance().getTransmitterPin();
+        doc["isReceiverActive"] = IrManager::getInstance().isReceiverActive();
+        doc["isTransmitterActive"] = IrManager::getInstance().isTransmitterActive();
+        doc["isTraining"] = IrManager::getInstance().isTraining();
+        doc["trainingSuccess"] = IrManager::getInstance().hasTrainingResult();
+
+        String proto, hexCode;
+        uint16_t bits;
+        unsigned long ageMs;
+        if (IrManager::getInstance().getLastCaptured(proto, hexCode, bits, ageMs)) {
+            JsonObject last = doc.createNestedObject("lastCaptured");
+            last["protocol"] = proto;
+            last["hexCode"] = hexCode;
+            last["bits"] = bits;
+            last["ageMs"] = ageMs;
+        }
+
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/ir/train/start", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        DynamicJsonDocument doc(256);
+        deserializeJson(doc, _server.arg("plain"));
+        unsigned long timeoutSec = doc["timeoutSec"] | 25;
+        IrManager::getInstance().startTraining(timeoutSec);
+        sendJsonResponse(200, true, F("Listening for IR remote signal... Point remote at sensor and press button."));
+    });
+
+    _server.on("/api/ir/train/stop", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        IrManager::getInstance().stopTraining();
+        sendJsonResponse(200, true, F("IR training stopped"));
+    });
+
+    _server.on("/api/ir/train/result", HTTP_GET, [this]() {
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
+        DynamicJsonDocument doc(512);
+        doc["isTraining"] = IrManager::getInstance().isTraining();
+        doc["captured"] = IrManager::getInstance().hasTrainingResult();
+
+        String proto, hexCode;
+        uint16_t bits;
+        unsigned long ageMs;
+        if (IrManager::getInstance().getLastCaptured(proto, hexCode, bits, ageMs)) {
+            doc["protocol"] = proto;
+            doc["hexCode"] = hexCode;
+            doc["bits"] = bits;
+            doc["ageMs"] = ageMs;
+        }
+
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/ir/transmit", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        DynamicJsonDocument doc(512);
+        deserializeJson(doc, _server.arg("plain"));
+
+        if (doc.containsKey("remoteName") && doc.containsKey("buttonName")) {
+            String rName = doc["remoteName"] | "";
+            String bName = doc["buttonName"] | "";
+            if (IrManager::getInstance().transmitButton(rName, bName)) {
+                sendJsonResponse(200, true, F("IR signal transmitted successfully"));
+            } else {
+                sendJsonResponse(404, false, F("Saved button not found"));
+            }
+            return;
+        }
+
+        uint8_t pin = doc["pin"] | IrManager::getInstance().getTransmitterPin();
+        String protocol = doc["protocol"] | "NEC";
+        String hexCode = doc.containsKey("hexCode") ? doc["hexCode"].as<String>() : (doc.containsKey("code") ? doc["code"].as<String>() : "");
+        uint16_t bits = doc["bits"] | 32;
+        uint8_t repeat = doc["repeat"] | 0;
+
+        if (hexCode.length() == 0) {
+            sendJsonResponse(400, false, F("Missing hexCode"));
+            return;
+        }
+
+        if (IrManager::getInstance().transmit(pin, protocol, hexCode, bits, repeat)) {
+            sendJsonResponse(200, true, F("IR signal transmitted successfully"));
+        } else {
+            sendJsonResponse(500, false, F("Failed to transmit IR signal"));
+        }
+    });
+
+    _server.on("/api/ir/remotes", HTTP_GET, [this]() {
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
+        DynamicJsonDocument doc(2048);
+        JsonArray arr = doc.createNestedArray("remotes");
+        IrManager::getInstance().getRemotesJson(arr);
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/ir/remotes/save", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        DynamicJsonDocument doc(512);
+        deserializeJson(doc, _server.arg("plain"));
+
+        String rName = doc["remoteName"] | "";
+        String bName = doc["buttonName"] | "";
+        String protocol = doc["protocol"] | "NEC";
+        String hexCode = doc.containsKey("hexCode") ? doc["hexCode"].as<String>() : (doc.containsKey("code") ? doc["code"].as<String>() : "");
+        uint16_t bits = doc["bits"] | 32;
+        uint8_t repeat = doc["repeat"] | 0;
+
+        if (IrManager::getInstance().saveButton(rName, bName, protocol, hexCode, bits, repeat)) {
+            sendJsonResponse(200, true, F("Remote button saved successfully"));
+        } else {
+            sendJsonResponse(400, false, F("Invalid parameters for saving button"));
+        }
+    });
+
+    _server.on("/api/ir/remotes/delete", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        DynamicJsonDocument doc(256);
+        deserializeJson(doc, _server.arg("plain"));
+
+        String rName = doc["remoteName"] | "";
+        String bName = doc["buttonName"] | "";
+
+        if (bName.length() > 0) {
+            if (IrManager::getInstance().deleteButton(rName, bName)) {
+                sendJsonResponse(200, true, F("Button deleted successfully"));
+            } else {
+                sendJsonResponse(404, false, F("Button not found"));
+            }
+        } else {
+            if (IrManager::getInstance().deleteRemote(rName)) {
+                sendJsonResponse(200, true, F("Remote deleted successfully"));
+            } else {
+                sendJsonResponse(404, false, F("Remote not found"));
+            }
+        }
+    });
 }
 
 void WebServerManager::registerStaticRoutes() {
@@ -2579,6 +2728,7 @@ void WebServerManager::serveEmbeddedDashboard() {
 #include "automation.h"
 #include "ota_manager.h"
 #include "receiver_client.h"
+#include "ir_manager.h"
 #include <LittleFS.h>
 #if FEATURE_PCF8574
 #include "drivers/pcf8574_driver.h"
@@ -3961,6 +4111,155 @@ void WebServerManager::registerApiRoutes() {
         String out;
         serializeJson(resp, out);
         _server.send(ok ? 200 : 400, "application/json", out);
+    });
+
+    // === INFRARED (IR) REMOTE LEARNING & TRANSMISSION ===
+    _server.on("/api/ir/status", HTTP_GET, [this]() {
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
+        DynamicJsonDocument doc(512);
+        doc["rxPin"] = IrManager::getInstance().getReceiverPin();
+        doc["txPin"] = IrManager::getInstance().getTransmitterPin();
+        doc["isReceiverActive"] = IrManager::getInstance().isReceiverActive();
+        doc["isTransmitterActive"] = IrManager::getInstance().isTransmitterActive();
+        doc["isTraining"] = IrManager::getInstance().isTraining();
+        doc["trainingSuccess"] = IrManager::getInstance().hasTrainingResult();
+
+        String proto, hexCode;
+        uint16_t bits;
+        unsigned long ageMs;
+        if (IrManager::getInstance().getLastCaptured(proto, hexCode, bits, ageMs)) {
+            JsonObject last = doc.createNestedObject("lastCaptured");
+            last["protocol"] = proto;
+            last["hexCode"] = hexCode;
+            last["bits"] = bits;
+            last["ageMs"] = ageMs;
+        }
+
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/ir/train/start", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        DynamicJsonDocument doc(256);
+        deserializeJson(doc, _server.arg("plain"));
+        unsigned long timeoutSec = doc["timeoutSec"] | 25;
+        IrManager::getInstance().startTraining(timeoutSec);
+        sendJsonResponse(200, true, F("Listening for IR remote signal... Point remote at sensor and press button."));
+    });
+
+    _server.on("/api/ir/train/stop", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        IrManager::getInstance().stopTraining();
+        sendJsonResponse(200, true, F("IR training stopped"));
+    });
+
+    _server.on("/api/ir/train/result", HTTP_GET, [this]() {
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
+        DynamicJsonDocument doc(512);
+        doc["isTraining"] = IrManager::getInstance().isTraining();
+        doc["captured"] = IrManager::getInstance().hasTrainingResult();
+
+        String proto, hexCode;
+        uint16_t bits;
+        unsigned long ageMs;
+        if (IrManager::getInstance().getLastCaptured(proto, hexCode, bits, ageMs)) {
+            doc["protocol"] = proto;
+            doc["hexCode"] = hexCode;
+            doc["bits"] = bits;
+            doc["ageMs"] = ageMs;
+        }
+
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/ir/transmit", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        DynamicJsonDocument doc(512);
+        deserializeJson(doc, _server.arg("plain"));
+
+        if (doc.containsKey("remoteName") && doc.containsKey("buttonName")) {
+            String rName = doc["remoteName"] | "";
+            String bName = doc["buttonName"] | "";
+            if (IrManager::getInstance().transmitButton(rName, bName)) {
+                sendJsonResponse(200, true, F("IR signal transmitted successfully"));
+            } else {
+                sendJsonResponse(404, false, F("Saved button not found"));
+            }
+            return;
+        }
+
+        uint8_t pin = doc["pin"] | IrManager::getInstance().getTransmitterPin();
+        String protocol = doc["protocol"] | "NEC";
+        String hexCode = doc.containsKey("hexCode") ? doc["hexCode"].as<String>() : (doc.containsKey("code") ? doc["code"].as<String>() : "");
+        uint16_t bits = doc["bits"] | 32;
+        uint8_t repeat = doc["repeat"] | 0;
+
+        if (hexCode.length() == 0) {
+            sendJsonResponse(400, false, F("Missing hexCode"));
+            return;
+        }
+
+        if (IrManager::getInstance().transmit(pin, protocol, hexCode, bits, repeat)) {
+            sendJsonResponse(200, true, F("IR signal transmitted successfully"));
+        } else {
+            sendJsonResponse(500, false, F("Failed to transmit IR signal"));
+        }
+    });
+
+    _server.on("/api/ir/remotes", HTTP_GET, [this]() {
+        _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
+        DynamicJsonDocument doc(2048);
+        JsonArray arr = doc.createNestedArray("remotes");
+        IrManager::getInstance().getRemotesJson(arr);
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/ir/remotes/save", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        DynamicJsonDocument doc(512);
+        deserializeJson(doc, _server.arg("plain"));
+
+        String rName = doc["remoteName"] | "";
+        String bName = doc["buttonName"] | "";
+        String protocol = doc["protocol"] | "NEC";
+        String hexCode = doc.containsKey("hexCode") ? doc["hexCode"].as<String>() : (doc.containsKey("code") ? doc["code"].as<String>() : "");
+        uint16_t bits = doc["bits"] | 32;
+        uint8_t repeat = doc["repeat"] | 0;
+
+        if (IrManager::getInstance().saveButton(rName, bName, protocol, hexCode, bits, repeat)) {
+            sendJsonResponse(200, true, F("Remote button saved successfully"));
+        } else {
+            sendJsonResponse(400, false, F("Invalid parameters for saving button"));
+        }
+    });
+
+    _server.on("/api/ir/remotes/delete", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+        DynamicJsonDocument doc(256);
+        deserializeJson(doc, _server.arg("plain"));
+
+        String rName = doc["remoteName"] | "";
+        String bName = doc["buttonName"] | "";
+
+        if (bName.length() > 0) {
+            if (IrManager::getInstance().deleteButton(rName, bName)) {
+                sendJsonResponse(200, true, F("Button deleted successfully"));
+            } else {
+                sendJsonResponse(404, false, F("Button not found"));
+            }
+        } else {
+            if (IrManager::getInstance().deleteRemote(rName)) {
+                sendJsonResponse(200, true, F("Remote deleted successfully"));
+            } else {
+                sendJsonResponse(404, false, F("Remote not found"));
+            }
+        }
     });
 }
 

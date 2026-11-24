@@ -948,6 +948,66 @@
     </div>
   </div>
 
+
+  <!-- Modal: IR Remote Training -->
+  <div id="ir-train-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="ir-train-title">🎯 IR Remote Learning & Training</h3>
+        <button class="modal-close" onclick="app.closeModal('ir-train-modal')">&times;</button>
+      </div>
+      <div style="padding: 10px 0;">
+        <div id="ir-train-status-banner" style="background: rgba(14, 165, 233, 0.12); border: 1px solid #0ea5e9; border-radius: 8px; padding: 14px; text-align: center; margin-bottom: 15px;">
+          <h4 id="ir-train-status-text" style="color: #0ea5e9; margin-bottom: 4px; font-size: 1.05rem;">📡 Ready to Learn</h4>
+          <p id="ir-train-hint" style="font-size: 0.85rem; color: var(--text-muted); margin: 4px 0;">Click "Start Listening", then point your physical remote at the IR sensor (Pin D5) and press any button.</p>
+          <div id="ir-train-timer" style="font-size: 1.8rem; font-weight: 800; color: #f59e0b; margin-top: 8px; display: none;">25s</div>
+        </div>
+
+        <div id="ir-captured-section" class="hidden" style="background: rgba(16, 185, 129, 0.12); border: 1px solid #10b981; border-radius: 8px; padding: 12px; margin-bottom: 15px;">
+          <h4 style="color: #10b981; margin-bottom: 6px;">✅ Signal Captured!</h4>
+          <div style="font-family: monospace; font-size: 0.95rem;">
+            Protocol: <strong id="ir-captured-proto">NEC</strong> &bull; Code: <strong id="ir-captured-hex" style="color: #38bdf8;">0x00FF807F</strong> &bull; Bits: <strong id="ir-captured-bits">32</strong>
+          </div>
+        </div>
+
+        <form id="ir-save-key-form" onsubmit="event.preventDefault(); app.saveTrainedKey();">
+          <input type="hidden" id="ir-train-proto" value="">
+          <input type="hidden" id="ir-train-hex" value="">
+          <input type="hidden" id="ir-train-bits" value="32">
+          <div class="form-group">
+            <label for="ir-remote-name">Remote Name / Appliance</label>
+            <input type="text" id="ir-remote-name" placeholder="e.g., Samsung TV, Ceiling Fan, AC" required>
+          </div>
+          <div class="form-group">
+            <label for="ir-button-name">Button / Key Function</label>
+            <input type="text" id="ir-button-name" placeholder="e.g., Power, Volume Up, Mute, Speed 1" required>
+          </div>
+          <div class="modal-footer" style="padding-top: 10px;">
+            <button type="button" class="btn btn-primary" id="ir-start-listen-btn" onclick="app.beginIrTraining()">🎯 Start Listening</button>
+            <button type="submit" class="btn btn-success hidden" id="ir-save-btn">💾 Save Key</button>
+            <button type="button" class="btn btn-secondary" onclick="app.closeModal('ir-train-modal')">Close</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Saved IR Remotes & Keys -->
+  <div id="ir-remotes-modal" class="modal-overlay hidden">
+    <div class="modal-card" style="max-width: 650px;">
+      <div class="modal-header">
+        <h3>📋 Saved Remote Controls & Keys</h3>
+        <button class="modal-close" onclick="app.closeModal('ir-remotes-modal')">&times;</button>
+      </div>
+      <div id="ir-remotes-list" style="padding: 10px 0; max-height: 420px; overflow-y: auto;">
+        <!-- Dynamically rendered -->
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="app.closeModal('ir-remotes-modal')">Close</button>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js?v=1.6.0"></script>
 </body>
 </html>

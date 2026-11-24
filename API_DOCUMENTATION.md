@@ -1361,87 +1361,140 @@ All learned remote controls and individual button codes are persisted directly t
 
 ---
 
-### Interactive Training / Learning Mode Handshake
+### 6.3 IR Remote Control API Reference (Implemented & Live Verified)
 
-```
-Central Server                                           ESP8266 Node (Pin 14: IR RX)
-      │                                                              │
-      │  1. POST /api/ir/learn/start                                 │
-      │     Body: {"timeoutSec": 20}                                 │
-      ├─────────────────────────────────────────────────────────────►│
-      │                                                              │ (Enables IRrecv interrupt)
-      │  2. 200 OK: {"listening": true, "timeoutSec": 20}            │
-      │◄─────────────────────────────────────────────────────────────┤
-      │                                                              │
-      │                     [ USER PRESSES REMOTE BUTTON ]           │
-      │                     (e.g., TV Remote 'Power' Button)         │
-      │                                     │                        │
-      │                                     ▼                        │
-      │                              Demodulated burst               │
-      │                              decoded: NEC 0xE0E040BF         │
-      │                                                              │
-      │  3. GET /api/ir/learn/status (or auto-push event)            │
-      │◄─────────────────────────────────────────────────────────────┤
-      │     Response:                                                │
-      │     {"captured": true, "protocol": "NEC",                    │
-      │      "hexCode": "0xE0E040BF", "bits": 32}                    │
-      │                                                              │
-      │  4. POST /api/ir/buttons                                     │
-      │     Body: {"remoteId": "rem-tv-samsung",                     │
-      │            "name": "POWER", "hexCode": "0xE0E040BF",         │
-      │            "protocol": "NEC", "bits": 32}                    │
-      ├─────────────────────────────────────────────────────────────►│
-      │                                                              │ (Persists code to
-      │  5. 200 OK: {"success": true, "message": "Key stored"}       │  /config/ir_codes.json)
-      │◄─────────────────────────────────────────────────────────────┤
-```
+The NodeMCU firmware incorporates a complete Infrared Subsystem using `IRremoteESP8266`. All endpoints below are active and live-tested.
 
----
-
-### Server Event Notification & Real-Time Key Updates
-
-Once trained, the node can operate in continuous **Background Listening Mode**:
-1. When a user presses any physical remote control in the room, the node intercepts the burst.
-2. The node matches the captured hex code against its LittleFS database (`/config/ir_codes.json`).
-3. If matched, the node immediately sends a real-time event packet over the **Async TCP Socket (Port 2000)**:
-   ```json
-   {
-     "nodeId": "NODE-8C4F00565D72",
-     "eventType": "ir_remote_event",
-     "remoteId": "rem-tv-samsung",
-     "button": "POWER",
-     "protocol": "SAMSUNG",
-     "hexCode": "0xE0E040BF",
-     "timestamp": "2026-11-25 00:40:12"
-   }
-   ```
-4. Your Central Server can immediately update its UI (e.g., mark TV as toggled) or trigger coordinated smart home automation rules (e.g., dimming living room lights when TV Power is pressed).
-
----
-
-### Transmitting IR Signals via Server REST API
-
-To blast an IR command from your server or automation system:
-
-* **Endpoint:** `POST /api/ir/transmit`
-* **Auth Required:** Yes (`X-Server-Key`)
-* **Request ("Send") - By Stored Name:**
+#### 1. Get IR Subsystem Status
+* **Endpoint:** `GET /api/ir/status`
+* **Auth Required:** Optional (public read)
+* **Response ("Receive") - 200 OK:**
   ```json
   {
-    "remoteId": "rem-tv-samsung",
-    "button": "POWER"
+    "rxPin": 14,
+    "txPin": 13,
+    "isReceiverActive": true,
+    "isTransmitterActive": true,
+    "isTraining": false,
+    "trainingSuccess": false
   }
   ```
-* **Request ("Send") - By Direct Hex Code:**
+
+#### 2. Start IR Training / Learning Mode
+* **Endpoint:** `POST /api/ir/train/start`
+* **Auth Required:** Yes (`Authorization: Basic ...` / Session Cookie / `X-Server-Key`)
+* **Request ("Send"):**
   ```json
   {
-    "pin": 12,
+    "timeoutSec": 25
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Listening for IR remote signal... Point remote at sensor and press button."
+  }
+  ```
+
+#### 3. Stop IR Training
+* **Endpoint:** `POST /api/ir/train/stop`
+* **Auth Required:** Yes
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "IR training stopped"
+  }
+  ```
+
+#### 4. Poll Training Result / Captured Signal
+* **Endpoint:** `GET /api/ir/train/result`
+* **Auth Required:** Optional
+* **Response ("Receive") - Captured (200 OK):**
+  ```json
+  {
+    "captured": true,
     "protocol": "NEC",
-    "hexCode": "0xE0E040BF",
+    "hexCode": "0x20DF10EF",
     "bits": 32,
-    "repeat": 1
+    "ageMs": 1420
   }
   ```
+* **Response ("Receive") - Nothing captured yet (200 OK):**
+  ```json
+  {
+    "captured": false,
+    "isTraining": true
+  }
+  ```
+
+#### 5. Save Learned Remote Key to Database
+* **Endpoint:** `POST /api/ir/remotes/save`
+* **Auth Required:** Yes
+* **Request ("Send"):**
+  ```json
+  {
+    "remoteName": "LG TV",
+    "buttonName": "Power",
+    "protocol": "NEC",
+    "hexCode": "0x20DF10EF",
+    "bits": 32,
+    "repeat": 0
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Remote button saved successfully"
+  }
+  ```
+
+#### 6. Get All Saved Remotes & Buttons Catalog
+* **Endpoint:** `GET /api/ir/remotes`
+* **Auth Required:** Optional
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "remotes": [
+      {
+        "name": "LG TV",
+        "buttons": [
+          {
+            "name": "Power",
+            "protocol": "NEC",
+            "hexCode": "0x20DF10EF",
+            "bits": 32,
+            "repeat": 0
+          }
+        ]
+      }
+    ]
+  }
+  ```
+
+#### 7. Transmit / Blast IR Signal
+* **Endpoint:** `POST /api/ir/transmit`
+* **Auth Required:** Yes
+* **Option A: Transmit by Saved Name:**
+  ```json
+  {
+    "remoteName": "LG TV",
+    "buttonName": "Power"
+  }
+  ```
+* **Option B: Transmit by Direct Protocol & Hex Code:**
+  ```json
+  {
+    "pin": 13,
+    "protocol": "NEC",
+    "hexCode": "0x20DF10EF",
+    "bits": 32,
+    "repeat": 0
+  }
+  ```
+  *(Note: Either `"hexCode"` or `"code"` is accepted).*
 * **Response ("Receive") - 200 OK:**
   ```json
   {
@@ -1449,3 +1502,42 @@ To blast an IR command from your server or automation system:
     "message": "IR signal transmitted successfully"
   }
   ```
+
+#### 8. Delete a Remote or Button
+* **Endpoint:** `POST /api/ir/remotes/delete`
+* **Auth Required:** Yes
+* **Request ("Send") - Delete single button:**
+  ```json
+  {
+    "remoteName": "LG TV",
+    "buttonName": "Power"
+  }
+  ```
+* **Request ("Send") - Delete entire remote:**
+  ```json
+  {
+    "remoteName": "LG TV"
+  }
+  ```
+* **Response ("Receive") - 200 OK:**
+  ```json
+  {
+    "success": true,
+    "message": "Button deleted"
+  }
+  ```
+
+---
+
+### 6.4 Web UI Dynamic Function-Specific Cards
+
+The Web Dashboard (`/` and `app.js`) inspects the `type` and `direction` metadata for each GPIO channel and automatically renders specialized UI cards:
+
+| Pin Function / Type | Direction | UI Experience Rendered |
+| :--- | :---: | :--- |
+| **`IR Receiver`** (`IR_RECEIVER`) | `INPUT` | Displays **Receiver Active / Idle** status indicator, live demodulator preview with last intercepted code (`Protocol`, `0xHEX`, `Bits`), a **[ 🎯 Train / Learn Key ]** button with modal countdown timer, and a **[ 📋 View Saved Keys ]** catalog button. |
+| **`IR Transmitter`** (`IR_TRANSMITTER`) | `OUTPUT` | Renders a grid of **Quick-Blast Remote Action Buttons** for all stored keys (e.g. `[ 🚀 TV: Power ]`, `[ 🚀 Fan: Speed 1 ]`) + manual protocol/hex code blaster modal with bit selection. |
+| **`PIR Motion`** (`PIR_MOTION`) | `INPUT` | Renders a real-time motion sensor badge (**🚶 MOTION DETECTED** vs **🟢 IDLE / SECURE**) with live state changes. |
+| **`Door / Window`** (`DOOR_SENSOR`) | `INPUT` | Renders a contact sensor badge (**🚪 CONTACT OPEN** vs **🔒 SECURE / CLOSED**). |
+| **`Voltage ADC`** (`VOLTAGE_ADC`) | `INPUT` | Live calibrated voltage display (`2.45 V`, raw ADC `760/1023`, live sample button). |
+| **`Relay / Actuator`** (`RELAY`) | `OUTPUT` | Toggle power switch, ON/OFF buttons, and timed pulse trigger button. |

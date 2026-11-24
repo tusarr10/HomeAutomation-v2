@@ -2,6 +2,10 @@ const app = {
   token: localStorage.getItem('sh_token') || '',
   channels: [],
   rules: [],
+  savedRemotes: [],
+  irPollInterval: null,
+  irCountdownTimer: null,
+  irTimeRemaining: 25,
   refreshTimer: null,
 
   init() {
@@ -10,6 +14,7 @@ const app = {
     this.setupEventListeners();
     this.startDashboard();
     this.checkAuth();
+    this.loadIrRemotes();
   },
 
   setupTheme() {
@@ -547,50 +552,156 @@ const app = {
     let mgHtml = '';
 
     this.channels.forEach(ch => {
-      if (ch.isSensor || ch.direction === 'INPUT') {
-        const valDisplay = (ch.type === 'VOLTAGE_ADC' && ch.value !== undefined)
-          ? `${Number(ch.value).toFixed(2)} V (ADC: ${ch.rawAdc || 0})`
-          : (ch.state ? 'ACTIVE / DETECTED' : 'IDLE / CLEAR');
-
-        ovHtml += `
-          <div class="gpio-card">
+      // 1. DEDICATED IR RECEIVER CARD
+      if (ch.type === 'IR_RECEIVER' || (ch.function && ch.function.toLowerCase() === 'ir receiver')) {
+        const lastCodeText = ch.lastCode ? `${ch.protocol || 'NEC'} ${ch.lastCode} (${ch.bits || 32}b)` : 'No code detected yet (Listening)';
+        const cardContent = `
+          <div class="gpio-card" style="border-left: 4px solid #0ea5e9;">
             <div class="gpio-card-top">
               <div class="gpio-title-group">
-                <h4>${ch.name} <span class="badge badge-info" style="font-size:0.7rem; padding: 2px 6px; background: #0284c7; color:#fff; border-radius: 4px;">SENSOR: ${ch.type}</span></h4>
-                <span class="gpio-meta">${ch.room} &bull; Pin: ${ch.label} &bull; Direction: ${ch.direction}</span>
+                <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #0ea5e9; color:#fff; border-radius: 4px;">🎯 IR RECEIVER</span></h4>
+                <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; Mode: <strong>Demodulator / Learner</strong></span>
               </div>
               <div style="text-align: right;">
-                <span class="gpio-status-indicator on"></span>
-                <strong style="color: var(--primary); font-size: 1.1rem;">${valDisplay}</strong>
+                <span class="badge badge-info" style="font-size:0.75rem; background: rgba(14, 165, 233, 0.2); color: #38bdf8;">🟢 Active Listening</span>
               </div>
             </div>
-            <div class="gpio-controls" style="margin-top: 8px;">
-              <span class="hint-text" style="font-size:0.8rem; color:var(--text-muted);">📡 Real-time Sensor Input &bull; Telemetry Stream</span>
+            <div style="background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; padding: 8px 12px; margin: 10px 0;">
+              <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 2px;">Last Captured IR Code:</div>
+              <div style="font-family: monospace; font-size: 0.95rem; color: #38bdf8; font-weight: 600;">${lastCodeText}</div>
             </div>
-          </div>
-        `;
-
-        mgHtml += `
-          <div class="gpio-card">
-            <div class="gpio-card-top">
-              <div class="gpio-title-group">
-                <h4>${ch.name} <span class="badge badge-info" style="font-size:0.7rem; padding: 2px 6px; background: #0284c7; color:#fff; border-radius: 4px;">SENSOR: ${ch.type}</span></h4>
-                <span class="gpio-meta">Pin: <strong>${ch.label}</strong> &bull; Room: <strong>${ch.room}</strong></span>
-                <span class="gpio-meta">Direction: <strong>INPUT</strong> &bull; Unit: <strong>${ch.unit || '-'}</strong> &bull; Value: <strong>${valDisplay}</strong></span>
-              </div>
-              <div style="text-align: right;">
-                <strong style="color: var(--primary); font-size: 1.05rem;">${valDisplay}</strong>
-              </div>
-            </div>
-            <div class="gpio-controls">
+            <div class="gpio-controls" style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <button class="btn btn-primary btn-sm" onclick="app.openIrTrainModal()">🎯 Train / Learn Key</button>
+              <button class="btn btn-secondary btn-sm" onclick="app.openSavedRemotesModal()">📋 View Saved Keys (${app.getTotalSavedButtons()})</button>
               <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
               <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
             </div>
           </div>
         `;
+        ovHtml += cardContent;
+        mgHtml += cardContent;
         return;
       }
 
+      // 2. DEDICATED IR TRANSMITTER CARD
+      if (ch.type === 'IR_TRANSMITTER' || (ch.function && ch.function.toLowerCase() === 'ir transmitter')) {
+        let blasterPills = '';
+        if (app.savedRemotes && app.savedRemotes.length > 0) {
+          app.savedRemotes.forEach(r => {
+            if (r.buttons && r.buttons.length > 0) {
+              r.buttons.forEach(b => {
+                blasterPills += `<button class="btn btn-secondary btn-sm" style="font-size: 0.75rem; padding: 3px 8px;" onclick="app.blastSavedKey('${r.name}', '${b.name}')">🚀 ${r.name}: ${b.name}</button>`;
+              });
+            }
+          });
+        }
+        if (!blasterPills) {
+          blasterPills = `<span style="font-size: 0.8rem; color: var(--text-muted);">No saved remote buttons. Use an IR Receiver to learn keys, or blast manual hex below.</span>`;
+        }
+
+        const cardContent = `
+          <div class="gpio-card" style="border-left: 4px solid #f59e0b;">
+            <div class="gpio-card-top">
+              <div class="gpio-title-group">
+                <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #f59e0b; color:#111; border-radius: 4px; font-weight: 700;">🚀 IR TRANSMITTER</span></h4>
+                <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; IR Blaster LED</span>
+              </div>
+              <div style="text-align: right;">
+                <span class="badge" style="font-size:0.75rem; background: rgba(245, 158, 11, 0.2); color: #f59e0b;">Ready to Blast</span>
+              </div>
+            </div>
+            
+            <div style="margin: 10px 0;">
+              <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 6px;">⚡ Quick Key Blaster (Learned Keys):</div>
+              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                ${blasterPills}
+              </div>
+            </div>
+
+            <div style="background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.06); border-radius: 6px; padding: 8px; margin-top: 8px;">
+              <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">Manual Code Transmitter:</div>
+              <div style="display: flex; gap: 6px;">
+                <select id="ir-tx-proto-${ch.id}" class="form-control" style="width: 105px; font-size: 0.8rem; padding: 4px;">
+                  <option value="NEC">NEC</option>
+                  <option value="SAMSUNG">Samsung</option>
+                  <option value="SONY">Sony</option>
+                  <option value="RC5">RC5</option>
+                  <option value="LG">LG</option>
+                  <option value="PANASONIC">Panasonic</option>
+                </select>
+                <input id="ir-tx-hex-${ch.id}" class="form-control" placeholder="0x00FF807F" style="font-size: 0.8rem; padding: 4px; flex: 1;">
+                <button class="btn btn-success btn-sm" onclick="app.blastManualKey(${ch.pin}, ${ch.id})">🚀 Blast</button>
+              </div>
+            </div>
+
+            <div class="gpio-controls" style="margin-top: 10px;">
+              <button class="btn btn-secondary btn-sm" onclick="app.openSavedRemotesModal()">📋 Manage Keys</button>
+              <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
+            </div>
+          </div>
+        `;
+        ovHtml += cardContent;
+        mgHtml += cardContent;
+        return;
+      }
+
+      // 3. DEDICATED VOLTAGE ADC SENSOR CARD
+      if (ch.type === 'VOLTAGE_ADC' || ch.pin === 17 || (ch.function && ch.function.toLowerCase() === 'voltage')) {
+        const voltVal = (ch.value !== undefined) ? Number(ch.value).toFixed(2) : '0.00';
+        const cardContent = `
+          <div class="gpio-card" style="border-left: 4px solid #10b981;">
+            <div class="gpio-card-top">
+              <div class="gpio-title-group">
+                <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #10b981; color:#fff; border-radius: 4px;">⚡ VOLTAGE ADC</span></h4>
+                <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong> &bull; Direction: INPUT</span>
+              </div>
+              <div style="text-align: right;">
+                <span style="font-size: 1.3rem; font-weight: 800; color: #10b981;">${voltVal} V</span>
+                <div style="font-size: 0.75rem; color: var(--text-muted);">Raw ADC: ${ch.rawAdc || 0}/1023</div>
+              </div>
+            </div>
+            <div class="gpio-controls" style="margin-top: 8px;">
+              <button class="btn btn-secondary btn-sm" onclick="app.loadGpios()">🔄 Sample Live</button>
+              <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
+            </div>
+          </div>
+        `;
+        ovHtml += cardContent;
+        mgHtml += cardContent;
+        return;
+      }
+
+      // 4. PIR MOTION & DIGITAL SENSORS
+      if (ch.isSensor || ch.direction === 'INPUT') {
+        const isMotion = (ch.type === 'PIR_MOTION' || (ch.function && ch.function.toLowerCase().includes('motion')));
+        const cardContent = `
+          <div class="gpio-card" style="border-left: 4px solid #8b5cf6;">
+            <div class="gpio-card-top">
+              <div class="gpio-title-group">
+                <h4>${ch.name} <span class="badge" style="font-size:0.7rem; padding: 2px 6px; background: #8b5cf6; color:#fff; border-radius: 4px;">SENSOR: ${ch.type}</span></h4>
+                <span class="gpio-meta">${ch.room} &bull; Pin: <strong>${ch.label}</strong></span>
+              </div>
+              <div style="text-align: right;">
+                <span class="badge ${ch.state ? 'badge-danger' : 'badge-success'}" style="font-size: 0.85rem; padding: 4px 8px;">
+                  ${ch.state ? (isMotion ? '🚶 MOTION DETECTED' : 'ACTIVE') : (isMotion ? '🟢 CLEAR' : 'IDLE')}
+                </span>
+              </div>
+            </div>
+            <div class="gpio-controls" style="margin-top: 8px;">
+              <button class="btn btn-secondary btn-sm" onclick="app.loadGpios()">🔄 Refresh</button>
+              <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
+            </div>
+          </div>
+        `;
+        ovHtml += cardContent;
+        mgHtml += cardContent;
+        return;
+      }
+
+      // 5. REGULAR RELAYS / ACTUATORS (LIGHT, FAN, RELAY)
       const isOn = ch.state;
       const statusClass = isOn ? 'on' : '';
       const cardActiveClass = isOn ? 'active-on' : '';
@@ -638,6 +749,9 @@ const app = {
           <div class="gpio-controls">
             <button class="btn ${isOn ? 'btn-danger' : 'btn-success'} btn-sm" onclick="app.toggleGpio(${ch.id})">
               ${isOn ? 'Turn OFF' : 'Turn ON'}
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="app.pulseGpio(${ch.id}, 500)">
+              Pulse (0.5s)
             </button>
             <button class="btn btn-secondary btn-sm" onclick="app.editGpio(${ch.id})">Edit</button>
             <button class="btn btn-danger btn-sm" onclick="app.deleteGpio(${ch.id})">Delete</button>
@@ -1920,6 +2034,287 @@ const app = {
       }
     } catch (e) {
       alert('Error unpairing: ' + e.message);
+    }
+  },
+
+  // ==== INFRARED (IR) REMOTE LEARNING & TRANSMISSION ====
+  async loadIrRemotes() {
+    try {
+      const res = await this.apiRequest('/api/ir/remotes');
+      if (res.ok) {
+        const data = await res.json();
+        this.savedRemotes = data.remotes || [];
+      }
+    } catch (e) {
+      console.error('Error loading IR remotes:', e);
+    }
+  },
+
+  getTotalSavedButtons() {
+    if (!this.savedRemotes) return 0;
+    return this.savedRemotes.reduce((sum, r) => sum + (r.buttons ? r.buttons.length : 0), 0);
+  },
+
+  openIrTrainModal() {
+    const modal = document.getElementById('ir-train-modal');
+    if (!modal) return;
+    document.getElementById('ir-captured-section').classList.add('hidden');
+    document.getElementById('ir-save-btn').classList.add('hidden');
+    document.getElementById('ir-start-listen-btn').classList.remove('hidden');
+    document.getElementById('ir-train-status-text').innerText = '📡 Ready to Learn';
+    document.getElementById('ir-train-status-text').style.color = '#0ea5e9';
+    document.getElementById('ir-train-hint').innerText = 'Click "Start Listening", then point your physical remote at the IR sensor (Pin D5) and press any button.';
+    document.getElementById('ir-train-timer').style.display = 'none';
+    this.openModal('ir-train-modal');
+  },
+
+  async beginIrTraining() {
+    try {
+      const res = await this.apiRequest('/api/ir/train/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timeoutSec: 25 })
+      });
+      if (!res.ok) throw new Error('Failed to start training');
+
+      document.getElementById('ir-start-listen-btn').classList.add('hidden');
+      document.getElementById('ir-train-status-text').innerText = '🎯 Listening for Signal...';
+      document.getElementById('ir-train-status-text').style.color = '#f59e0b';
+      document.getElementById('ir-train-hint').innerText = 'Point remote at the sensor and press any button!';
+      const timerElem = document.getElementById('ir-train-timer');
+      timerElem.style.display = 'block';
+
+      this.irTimeRemaining = 25;
+      timerElem.innerText = `${this.irTimeRemaining}s`;
+
+      if (this.irCountdownTimer) clearInterval(this.irCountdownTimer);
+      if (this.irPollInterval) clearInterval(this.irPollInterval);
+
+      this.irCountdownTimer = setInterval(() => {
+        this.irTimeRemaining--;
+        timerElem.innerText = `${this.irTimeRemaining}s`;
+        if (this.irTimeRemaining <= 0) {
+          this.stopIrTraining();
+          document.getElementById('ir-train-status-text').innerText = '⏰ Timed Out';
+          document.getElementById('ir-train-status-text').style.color = '#ef4444';
+          document.getElementById('ir-train-hint').innerText = 'No signal was detected within 25 seconds. Try again closer to the sensor.';
+          document.getElementById('ir-start-listen-btn').classList.remove('hidden');
+          timerElem.style.display = 'none';
+        }
+      }, 1000);
+
+      this.irPollInterval = setInterval(async () => {
+        try {
+          const pollRes = await this.apiRequest('/api/ir/train/result');
+          if (pollRes.ok) {
+            const result = await pollRes.json();
+            if (result.captured) {
+              this.stopIrTraining();
+              timerElem.style.display = 'none';
+              document.getElementById('ir-train-status-text').innerText = '✅ Code Captured Successfully!';
+              document.getElementById('ir-train-status-text').style.color = '#10b981';
+              document.getElementById('ir-train-hint').innerText = 'Give this button a name to store it in LittleFS:';
+
+              document.getElementById('ir-captured-proto').innerText = result.protocol;
+              document.getElementById('ir-captured-hex').innerText = result.hexCode;
+              document.getElementById('ir-captured-bits').innerText = result.bits;
+              document.getElementById('ir-captured-section').classList.remove('hidden');
+
+              document.getElementById('ir-train-proto').value = result.protocol;
+              document.getElementById('ir-train-hex').value = result.hexCode;
+              document.getElementById('ir-train-bits').value = result.bits;
+
+              document.getElementById('ir-save-btn').classList.remove('hidden');
+            }
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      }, 700);
+    } catch (e) {
+      alert('Error starting IR training: ' + e.message);
+    }
+  },
+
+  stopIrTraining() {
+    if (this.irCountdownTimer) {
+      clearInterval(this.irCountdownTimer);
+      this.irCountdownTimer = null;
+    }
+    if (this.irPollInterval) {
+      clearInterval(this.irPollInterval);
+      this.irPollInterval = null;
+    }
+    this.apiRequest('/api/ir/train/stop', { method: 'POST' }).catch(() => {});
+  },
+
+  async saveTrainedKey() {
+    const remoteName = document.getElementById('ir-remote-name').value.trim();
+    const buttonName = document.getElementById('ir-button-name').value.trim();
+    const protocol = document.getElementById('ir-train-proto').value || 'NEC';
+    const hexCode = document.getElementById('ir-train-hex').value;
+    const bits = parseInt(document.getElementById('ir-train-bits').value) || 32;
+
+    if (!remoteName || !buttonName || !hexCode) {
+      alert('Please enter both Remote Name and Button Name.');
+      return;
+    }
+
+    try {
+      const res = await this.apiRequest('/api/ir/remotes/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remoteName, buttonName, protocol, hexCode, bits })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`Saved "${buttonName}" for remote "${remoteName}"!`);
+        this.closeModal('ir-train-modal');
+        await this.loadIrRemotes();
+        this.renderGpios();
+      } else {
+        alert(data.error || 'Failed to save button');
+      }
+    } catch (e) {
+      alert('Error saving button: ' + e.message);
+    }
+  },
+
+  openSavedRemotesModal() {
+    this.renderSavedRemotesModal();
+    this.openModal('ir-remotes-modal');
+  },
+
+  renderSavedRemotesModal() {
+    const container = document.getElementById('ir-remotes-list');
+    if (!container) return;
+
+    if (!this.savedRemotes || this.savedRemotes.length === 0) {
+      container.innerHTML = `
+        <div style="text-align: center; padding: 30px; color: var(--text-muted);">
+          <p style="font-size: 1rem; margin-bottom: 8px;">No remote controls learned yet.</p>
+          <p style="font-size: 0.85rem;">Click "Train / Learn Key" on your IR Receiver card to add your first remote button!</p>
+        </div>
+      `;
+      return;
+    }
+
+    let html = '';
+    this.savedRemotes.forEach(rem => {
+      html += `
+        <div style="background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h4 style="margin: 0; color: #38bdf8;">📺 ${rem.name}</h4>
+            <button class="btn btn-danger btn-sm" style="font-size: 0.75rem; padding: 2px 8px;" onclick="app.deleteRemote('${rem.name}')">Delete Remote</button>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px;">
+      `;
+
+      if (rem.buttons && rem.buttons.length > 0) {
+        rem.buttons.forEach(btn => {
+          html += `
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 8px; display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <div style="font-weight: 600; font-size: 0.85rem;">${btn.name}</div>
+                <div style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">${btn.protocol} ${btn.hexCode}</div>
+              </div>
+              <div style="display: flex; gap: 4px;">
+                <button class="btn btn-success btn-sm" style="font-size: 0.75rem; padding: 3px 7px;" title="Blast IR Signal" onclick="app.blastSavedKey('${rem.name}', '${btn.name}')">🚀</button>
+                <button class="btn btn-secondary btn-sm" style="font-size: 0.75rem; padding: 3px 7px;" title="Delete Key" onclick="app.deleteIrButton('${rem.name}', '${btn.name}')">🗑️</button>
+              </div>
+            </div>
+          `;
+        });
+      } else {
+        html += `<div style="font-size: 0.8rem; color: var(--text-muted);">No buttons in this remote.</div>`;
+      }
+
+      html += `</div></div>`;
+    });
+
+    container.innerHTML = html;
+  },
+
+  async deleteIrButton(remoteName, buttonName) {
+    if (!confirm(`Delete key "${buttonName}" from remote "${remoteName}"?`)) return;
+    try {
+      const res = await this.apiRequest('/api/ir/remotes/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remoteName, buttonName })
+      });
+      if (res.ok) {
+        await this.loadIrRemotes();
+        this.renderSavedRemotesModal();
+        this.renderGpios();
+      }
+    } catch (e) {
+      alert('Error deleting key: ' + e.message);
+    }
+  },
+
+  async deleteRemote(remoteName) {
+    if (!confirm(`Delete entire remote "${remoteName}" and all its buttons?`)) return;
+    try {
+      const res = await this.apiRequest('/api/ir/remotes/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remoteName })
+      });
+      if (res.ok) {
+        await this.loadIrRemotes();
+        this.renderSavedRemotesModal();
+        this.renderGpios();
+      }
+    } catch (e) {
+      alert('Error deleting remote: ' + e.message);
+    }
+  },
+
+  async blastSavedKey(remoteName, buttonName) {
+    try {
+      const res = await this.apiRequest('/api/ir/transmit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remoteName, buttonName })
+      });
+      const data = await res.json();
+      if (data.success) {
+        console.log(`[IR] Blasted: ${remoteName} -> ${buttonName}`);
+        alert(`🚀 IR Signal Blasted: ${remoteName} -> ${buttonName}!`);
+      } else {
+        alert(data.error || 'Failed to blast IR signal');
+      }
+    } catch (e) {
+      alert('Error blasting IR signal: ' + e.message);
+    }
+  },
+
+  async blastManualKey(pin, channelId) {
+    const protoElem = document.getElementById(`ir-tx-proto-${channelId}`);
+    const hexElem = document.getElementById(`ir-tx-hex-${channelId}`);
+    const protocol = protoElem ? protoElem.value : 'NEC';
+    const hexCode = hexElem ? hexElem.value.trim() : '';
+
+    if (!hexCode) {
+      alert('Please enter a Hex Code (e.g. 0xE0E040BF).');
+      return;
+    }
+
+    try {
+      const res = await this.apiRequest('/api/ir/transmit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin, protocol, hexCode, bits: 32 })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`🚀 IR Signal Blasted on Pin ${pin}: ${protocol} ${hexCode}`);
+      } else {
+        alert(data.error || 'Failed to blast signal');
+      }
+    } catch (e) {
+      alert('Error transmitting signal: ' + e.message);
     }
   },
 };
