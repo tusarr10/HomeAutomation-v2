@@ -49,6 +49,8 @@ const app = {
         if (targetId === 'tab-wifi') this.loadWifiStatus();
         if (targetId === 'tab-settings') this.loadSettings();
         if (targetId === 'tab-sysinfo') this.loadStatus();
+        if (targetId === 'tab-gpio') { this.loadGpios(); this.loadI2cSettings(); }
+        if (targetId === 'tab-users') this.loadPairingStatus();
       });
     });
   },
@@ -343,6 +345,8 @@ const app = {
     this.loadGpios();
     this.loadRules();
     this.loadWifiStatus();
+    this.loadI2cSettings();
+    this.loadPairingStatus();
   },
 
   async pollStatus() {
@@ -1645,7 +1649,7 @@ const app = {
 
   closeModal(id) {
     document.getElementById(id).classList.add('hidden');
-  }
+  },
 
   // ==== I2C EXPANDER & DUAL-AUTH PAIRING ====
   i2cConfig: { enabled: false, sdaPin: 4, sclPin: 5, address: 39, detected: false, detectedAddress: 0 },
