@@ -611,6 +611,24 @@ GpioManager& GpioManager::getInstance() {
 }
 
 bool GpioManager::isPinSafe(uint8_t pin, String& note, bool& bootSensitive) {
+    if (IS_PCF_PIN(pin)) {
+        if (_i2cEnabled) {
+            note = "I2C PCF8574 Pin P" + String(PCF_PIN_INDEX(pin)) + " (Safe isolated expander output)";
+            bootSensitive = false;
+            return true;
+        } else {
+            note = F("I2C Expander is disabled. Enable I2C in GPIO settings first.");
+            bootSensitive = false;
+            return false;
+        }
+    }
+
+    if (_i2cEnabled && (pin == _i2cSdaPin || pin == _i2cSclPin)) {
+        note = (pin == _i2cSdaPin) ? F("Pin reserved for I2C SDA") : F("Pin reserved for I2C SCL");
+        bootSensitive = false;
+        return false;
+    }
+
     for (size_t i = 0; i < PIN_SAFETY_MAP_COUNT; i++) {
         if (PIN_SAFETY_MAP[i].gpio == pin) {
             note = PIN_SAFETY_MAP[i].bootNote;
@@ -624,6 +642,9 @@ bool GpioManager::isPinSafe(uint8_t pin, String& note, bool& bootSensitive) {
 }
 
 bool GpioManager::isPinAssigned(uint8_t pin, uint8_t excludeId) {
+    if (_i2cEnabled && (pin == _i2cSdaPin || pin == _i2cSclPin)) {
+        return true;
+    }
     for (const auto& ch : _channels) {
         if (ch.pin == pin && ch.id != excludeId) {
             return true;
@@ -940,8 +961,17 @@ uint8_t GpioManager::getPcfOutputByte() const {
 #else
 #include "gpio_manager.h"
 #include "storage_manager.h"
+#if FEATURE_PCF8574
+#include "drivers/pcf8574_driver.h"
+#endif
 
-GpioManager::GpioManager() : _stateCallback(nullptr), _nextId(1) {}
+GpioManager::GpioManager()
+    : _stateCallback(nullptr),
+      _nextId(1),
+      _i2cEnabled(false),
+      _i2cSdaPin(4),
+      _i2cSclPin(5),
+      _i2cAddress(0x27) {}
 
 GpioManager& GpioManager::getInstance() {
     static GpioManager instance;
@@ -949,6 +979,24 @@ GpioManager& GpioManager::getInstance() {
 }
 
 bool GpioManager::isPinSafe(uint8_t pin, String& note, bool& bootSensitive) {
+    if (IS_PCF_PIN(pin)) {
+        if (_i2cEnabled) {
+            note = "I2C PCF8574 Pin P" + String(PCF_PIN_INDEX(pin)) + " (Safe isolated expander output)";
+            bootSensitive = false;
+            return true;
+        } else {
+            note = F("I2C Expander is disabled. Enable I2C in GPIO settings first.");
+            bootSensitive = false;
+            return false;
+        }
+    }
+
+    if (_i2cEnabled && (pin == _i2cSdaPin || pin == _i2cSclPin)) {
+        note = (pin == _i2cSdaPin) ? F("Pin reserved for I2C SDA") : F("Pin reserved for I2C SCL");
+        bootSensitive = false;
+        return false;
+    }
+
     for (size_t i = 0; i < PIN_SAFETY_MAP_COUNT; i++) {
         if (PIN_SAFETY_MAP[i].gpio == pin) {
             note = PIN_SAFETY_MAP[i].bootNote;
@@ -962,6 +1010,9 @@ bool GpioManager::isPinSafe(uint8_t pin, String& note, bool& bootSensitive) {
 }
 
 bool GpioManager::isPinAssigned(uint8_t pin, uint8_t excludeId) {
+    if (_i2cEnabled && (pin == _i2cSdaPin || pin == _i2cSclPin)) {
+        return true;
+    }
     for (const auto& ch : _channels) {
         if (ch.pin == pin && ch.id != excludeId) {
             return true;
@@ -972,19 +1023,53 @@ bool GpioManager::isPinAssigned(uint8_t pin, uint8_t excludeId) {
 
 void GpioManager::applyPhysicalPin(const GpioChannel& channel) {
     if (!channel.enabled) {
-        // Disabled channel defaults to safe off (high-impedance input)
-        pinMode(channel.pin, INPUT);
+        // Disabled channel defaults to safe off (high-impedance input for native pins)
+        if (!IS_PCF_PIN(channel.pin) && channel.pin <= 16) {
+            pinMode(channel.pin, INPUT);
+        }
         return;
     }
 
-    // Set output level register BEFORE configuring pinMode to OUTPUT
-    // This prevents any microsecond glitch/click on active-low optical relays during boot
     int physicalLevel = channel.activeLow ? (channel.currentState ? LOW : HIGH) : (channel.currentState ? HIGH : LOW);
-    digitalWrite(channel.pin, physicalLevel);
-    pinMode(channel.pin, OUTPUT);
+
+    if (IS_PCF_PIN(channel.pin)) {
+#if FEATURE_PCF8574
+        if (_i2cEnabled) {
+            Pcf8574Driver::getInstance().setPin(PCF_PIN_INDEX(channel.pin), physicalLevel == HIGH);
+        }
+#endif
+        return;
+    }
+
+    if (channel.pin <= 16) {
+        digitalWrite(channel.pin, physicalLevel);
+        pinMode(channel.pin, OUTPUT);
+    }
 }
 
 bool GpioManager::begin() {
+    // 1. Load I2C Configuration
+    DynamicJsonDocument i2cDoc(256);
+    if (StorageManager::getInstance().loadJsonFile(FILE_I2C_CONFIG, i2cDoc)) {
+        if (i2cDoc.containsKey("enabled")) _i2cEnabled = i2cDoc["enabled"].as<bool>();
+        if (i2cDoc.containsKey("sdaPin")) _i2cSdaPin = i2cDoc["sdaPin"].as<uint8_t>();
+        if (i2cDoc.containsKey("sclPin")) _i2cSclPin = i2cDoc["sclPin"].as<uint8_t>();
+        if (i2cDoc.containsKey("address")) _i2cAddress = i2cDoc["address"].as<uint8_t>();
+    }
+
+#if FEATURE_PCF8574
+    if (_i2cEnabled) {
+        Serial.printf("[GPIO] Initializing I2C Bus: SDA=GPIO%u, SCL=GPIO%u, defaultAddr=0x%02X\n",
+                      _i2cSdaPin, _i2cSclPin, _i2cAddress);
+        Pcf8574Driver::getInstance().begin(_i2cSdaPin, _i2cSclPin, _i2cAddress);
+        if (Pcf8574Driver::getInstance().isDetected()) {
+            _i2cAddress = Pcf8574Driver::getInstance().getAddress();
+            Serial.printf("[GPIO] PCF8574 Expander active at 0x%02X\n", _i2cAddress);
+        }
+    }
+#endif
+
+    // 2. Load GPIO Channels
     loadFromStorage();
     if (_channels.empty()) {
         // Only create initial default safe outputs if /config/gpio.json does NOT exist on flash
@@ -1257,3 +1342,51 @@ bool GpioManager::fromJson(JsonArray& arr) {
 }
 
 #endif
+
+bool GpioManager::isPcfDetected() const {
+#if FEATURE_PCF8574
+    return _i2cEnabled && Pcf8574Driver::getInstance().isDetected();
+#else
+    return false;
+#endif
+}
+
+uint8_t GpioManager::getPcfAddress() const {
+#if FEATURE_PCF8574
+    return Pcf8574Driver::getInstance().getAddress();
+#else
+    return 0;
+#endif
+}
+
+uint8_t GpioManager::getPcfOutputByte() const {
+#if FEATURE_PCF8574
+    return Pcf8574Driver::getInstance().getOutputByte();
+#else
+    return 0xFF;
+#endif
+}
+
+bool GpioManager::setI2cConfig(bool enabled, uint8_t sdaPin, uint8_t sclPin, uint8_t addr) {
+    _i2cEnabled = enabled;
+    _i2cSdaPin = sdaPin;
+    _i2cSclPin = sclPin;
+    _i2cAddress = addr;
+
+    DynamicJsonDocument doc(256);
+    doc["enabled"] = _i2cEnabled;
+    doc["sdaPin"] = _i2cSdaPin;
+    doc["sclPin"] = _i2cSclPin;
+    doc["address"] = _i2cAddress;
+    StorageManager::getInstance().saveJsonFile(FILE_I2C_CONFIG, doc);
+
+#if FEATURE_PCF8574
+    if (_i2cEnabled) {
+        Pcf8574Driver::getInstance().begin(_i2cSdaPin, _i2cSclPin, _i2cAddress);
+        if (Pcf8574Driver::getInstance().isDetected()) {
+            _i2cAddress = Pcf8574Driver::getInstance().getAddress();
+        }
+    }
+#endif
+    return true;
+}

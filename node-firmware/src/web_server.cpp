@@ -1045,6 +1045,9 @@ void WebServerManager::serveEmbeddedDashboard() {
 #include "drivers/pcf8574_driver.h"
 #include <Wire.h>
 #include <LittleFS.h>
+#if FEATURE_PCF8574
+#include "drivers/pcf8574_driver.h"
+#endif
 
 // Initialize static circular Logger ring buffer
 LogEntry Logger::_logs[LOG_RING_CAPACITY];
@@ -1114,7 +1117,7 @@ bool WebServerManager::begin() {
         }
     }
 
-    const char* headerKeys[] = { "Cookie", "Authorization", "X-Session-Token", "X-File-MD5", "User-Agent" };
+    const char* headerKeys[] = { "Cookie", "Authorization", "X-Session-Token", "X-Server-Key", "X-Pairing-Key", "X-File-MD5", "User-Agent" };
     _server.collectHeaders(headerKeys, sizeof(headerKeys) / sizeof(char*));
 
     registerRoutes();
@@ -1303,6 +1306,57 @@ void WebServerManager::registerApiRoutes() {
         sendJsonResponse(200, true, F("Logged out successfully"));
     });
 
+    _server.on("/api/auth/pair", HTTP_GET, [this]() {
+        StaticJsonDocument<128> doc;
+        doc["paired"] = AuthManager::getInstance().isPaired();
+        doc["adminUser"] = AuthManager::getInstance().getAdminUsername();
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/auth/pair", HTTP_POST, [this]() {
+        StaticJsonDocument<256> doc;
+        DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+        if (err) {
+            sendJsonResponse(400, false, F("Invalid JSON payload"));
+            return;
+        }
+
+        String serverKey = doc["serverKey"] | "";
+        if (serverKey.length() < 6) {
+            sendJsonResponse(400, false, F("Server pairing key must be at least 6 characters"));
+            return;
+        }
+
+        // Must be authenticated OR provide valid adminPassword in JSON
+        if (!AuthManager::getInstance().authenticate(_server)) {
+            String adminPass = doc["adminPassword"] | "";
+            if (!AuthManager::getInstance().checkCredentials(AuthManager::getInstance().getAdminUsername(), adminPass)) {
+                sendJsonResponse(401, false, F("Authentication required to set server pairing key"));
+                return;
+            }
+        }
+
+        if (AuthManager::getInstance().setServerPairingKey(serverKey)) {
+            Logger::log(F("[AUTH] Central Server pairing key configured"));
+            sendJsonResponse(200, true, F("Device successfully paired to Central Server"));
+        } else {
+            sendJsonResponse(500, false, F("Failed to set pairing key"));
+        }
+    });
+
+    _server.on("/api/auth/unpair", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+
+        if (AuthManager::getInstance().clearServerPairingKey()) {
+            Logger::log(F("[AUTH] Device unpaired from Central Server"));
+            sendJsonResponse(200, true, F("Device unpaired successfully"));
+        } else {
+            sendJsonResponse(500, false, F("Failed to unpair"));
+        }
+    });
+
     // === SYSTEM OVERVIEW & DIAGNOSTICS STATUS ===
     _server.on("/api/status", HTTP_GET, [this]() {
         static uint32_t s_minFreeHeap = 0;
@@ -1385,6 +1439,9 @@ void WebServerManager::registerApiRoutes() {
         doc["staConnected"] = WifiManager::getInstance().isSTAConnected();
         doc["staSsid"] = WifiManager::getInstance().getConnectedSSID();
         doc["staIp"] = WifiManager::getInstance().getSTAIP();
+        doc["paired"] = AuthManager::getInstance().isPaired();
+        doc["i2cEnabled"] = GpioManager::getInstance().isI2cEnabled();
+        doc["pcfDetected"] = GpioManager::getInstance().isPcfDetected();
         doc["staGateway"] = WifiManager::getInstance().getSTAGateway();
         doc["staSubnet"] = WifiManager::getInstance().getSTASubnet();
         doc["rssi"] = WifiManager::getInstance().getSTARSSI();
@@ -1694,6 +1751,93 @@ void WebServerManager::registerApiRoutes() {
         } else {
             sendJsonResponse(400, false, F("Failed to set state or channel disabled"));
         }
+    });
+
+    // === I2C & PCF8574 EXPANDER MANAGEMENT ===
+    _server.on("/api/i2c", HTTP_GET, [this]() {
+        StaticJsonDocument<384> doc;
+        doc["enabled"] = GpioManager::getInstance().isI2cEnabled();
+        doc["sdaPin"] = GpioManager::getInstance().getI2cSdaPin();
+        doc["sclPin"] = GpioManager::getInstance().getI2cSclPin();
+        doc["address"] = GpioManager::getInstance().getI2cAddress();
+        char hexBuf[8];
+        sprintf(hexBuf, "0x%02X", GpioManager::getInstance().getI2cAddress());
+        doc["addressHex"] = hexBuf;
+        doc["detected"] = GpioManager::getInstance().isPcfDetected();
+        doc["detectedAddress"] = GpioManager::getInstance().getPcfAddress();
+
+        JsonArray pins = doc.createNestedArray("extendedPins");
+        for (uint8_t p = 100; p <= 107; p++) {
+            pins.add(p);
+        }
+
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/i2c", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+
+        DynamicJsonDocument doc(256);
+        DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+        if (err) {
+            sendJsonResponse(400, false, F("Invalid JSON payload"));
+            return;
+        }
+
+        bool enabled = doc["enabled"] | false;
+        uint8_t sdaPin = doc["sdaPin"] | 4;
+        uint8_t sclPin = doc["sclPin"] | 5;
+        uint8_t addr = doc["address"] | 0x27;
+        bool reboot = doc["reboot"] | false;
+
+        GpioManager::getInstance().setI2cConfig(enabled, sdaPin, sclPin, addr);
+        Logger::log(String(F("[I2C] Settings saved: ")) + (enabled ? F("Enabled") : F("Disabled")) +
+                    F(" (SDA=") + String(sdaPin) + F(", SCL=") + String(sclPin) + F(")"));
+
+        sendJsonResponse(200, true, reboot ? F("I2C saved. Device restarting...") : F("I2C settings saved successfully"));
+
+        if (reboot) {
+            delay(500);
+            ESP.restart();
+        }
+    });
+
+    _server.on("/api/i2c/scan", HTTP_GET, [this]() {
+        uint8_t sda = GpioManager::getInstance().getI2cSdaPin();
+        uint8_t scl = GpioManager::getInstance().getI2cSclPin();
+        if (_server.hasArg("sda")) sda = _server.arg("sda").toInt();
+        if (_server.hasArg("scl")) scl = _server.arg("scl").toInt();
+
+#if FEATURE_PCF8574
+        std::vector<uint8_t> addrs = Pcf8574Driver::getInstance().scanBus(sda, scl);
+        DynamicJsonDocument doc(1024);
+        doc["success"] = true;
+        doc["sdaPin"] = sda;
+        doc["sclPin"] = scl;
+        doc["count"] = addrs.size();
+        JsonArray devs = doc.createNestedArray("devices");
+        for (uint8_t addr : addrs) {
+            JsonObject dev = devs.createNestedObject();
+            dev["address"] = addr;
+            char hexBuf[8];
+            sprintf(hexBuf, "0x%02X", addr);
+            dev["hex"] = hexBuf;
+            if (addr >= 0x20 && addr <= 0x27) {
+                dev["type"] = "PCF8574";
+            } else if (addr >= 0x38 && addr <= 0x3F) {
+                dev["type"] = "PCF8574A";
+            } else {
+                dev["type"] = "Unknown I2C Device";
+            }
+        }
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+#else
+        sendJsonResponse(501, false, F("I2C feature not compiled"));
+#endif
     });
 
     // === AUTOMATION RULES ===
@@ -2418,6 +2562,9 @@ void WebServerManager::serveEmbeddedDashboard() {
 #include "ota_manager.h"
 #include "receiver_client.h"
 #include <LittleFS.h>
+#if FEATURE_PCF8574
+#include "drivers/pcf8574_driver.h"
+#endif
 
 // Initialize static circular Logger ring buffer
 LogEntry Logger::_logs[LOG_RING_CAPACITY];
@@ -2487,7 +2634,7 @@ bool WebServerManager::begin() {
         }
     }
 
-    const char* headerKeys[] = { "Cookie", "Authorization", "X-Session-Token", "X-File-MD5", "User-Agent" };
+    const char* headerKeys[] = { "Cookie", "Authorization", "X-Session-Token", "X-Server-Key", "X-Pairing-Key", "X-File-MD5", "User-Agent" };
     _server.collectHeaders(headerKeys, sizeof(headerKeys) / sizeof(char*));
 
     registerRoutes();
@@ -2676,6 +2823,57 @@ void WebServerManager::registerApiRoutes() {
         sendJsonResponse(200, true, F("Logged out successfully"));
     });
 
+    _server.on("/api/auth/pair", HTTP_GET, [this]() {
+        StaticJsonDocument<128> doc;
+        doc["paired"] = AuthManager::getInstance().isPaired();
+        doc["adminUser"] = AuthManager::getInstance().getAdminUsername();
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/auth/pair", HTTP_POST, [this]() {
+        StaticJsonDocument<256> doc;
+        DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+        if (err) {
+            sendJsonResponse(400, false, F("Invalid JSON payload"));
+            return;
+        }
+
+        String serverKey = doc["serverKey"] | "";
+        if (serverKey.length() < 6) {
+            sendJsonResponse(400, false, F("Server pairing key must be at least 6 characters"));
+            return;
+        }
+
+        // Must be authenticated OR provide valid adminPassword in JSON
+        if (!AuthManager::getInstance().authenticate(_server)) {
+            String adminPass = doc["adminPassword"] | "";
+            if (!AuthManager::getInstance().checkCredentials(AuthManager::getInstance().getAdminUsername(), adminPass)) {
+                sendJsonResponse(401, false, F("Authentication required to set server pairing key"));
+                return;
+            }
+        }
+
+        if (AuthManager::getInstance().setServerPairingKey(serverKey)) {
+            Logger::log(F("[AUTH] Central Server pairing key configured"));
+            sendJsonResponse(200, true, F("Device successfully paired to Central Server"));
+        } else {
+            sendJsonResponse(500, false, F("Failed to set pairing key"));
+        }
+    });
+
+    _server.on("/api/auth/unpair", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+
+        if (AuthManager::getInstance().clearServerPairingKey()) {
+            Logger::log(F("[AUTH] Device unpaired from Central Server"));
+            sendJsonResponse(200, true, F("Device unpaired successfully"));
+        } else {
+            sendJsonResponse(500, false, F("Failed to unpair"));
+        }
+    });
+
     // === SYSTEM OVERVIEW & DIAGNOSTICS STATUS ===
     _server.on("/api/status", HTTP_GET, [this]() {
         static uint32_t s_minFreeHeap = 0;
@@ -2758,6 +2956,9 @@ void WebServerManager::registerApiRoutes() {
         doc["staConnected"] = WifiManager::getInstance().isSTAConnected();
         doc["staSsid"] = WifiManager::getInstance().getConnectedSSID();
         doc["staIp"] = WifiManager::getInstance().getSTAIP();
+        doc["paired"] = AuthManager::getInstance().isPaired();
+        doc["i2cEnabled"] = GpioManager::getInstance().isI2cEnabled();
+        doc["pcfDetected"] = GpioManager::getInstance().isPcfDetected();
         doc["staGateway"] = WifiManager::getInstance().getSTAGateway();
         doc["staSubnet"] = WifiManager::getInstance().getSTASubnet();
         doc["rssi"] = WifiManager::getInstance().getSTARSSI();
@@ -3013,6 +3214,93 @@ void WebServerManager::registerApiRoutes() {
         } else {
             sendJsonResponse(400, false, F("Failed to set state or channel disabled"));
         }
+    });
+
+    // === I2C & PCF8574 EXPANDER MANAGEMENT ===
+    _server.on("/api/i2c", HTTP_GET, [this]() {
+        StaticJsonDocument<384> doc;
+        doc["enabled"] = GpioManager::getInstance().isI2cEnabled();
+        doc["sdaPin"] = GpioManager::getInstance().getI2cSdaPin();
+        doc["sclPin"] = GpioManager::getInstance().getI2cSclPin();
+        doc["address"] = GpioManager::getInstance().getI2cAddress();
+        char hexBuf[8];
+        sprintf(hexBuf, "0x%02X", GpioManager::getInstance().getI2cAddress());
+        doc["addressHex"] = hexBuf;
+        doc["detected"] = GpioManager::getInstance().isPcfDetected();
+        doc["detectedAddress"] = GpioManager::getInstance().getPcfAddress();
+
+        JsonArray pins = doc.createNestedArray("extendedPins");
+        for (uint8_t p = 100; p <= 107; p++) {
+            pins.add(p);
+        }
+
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+    });
+
+    _server.on("/api/i2c", HTTP_POST, [this]() {
+        if (!checkAuthOrReject()) return;
+
+        DynamicJsonDocument doc(256);
+        DeserializationError err = deserializeJson(doc, _server.arg("plain"));
+        if (err) {
+            sendJsonResponse(400, false, F("Invalid JSON payload"));
+            return;
+        }
+
+        bool enabled = doc["enabled"] | false;
+        uint8_t sdaPin = doc["sdaPin"] | 4;
+        uint8_t sclPin = doc["sclPin"] | 5;
+        uint8_t addr = doc["address"] | 0x27;
+        bool reboot = doc["reboot"] | false;
+
+        GpioManager::getInstance().setI2cConfig(enabled, sdaPin, sclPin, addr);
+        Logger::log(String(F("[I2C] Settings saved: ")) + (enabled ? F("Enabled") : F("Disabled")) +
+                    F(" (SDA=") + String(sdaPin) + F(", SCL=") + String(sclPin) + F(")"));
+
+        sendJsonResponse(200, true, reboot ? F("I2C saved. Device restarting...") : F("I2C settings saved successfully"));
+
+        if (reboot) {
+            delay(500);
+            ESP.restart();
+        }
+    });
+
+    _server.on("/api/i2c/scan", HTTP_GET, [this]() {
+        uint8_t sda = GpioManager::getInstance().getI2cSdaPin();
+        uint8_t scl = GpioManager::getInstance().getI2cSclPin();
+        if (_server.hasArg("sda")) sda = _server.arg("sda").toInt();
+        if (_server.hasArg("scl")) scl = _server.arg("scl").toInt();
+
+#if FEATURE_PCF8574
+        std::vector<uint8_t> addrs = Pcf8574Driver::getInstance().scanBus(sda, scl);
+        DynamicJsonDocument doc(1024);
+        doc["success"] = true;
+        doc["sdaPin"] = sda;
+        doc["sclPin"] = scl;
+        doc["count"] = addrs.size();
+        JsonArray devs = doc.createNestedArray("devices");
+        for (uint8_t addr : addrs) {
+            JsonObject dev = devs.createNestedObject();
+            dev["address"] = addr;
+            char hexBuf[8];
+            sprintf(hexBuf, "0x%02X", addr);
+            dev["hex"] = hexBuf;
+            if (addr >= 0x20 && addr <= 0x27) {
+                dev["type"] = "PCF8574";
+            } else if (addr >= 0x38 && addr <= 0x3F) {
+                dev["type"] = "PCF8574A";
+            } else {
+                dev["type"] = "Unknown I2C Device";
+            }
+        }
+        String out;
+        serializeJson(doc, out);
+        _server.send(200, "application/json", out);
+#else
+        sendJsonResponse(501, false, F("I2C feature not compiled"));
+#endif
     });
 
     // === AUTOMATION RULES ===

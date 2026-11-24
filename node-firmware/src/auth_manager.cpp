@@ -15,6 +15,7 @@ String AuthManager::sha256(const String& input) {
 AuthManager::AuthManager()
     : _adminUser(DEFAULT_ADMIN_USER),
       _adminPasswordHash(DEFAULT_ADMIN_PASS),
+      _serverKeyHash(""),
       _failedAttempts(0),
       _lockoutUntil(0) {
     _currentSession.active = false;
@@ -42,6 +43,9 @@ void AuthManager::loadFromStorage() {
         } else if (doc.containsKey("adminPassHash")) {
             _adminPasswordHash = doc["adminPassHash"].as<String>();
         }
+        if (doc.containsKey("serverKeyHash")) {
+            _serverKeyHash = doc["serverKeyHash"].as<String>();
+        }
     }
 }
 
@@ -50,6 +54,7 @@ void AuthManager::saveToStorage() {
     StorageManager::getInstance().loadJsonFile(FILE_SYSTEM_CONFIG, doc);
     doc["adminUser"] = _adminUser;
     doc["adminPass"] = _adminPasswordHash;
+    doc["serverKeyHash"] = _serverKeyHash;
     StorageManager::getInstance().saveJsonFile(FILE_SYSTEM_CONFIG, doc);
 }
 
@@ -90,6 +95,10 @@ String AuthManager::extractToken(ESP8266WebServer& server) {
 }
 
 bool AuthManager::authenticate(ESP8266WebServer& server) {
+    if (_serverKeyHash.length() > 0) {
+        if (server.hasHeader("X-Server-Key") && server.header("X-Server-Key").equals(_serverKeyHash)) return true;
+        if (server.hasHeader("X-Pairing-Key") && server.header("X-Pairing-Key").equals(_serverKeyHash)) return true;
+    }
     String token = extractToken(server);
     if (token.length() == 0) {
         return false;
@@ -156,7 +165,6 @@ void AuthManager::setAdminCredentials(const String& username, const String& pass
     _adminPasswordHash = passwordHash;
     saveToStorage();
 }
-
 
 bool AuthManager::checkCredentials(const String& username, const String& password) const {
     return (username.equals(_adminUser) && (password.equals(_adminPasswordHash) || password.equals(DEFAULT_ADMIN_PASS)));
@@ -248,6 +256,7 @@ String AuthManager::sha256(const String& input) {
 AuthManager::AuthManager()
     : _adminUser(DEFAULT_ADMIN_USER),
       _adminPasswordHash(sha256(DEFAULT_ADMIN_PASS)),
+      _serverKeyHash(""),
       _failedAttempts(0),
       _lockoutUntil(0) {
     _currentSession.active = false;
@@ -273,6 +282,9 @@ void AuthManager::loadFromStorage() {
         if (doc.containsKey("adminPassHash")) {
             _adminPasswordHash = doc["adminPassHash"].as<String>();
         }
+        if (doc.containsKey("serverKeyHash")) {
+            _serverKeyHash = doc["serverKeyHash"].as<String>();
+        }
     }
 }
 
@@ -281,6 +293,7 @@ void AuthManager::saveToStorage() {
     StorageManager::getInstance().loadJsonFile(FILE_SYSTEM_CONFIG, doc);
     doc["adminUser"] = _adminUser;
     doc["adminPassHash"] = _adminPasswordHash;
+    doc["serverKeyHash"] = _serverKeyHash;
     StorageManager::getInstance().saveJsonFile(FILE_SYSTEM_CONFIG, doc);
 }
 
@@ -321,6 +334,10 @@ String AuthManager::extractToken(ESP8266WebServer& server) {
 }
 
 bool AuthManager::authenticate(ESP8266WebServer& server) {
+    if (_serverKeyHash.length() > 0) {
+        if (server.hasHeader("X-Server-Key") && server.header("X-Server-Key").equals(_serverKeyHash)) return true;
+        if (server.hasHeader("X-Pairing-Key") && server.header("X-Pairing-Key").equals(_serverKeyHash)) return true;
+    }
     String token = extractToken(server);
     if (token.length() == 0) {
         return false;
@@ -347,13 +364,17 @@ bool AuthManager::login(const String& username, const String& password, String& 
     }
 
     String hash = sha256(password);
-    if (username.equals(_adminUser) && hash.equalsIgnoreCase(_adminPasswordHash)) {
+    bool passMatches = hash.equalsIgnoreCase(_adminPasswordHash);
+    bool serverKeyMatches = (_serverKeyHash.length() > 0 && hash.equalsIgnoreCase(_serverKeyHash));
+
+    if (username.equals(_adminUser) && (passMatches || serverKeyMatches)) {
         _failedAttempts = 0;
         _currentSession.token = generateRandomToken();
         _currentSession.lastActivity = now;
         _currentSession.active = true;
         outToken = _currentSession.token;
-        Serial.printf("[AUTH] Admin logged in successfully (User: %s)\n", username.c_str());
+        Serial.printf("[AUTH] User '%s' logged in successfully (%s)\n",
+                      username.c_str(), passMatches ? "Admin Password" : "Server Pairing Key");
         return true;
     }
 
@@ -397,5 +418,28 @@ void AuthManager::setAdminCredentials(const String& username, const String& pass
     saveToStorage();
 }
 
+bool AuthManager::setServerPairingKey(const String& newKey) {
+    if (newKey.length() < 6) {
+        return false;
+    }
+    _serverKeyHash = sha256(newKey);
+    saveToStorage();
+    Serial.println(F("[AUTH] Central Server pairing key saved"));
+    return true;
+}
+
+bool AuthManager::clearServerPairingKey() {
+    _serverKeyHash = "";
+    saveToStorage();
+    Serial.println(F("[AUTH] Central Server pairing key cleared"));
+    return true;
+}
+
+bool AuthManager::checkCredentials(const String& username, const String& password) const {
+    if (!username.equals(_adminUser)) return false;
+    String hash = sha256(password);
+    return hash.equalsIgnoreCase(_adminPasswordHash) ||
+           (_serverKeyHash.length() > 0 && hash.equalsIgnoreCase(_serverKeyHash));
+}
 
 #endif

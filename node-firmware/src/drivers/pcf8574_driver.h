@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <vector>
 #include "config.h"
 
 #if FEATURE_PCF8574
@@ -40,6 +41,7 @@ public:
     uint8_t getSclPin() const { return _sclPin; }
 
     bool reinit(uint8_t sdaPin, uint8_t sclPin, uint8_t defaultAddr = PCF8574_DEFAULT_ADDR);
+    std::vector<uint8_t> scanBus(uint8_t sdaPin, uint8_t sclPin);
 
 private:
     Pcf8574Driver();
