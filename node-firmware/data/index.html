@@ -239,12 +239,12 @@
             <div class="card-header" style="cursor: pointer;" onclick="app.toggleI2cPanel()">
               <h3 style="margin: 0; display: flex; align-items: center; justify-content: space-between; width: 100%;">
                 <span>🔌 I2C Pin Expander (PCF8574) & Bus Settings</span>
-                <span id="i2c-status-badge" class="badge badge-secondary">Disabled</span>
+                <span id="i2c-status-badge" class="badge badge-secondary">Disabled (D1 & D2 Free)</span>
               </h3>
             </div>
             <div id="i2c-panel-body">
               <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 8px;">
-                Enable I2C communication on custom pins to connect an 8-Channel PCF8574 I2C Expander module. Extended pins P0 through P7 (pins 100–107) will automatically unlock in the GPIO list.
+                Enable I2C communication on custom pins to connect an 8-Channel PCF8574 I2C Expander module. When enabled, extended pins P0 through P7 (pins 100–107) are available for relays, and SDA/SCL pins are reserved for the bus. When disabled, SDA and SCL pins function as normal relay outputs.
               </p>
               <form id="i2c-settings-form" onsubmit="event.preventDefault(); app.saveI2cSettings();">
                 <div class="form-group checkbox-group" style="margin-bottom: 12px;">
@@ -254,7 +254,11 @@
                   </label>
                 </div>
 
-                <div id="i2c-options-fields" style="display: none;">
+                <div id="i2c-disabled-note" style="padding: 10px; background: var(--bg-hover); border-radius: 6px; margin-bottom: 12px; font-size: 0.9rem; color: var(--text-muted); display: none;">
+                  ℹ️ I2C is currently <strong>Disabled</strong>. Pins D1 (GPIO 5) and D2 (GPIO 4) are free to be used as regular relay outputs. Click <strong>Save I2C Settings</strong> below to apply.
+                </div>
+
+                <div id="i2c-options-fields">
                   <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
                     <div class="form-group">
                       <label for="i2c-sda-select">SDA Pin (Data)</label>
@@ -282,17 +286,18 @@
 
                     <div class="form-group">
                       <label for="i2c-addr-input">Preferred I2C Address</label>
-                      <input type="text" id="i2c-addr-input" value="0x27" placeholder="0x27 (Default)">
+                      <input type="text" id="i2c-addr-input" value="0x20" placeholder="0x20 or 0x27">
                     </div>
                   </div>
 
                   <div id="i2c-scan-result" style="margin-top: 10px; font-size: 0.9rem; padding: 10px; border-radius: 6px; background: var(--bg-hover); display: none;"></div>
+                </div>
 
-                  <div class="action-buttons" style="margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap;">
-                    <button type="submit" class="btn btn-primary btn-sm">💾 Save I2C Settings</button>
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="app.saveI2cSettings(true)">🔄 Save & Reboot Node</button>
-                    <button type="button" class="btn btn-secondary btn-sm" onclick="app.scanI2cBus()">🔍 Scan I2C Bus</button>
-                  </div>
+                <!-- Action buttons are always visible whether enabled or disabled! -->
+                <div class="action-buttons" style="margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap;">
+                  <button type="submit" class="btn btn-primary btn-sm">💾 Save I2C Settings</button>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="app.saveI2cSettings(true)">🔄 Save & Reboot Node</button>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="app.scanI2cBus()">🔍 Scan I2C Bus</button>
                 </div>
               </form>
             </div>

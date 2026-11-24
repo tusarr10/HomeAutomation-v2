@@ -1730,7 +1730,8 @@ const app = {
       });
       const data = await res.json();
       if (data.success) {
-        alert(data.message || (reboot ? 'Settings saved. Device restarting...' : 'I2C settings saved!'));
+        const msg = data.message || (enabled ? 'I2C Expander ENABLED! Pins P0-P7 are active.' : 'I2C Expander DISABLED. Pins D1 & D2 are now free for regular relays.');
+        alert(reboot ? (msg + ' Device restarting...') : msg);
         if (!reboot) {
           await this.loadI2cSettings();
           await this.loadGpios();

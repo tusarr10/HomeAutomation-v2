@@ -153,8 +153,7 @@ void loop() {
                                            ((a == 0x48) ? "ADS1115 ADC" : "Generic I2C Device"))));
                         Serial.printf("      * Address: 0x%02X (%u decimal) -> %s\n", a, a, type);
                     }
-                    GpioManager::getInstance().setI2cConfig(true, p.sda, p.scl, devs[0]);
-                    Serial.printf("[I2C] -> Configured & Saved to LittleFS (SDA=%u, SCL=%u, Addr=0x%02X)\n", p.sda, p.scl, devs[0]);
+                    Serial.printf("      (Tip: Use Web UI to enable/disable or change pins as needed)\n");
                 }
             }
             if (!anyFound) {
@@ -338,8 +337,7 @@ void loop() {
                                            ((a == 0x48) ? "ADS1115 ADC" : "Generic I2C Device"))));
                         Serial.printf("      * Address: 0x%02X (%u decimal) -> %s\n", a, a, type);
                     }
-                    GpioManager::getInstance().setI2cConfig(true, p.sda, p.scl, devs[0]);
-                    Serial.printf("[I2C] -> Configured & Saved to LittleFS (SDA=%u, SCL=%u, Addr=0x%02X)\n", p.sda, p.scl, devs[0]);
+                    Serial.printf("      (Tip: Use Web UI to enable/disable or change pins as needed)\n");
                 }
             }
             if (!anyFound) {
@@ -516,8 +514,7 @@ void loop() {
                                            ((a == 0x48) ? "ADS1115 ADC" : "Generic I2C Device"))));
                         Serial.printf("      * Address: 0x%02X (%u decimal) -> %s\n", a, a, type);
                     }
-                    GpioManager::getInstance().setI2cConfig(true, p.sda, p.scl, devs[0]);
-                    Serial.printf("[I2C] -> Configured & Saved to LittleFS (SDA=%u, SCL=%u, Addr=0x%02X)\n", p.sda, p.scl, devs[0]);
+                    Serial.printf("      (Tip: Use Web UI to enable/disable or change pins as needed)\n");
                 }
             }
             if (!anyFound) {
