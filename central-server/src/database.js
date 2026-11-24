@@ -566,6 +566,7 @@ class FleetDatabase {
     try { this.db.exec(`ALTER TABLE nodes ADD COLUMN home_id INTEGER DEFAULT NULL`); } catch {}
     try { this.db.exec(`ALTER TABLE nodes ADD COLUMN room_id INTEGER DEFAULT NULL`); } catch {}
     try { this.db.exec(`ALTER TABLE nodes ADD COLUMN assigned_at REAL DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE relays ADD COLUMN icon TEXT DEFAULT 'light'`); } catch {}
 
     this.seedDefaults();
     this.deduplicateFleetNodes();
@@ -1237,6 +1238,7 @@ class FleetDatabase {
       pin: r.pin,
       name: r.name,
       room: r.room,
+      icon: r.icon || 'light',
       function: r.function,
       activeLow: r.active_low,
       initialMode: r.initial_mode,
@@ -1263,6 +1265,7 @@ class FleetDatabase {
       pin: r.pin,
       name: r.name,
       room: r.room,
+      icon: r.icon || 'light',
       function: r.function,
       activeLow: r.active_low,
       initialMode: r.initial_mode,
@@ -1317,6 +1320,7 @@ class FleetDatabase {
       pin: r.pin,
       name: r.name,
       room: r.room,
+      icon: r.icon || 'light',
       function: r.function,
       active_low: Boolean(r.active_low),
       activeLow: Boolean(r.active_low),
@@ -1350,6 +1354,7 @@ class FleetDatabase {
       pin: row.pin,
       name: row.name,
       room: row.room,
+      icon: row.icon || 'light',
       function: row.function,
       active_low: Boolean(row.active_low),
       enabled: Boolean(row.enabled),
@@ -2769,7 +2774,18 @@ class FleetDatabase {
     return this.getRoomById(Number(res.lastInsertRowid));
   }
 
-  getRooms(homeId, userId = null, isSuperUser = false) {
+  getRooms(homeId = null, userId = null, isSuperUser = false) {
+    if (!homeId) {
+      return this.db.prepare(`
+        SELECT r.*,
+               h.name AS home_name,
+               (SELECT COUNT(*) FROM nodes n WHERE n.room_id = r.id) AS nodes_count,
+               (SELECT COUNT(*) FROM room_members rm WHERE rm.room_id = r.id) AS members_count
+        FROM rooms r
+        JOIN homes h ON r.home_id = h.id
+        ORDER BY r.floor ASC, r.name ASC
+      `).all();
+    }
     let sql = `
       SELECT r.*,
              h.name AS home_name,

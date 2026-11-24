@@ -214,90 +214,68 @@ The edge broker communicates directly with the Wi-Fi Smart Circuit Breaker via T
 
 ## 4. REST & WebSocket API Specification (Port 9200)
 
-### 4.1 System & Health Endpoints
+### 4.1 Authentication & Session Management
+- `POST /api/v1/auth/login`: Signs in user, generates HMAC-SHA256 JWT session token.
+- `GET /api/v1/auth/me`: Validates session and returns user profile, role, and permission scopes.
+- `POST /api/v1/auth/logout`: Terminates active session.
+- `POST /api/v1/auth/change-password`: Updates user password.
 
-#### `GET /api/v1/health`
-Returns broker health, uptime, memory allocation, and central server connectivity.
-```json
-{
-  "status": "healthy",
-  "uptimeSec": 18450,
-  "memory": {
-    "allocMb": "4.21 MB",
-    "sysMb": "14.85 MB",
-    "goroutines": 12
-  },
-  "centralOnline": true
-}
-```
+### 4.2 System, Metrics & Alerts
+- `GET /api/v1/system/overview`: Fleet counts (online/offline), relay counters (on/off), sensor counts, protocol statuses, and central online flag.
+- `GET /api/v1/system/notifications`: In-memory system alerts.
+- `GET /api/v1/system/notifications/unread-count`: Unread notifications counter badge.
+- `POST /api/v1/system/notifications/mark-read`: Marks all alerts read.
+- `GET /api/v1/system/logs`: Live edge broker runtime logs.
+- `GET /api/v1/system/events`: Recent circular event spool (`events.jsonl`).
+- `GET /api/v1/system/poll-settings` & `POST /api/v1/system/poll-now`: Immediate hardware poll trigger.
+- `GET /api/v1/edge/status`: Edge runtime memory, goroutine count, and central server sync status.
 
-#### `GET /api/v1/edge/status`
-Edge broker metadata and node metrics.
-```json
-{
-  "server": "SmartHome Edge Broker (Go Native ARM64/AMD64)",
-  "uptimeSec": 18450,
-  "centralServer": "http://192.168.1.10:9100",
-  "centralOnline": true,
-  "memoryMb": "4.2 MB",
-  "nodesCount": 4
-}
-```
+### 4.3 Fleet Nodes Management
+- `GET /api/v1/nodes`: Lists all fleet microcontrollers with full channel, pin, and sensor tables.
+- `GET /api/v1/nodes/{id}`: Single node telemetry detail.
+- `POST /api/v1/nodes/add`: Manual node registration.
+- `DELETE /api/v1/nodes/{id}`: Unregisters a node from the edge broker.
+- `POST /api/v1/nodes/{id}/restart`: Issues soft reboot command via LAN HTTP + TCP fallback.
+- `POST /api/v1/nodes/{id}/sync-pins`: Synchronizes hardware GPIO pins from node.
+- `GET /api/v1/nodes/discovery/subnets` & `POST /api/v1/nodes/discovery/scan`: Local subnet scan.
 
----
+### 4.4 GPIO & Relays Control
+- `GET /api/v1/relays`: Returns all relays across all fleet nodes (filterable by `room`, `node_id`, `state`).
+- `POST /api/v1/relays/sync`: Synchronizes hardware relays across nodes.
+- `POST /api/v1/relays/{nodeId}/{channelId}/command`: Actuates relay (`setState`, `toggle`, `pulse`), triggers sub-30ms LAN push, logs to spool, and streams to Central Server.
+- `POST /api/v1/relays/broadcast`: Whole-home or per-room broadcast (`{"state": false, "room": "Living Room"}`).
+- `GET /api/v1/relays/{nodeId}/{channelId}/history`: Micro-history log for individual relay channels.
 
-### 4.2 Fleet Node Control Endpoints
+### 4.5 Sensors & Environment
+- `GET /api/v1/sensors`: Ingested temperature, humidity, power, and environmental telemetry.
 
-#### `GET /api/v1/nodes`
-Returns all active nodes. Scoped according to the bearer token (`claims.AssignedNodes`).
-```json
-{
-  "nodes": [
-    {
-      "nodeId": "NODE-30487DE85D5C",
-      "nodeName": "Living Room Hub",
-      "ip": "192.168.1.105",
-      "mac": "30:48:7D:E8:5D:5C",
-      "rssi": -58,
-      "uptimeSec": 1420,
-      "freeHeap": 41200,
-      "firmwareVersion": "1.6.0",
-      "isOnline": true,
-      "protocol": "TCP",
-      "lastSeenEpoch": 1732371230,
-      "channels": [
-        {
-          "id": 1,
-          "pin": 14,
-          "name": "Main Light",
-          "state": true
-        }
-      ]
-    }
-  ],
-  "centralOnline": true
-}
-```
+### 4.6 Edge Automation Engine
+- `GET /api/v1/automations`: Active automation rules.
+- `POST /api/v1/automations`: Registers a local edge automation rule (runs 24/7 on router).
+- `POST /api/v1/automations/{id}/toggle`: Toggles rule enabled/disabled.
+- `DELETE /api/v1/automations/{id}`: Removes an automation rule.
 
-#### `POST /api/v1/nodes/{nodeId}/commands`
-Actuates a channel relay.
-**Request:**
-```json
-{
-  "channelId": 1,
-  "state": true
-}
-```
-**Response:**
-```json
-{
-  "status": "accepted",
-  "command": {
-    "command_uuid": "cmd-1732371234567890",
-    "action": "setState",
-    "type": "SET_PIN",
-    "channel": 1,
-    "pin": 14,
+### 4.7 Smart Circuit Breaker
+- `GET /api/v1/breaker` & `GET /api/v1/breaker/status`: Live electrical measurements (V, A, W, kWh, Hz, °C, mA).
+- `POST /api/v1/breaker/switch` & `POST /api/v1/breaker/toggle`: Trips or closes main contact switch (DP 108).
+- `POST /api/v1/breaker/control`: Writes custom Tuya DP.
+- `POST /api/v1/breaker/refresh`: Queries Tuya socket directly.
+- `GET /api/v1/breaker/devices`: Breaker hardware profiles and configuration.
+
+### 4.8 Homes & Rooms Structure
+- `GET /api/v1/homes` & `POST /api/v1/homes`: Home tenancy configuration.
+- `GET /api/v1/homes/{id}/rooms` & `POST /api/v1/homes/{id}/rooms`: Room hierarchies.
+- `GET /api/v1/rooms/{id}` & `DELETE /api/v1/rooms/{id}`: Room management.
+
+### 4.9 LittleFS File Explorer & OTA
+- `GET /api/v1/nodes/{id}/fs`: Proxies LittleFS filesystem directory directly from node.
+- `GET /api/v1/nodes/{id}/fs/file-content`: Views file content from microcontroller flash.
+- `POST /api/v1/ota/deploy`: Triggers OTA firmware deployment to node.
+- `GET /api/v1/ota/node-diagnostics/{id}`: Pre-OTA memory & flash health diagnostics.
+
+### 4.10 Commands Center
+- `GET /api/v1/commands`: Recent command dispatch history, queue state, and execution ACKs.
+- `POST /api/v1/commands/dispatch`: Queues arbitrary command frame to node.
     "state": true
   }
 }

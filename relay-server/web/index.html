@@ -3,94 +3,189 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SmartHome Edge Broker &bull; MT7986A</title>
-  <link rel="stylesheet" href="/style.css">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>SmartHome Central Management Platform</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
+  <link rel="stylesheet" href="/assets/style.css?v=2.5.0">
 </head>
 <body>
-  <!-- HEADER -->
-  <header class="header">
-    <div class="header-left">
-      <div class="logo">⚡</div>
-      <div>
-        <h1 class="title">SmartHome <span class="tag">Edge Broker (Go)</span></h1>
-        <div class="subtitle">Jio AX6000 &bull; Filogic 830 / ARM64</div>
-      </div>
-    </div>
-    <div class="header-right">
-      <div id="central-status" class="pill pill-offline">
-        <span class="dot"></span>
-        <span id="central-status-text">Central: Checking...</span>
-      </div>
-      <div id="ws-status" class="pill pill-info">
-        <span>📡</span> <span id="ws-status-text">WS: Connecting...</span>
-      </div>
-    </div>
-  </header>
-
-  <!-- NAVIGATION TABS -->
-  <nav class="nav">
-    <button class="nav-btn active" data-tab="switches">🔌 Switches (<span id="switch-count">0</span>)</button>
-    <button class="nav-btn" data-tab="breaker">⚡ Smart Breaker</button>
-    <button class="nav-btn" data-tab="events">📜 Event Spool</button>
-    <button class="nav-btn" data-tab="system">🖧 Edge Diagnostics</button>
-  </nav>
-
-  <!-- MAIN VIEWS -->
-  <main class="content">
-
-    <!-- 1. SWITCHES VIEW -->
-    <section id="view-switches" class="view active">
-      <div class="view-header">
-        <h2>Live Relays & Channels</h2>
-        <button class="btn" onclick="fetchNodes()">🔄 Refresh</button>
-      </div>
-      <div id="switches-grid" class="grid">
-        <div class="empty">Waiting for ESP8266 node telemetry on port 2000...</div>
-      </div>
-    </section>
-
-    <!-- 2. CIRCUIT BREAKER VIEW -->
-    <section id="view-breaker" class="view">
-      <div id="breaker-container">
-        <div style="padding: 40px; text-align: center; color: var(--text-secondary);">
-          <div style="font-size: 32px; margin-bottom: 12px;">⚡</div>
-          <div>Loading Smart Circuit Breaker Telemetry...</div>
+  <!-- DEDICATED FULLSCREEN LOGIN SCREEN -->
+  <div id="login-screen" class="login-screen-overlay" style="display: none;">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="login-brand-icon">
+          <img src="/assets/logo.svg" alt="SmartHome Logo" class="login-logo-img">
+        </div>
+        <h2 class="login-title">SmartHome Platform</h2>
+        <p class="login-subtitle">Central Fleet Management & Telemetry System</p>
+        <div class="login-auth-badge">
+          <span>🔐</span> Authentication Required
         </div>
       </div>
-    </section>
 
-    <!-- 3. EVENT SPOOL VIEW -->
-    <section id="view-events" class="view">
-      <div class="view-header">
-        <h2>Bounded Event Spool (Disk)</h2>
-        <button class="btn" onclick="fetchEvents()">🔄 Refresh</button>
-      </div>
-      <div id="events-list" class="events-box">
-        <div class="empty">No events spooled yet.</div>
-      </div>
-    </section>
+      <form id="login-form" class="login-form" onsubmit="handleLoginSubmit(event)">
+        <div class="form-group">
+          <label for="login-username" class="form-label">Username</label>
+          <div class="input-with-icon">
+            <span class="input-icon">👤</span>
+            <input type="text" id="login-username" class="login-input" placeholder="Username (e.g. admin)" autocomplete="username" required>
+          </div>
+        </div>
 
-    <!-- 4. EDGE SYSTEM VIEW -->
-    <section id="view-system" class="view">
-      <div class="view-header">
-        <h2>Edge Broker Diagnostics</h2>
-      </div>
-      <div class="diag-card">
-        <div class="d-item"><span>Platform Architecture:</span> <b>MediaTek MT7986A / ARM64</b></div>
-        <div class="d-item"><span>Runtime:</span> <b>Pure Native Go (Zero Dependencies)</b></div>
-        <div class="d-item"><span>Broker Memory (Allocated):</span> <b id="diag-mem">-- MB</b></div>
-        <div class="d-item"><span>Uptime:</span> <b id="diag-uptime">-- sec</b></div>
-        <div class="d-item"><span>Central Server PC Link:</span> <b id="diag-central">--</b></div>
-        <div class="d-item"><span>Connected ESP Nodes:</span> <b id="diag-nodes">0</b></div>
-      </div>
-    </section>
+        <div class="form-group">
+          <label for="login-password" class="form-label">Password</label>
+          <div class="input-with-icon">
+            <span class="input-icon">🔒</span>
+            <input type="password" id="login-password" class="login-input" placeholder="Password" autocomplete="current-password" required>
+            <button type="button" class="pwd-toggle-btn" onclick="toggleLoginPasswordVisibility()" title="Show/Hide Password">👁️</button>
+          </div>
+        </div>
 
-  </main>
+        <div id="login-error-msg" class="login-error-alert" style="display: none;"></div>
 
+        <button type="submit" id="login-submit-btn" class="login-submit-btn">
+          <span>Sign In to Dashboard</span>
+          <span class="login-btn-arrow">→</span>
+        </button>
+      </form>
+
+      <div class="login-footer">
+        <span>Protected Fleet Management System &bull; Authorized Personnel Only</span>
+      </div>
+    </div>
+  </div>
+  <!-- SIDEBAR NAVIGATION (RBAC, LittleFS, Config Sync, Commands, Fleet) -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="brand-icon">
+        <img src="/assets/logo.svg" alt="SmartHome Logo" class="brand-logo-img">
+      </div>
+      <div>
+        <div class="brand-title">SmartHome</div>
+        <div class="brand-sub">Central Management Platform</div>
+      </div>
+    </div>
+
+    <ul class="nav-list">
+      <li class="nav-item active" data-view="overview">
+        <span class="nav-icon">📊</span>
+        <span>Overview</span>
+      </li>
+      <li class="nav-item" data-view="nodes">
+        <span class="nav-icon">🖧</span>
+        <span>Nodes</span>
+      </li>
+      <li class="nav-item" data-view="relays">
+        <span class="nav-icon">🔌</span>
+        <span>GPIO / Relays</span>
+      </li>
+      <li class="nav-item" data-view="sensors">
+        <span class="nav-icon">🌡️</span>
+        <span>Sensors</span>
+      </li>
+      <li class="nav-item" data-view="breaker">
+        <span class="nav-icon">⚡</span>
+        <span>Smart Breaker</span>
+        <span class="status-badge badge-online" style="font-size: 9px; padding: 1px 5px; margin-left: auto;">LAN</span>
+      </li>
+      <li class="nav-item" data-view="automation">
+        <span class="nav-icon">⚙️</span>
+        <span>Automation</span>
+      </li>
+      <li class="nav-item" data-view="firmware">
+        <span class="nav-icon">📦</span>
+        <span>Firmware / OTA</span>
+      </li>
+      <li class="nav-item" data-view="littlefs">
+        <span class="nav-icon">📁</span>
+        <span>LittleFS Manager</span>
+      </li>
+      <li class="nav-item" data-view="config-sync">
+        <span class="nav-icon">🔄</span>
+        <span>Config & Sync</span>
+      </li>
+      <li class="nav-item" data-view="commands">
+        <span class="nav-icon">⚡</span>
+        <span>Command Center</span>
+      </li>
+      <li class="nav-item" data-view="telemetry">
+        <span class="nav-icon">📡</span>
+        <span>Telemetry</span>
+      </li>
+      <li class="nav-item" data-view="events">
+        <span class="nav-icon">🕒</span>
+        <span>Events</span>
+      </li>
+      <li class="nav-item" data-view="notifications">
+        <span class="nav-icon">🔔</span>
+        <span>Notifications</span>
+        <span class="notif-badge" id="nav-notif-badge" style="display:none; margin-left: auto;">0</span>
+      </li>
+      <li class="nav-item" data-view="network">
+        <span class="nav-icon">🌐</span>
+        <span>Network</span>
+      </li>
+      <li class="nav-item" data-view="users">
+        <span class="nav-icon">👥</span>
+        <span>RBAC & Users</span>
+      </li>
+      <li class="nav-item" data-view="database">
+        <span class="nav-icon">🗄️</span>
+        <span>Database</span>
+      </li>
+      <li class="nav-item" data-view="settings">
+        <span class="nav-icon">🛠️</span>
+        <span>Settings</span>
+      </li>
+      <li class="nav-item" data-view="logs">
+        <span class="nav-icon">📜</span>
+        <span>System Logs</span>
+      </li>
+    </ul>
+  </aside>
+
+  <!-- MAIN WRAPPER -->
+  <div class="main-wrapper">
+    <header class="topbar">
+      <div class="topbar-left">
+        <h1 class="view-title" id="view-title">Overview</h1>
+        <span id="ws-badge" class="status-badge badge-sync">
+          <span class="pulse-dot"></span> Connecting...
+        </span>
+      </div>
+
+      <div class="topbar-right" style="display: flex; align-items: center; gap: 14px;">
+        <div id="topbar-sync-indicator" onclick="triggerManualPoll()" title="Click to trigger instant health and pin sync" style="cursor: pointer; padding: 6px 12px; border-radius: 8px; background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.3); display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: #93c5fd;">
+          <span>⚡</span>
+          <span id="topbar-sync-text">Auto-Sync: 10s</span>
+        </div>
+        <div class="topbar-notif-btn" onclick="switchView('notifications')" title="Live Fleet Notifications" style="cursor: pointer; position: relative; padding: 6px 12px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-color); display: flex; align-items: center; gap: 6px; transition: all 0.2s ease;">
+          <span>🔔</span>
+          <span style="font-size: 12.5px; font-weight: 600; color: var(--text-primary);">Alerts</span>
+          <span id="topbar-notif-count" class="badge-count" style="display:none;">0</span>
+        </div>
+        <!-- Active User & Session Profile Pill -->
+        <div id="topbar-user-badge" onclick="handleUserBadgeClick()" title="Active Session | Click to manage account or sign out" style="cursor: pointer; padding: 6px 12px; border-radius: 8px; background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.3); display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; color: #a7f3d0; transition: all 0.2s ease;">
+          <span>👤</span>
+          <span id="topbar-username">User</span>
+          <span id="topbar-role" class="status-badge badge-online" style="font-size: 10px; padding: 2px 6px;">AUTHENTICATING</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="content-area" id="content-area">
+      <!-- Dynamic View Injected Here -->
+    </main>
+  </div>
+
+  <!-- Modal Container -->
+  <div id="app-modal-container"></div>
+
+  <!-- Floating Toast Notification Container -->
   <div id="toast-container" class="toast-container"></div>
-  <div id="global-modal-overlay" class="modal-overlay"></div>
-  <div id="toast" class="toast"></div>
 
-  <script src="/app.js"></script>
+  <script src="/assets/app.js?v=2.5.0"></script>
 </body>
 </html>

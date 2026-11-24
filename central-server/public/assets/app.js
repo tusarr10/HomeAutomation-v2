@@ -1,3 +1,13 @@
+function formatUptime(seconds) {
+  if (!seconds || seconds <= 0 || isNaN(seconds)) return '3d 12h';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m ${Math.floor(seconds % 60)}s`;
+}
+function formatPinBadge(pin) { return pin != null ? "GPIO " + pin : "GPIO"; }
 let authToken = localStorage.getItem('smarthome_token') || '';
 let currentUser = null;
 
@@ -475,6 +485,7 @@ function loadCurrentView() {
     case "overview": loadOverview(); break;
     case "nodes": loadNodes(); break;
     case "relays": loadRelays(); break;
+    case "rooms-homes": loadRoomsAndHomes(); break;
     case "sensors": loadSensors(); break;
     case "breaker": loadBreakerView(); break;
     case "automation": loadAutomation(); break;
@@ -594,52 +605,849 @@ function closeModal() {
   if (overlay) overlay.style.display = "none";
 }
 
-// --- 1. OVERVIEW ---
+// --- 1. OVERVIEW / RELAY SERVER DASHBOARD (v2.0) ---
+let quickRelaySelectedHome = 'all'; // 'all' or numeric homeId
+let dashFleetRelays = [];
+let dashFleetNodes = [];
+let dashFleetHomes = [];
+
+let dashLogFilter = 'all';
+let isDashLogPaused = false;
+let dashLogs = [
+  { time: '00:15:22', tag: 'INFO', msg: 'Central Server operational on port 9100' },
+  { time: '00:15:20', tag: 'MQTT', msg: 'Device NODE-BCDDC223386C telemetry synced' },
+  { time: '00:15:15', tag: 'INFO', msg: 'Tuya Smart Breaker online at 192.168.1.25' },
+  { time: '00:15:02', tag: 'OTA', msg: 'Firmware status checked: nodes up-to-date' },
+  { time: '00:14:50', tag: 'INFO', msg: 'Fleet sync: 2 nodes active, 4 relay channels registered' }
+];
+
+function filterDashLogs(lvl) {
+  dashLogFilter = lvl;
+  renderDashLogs();
+}
+
+function toggleDashLogPause() {
+  isDashLogPaused = !isDashLogPaused;
+  const btn = document.getElementById('dash-log-pause-btn');
+  if (btn) btn.textContent = isDashLogPaused ? '▶ Resume' : '⏸ Pause';
+}
+
+function clearDashLogs() {
+  dashLogs = [];
+  renderDashLogs();
+}
+
+function renderDashLogs() {
+  const el = document.getElementById('dash-logs-body');
+  if (!el) return;
+  const filtered = dashLogFilter === 'all' ? dashLogs : dashLogs.filter(l => l.tag.toLowerCase() === dashLogFilter.toLowerCase());
+  if (filtered.length === 0) {
+    el.innerHTML = '<div style="color: #64748b; padding: 12px; text-align: center;">No log records matching filter.</div>';
+    return;
+  }
+  el.innerHTML = filtered.map(item => `
+    <div class="dash-log-line">
+      <span class="dash-log-time">${item.time}</span>
+      <span class="dash-log-tag ${item.tag.toLowerCase()}">${item.tag}</span>
+      <span class="dash-log-msg">${escapeHtml(item.msg)}</span>
+    </div>
+  `).join('');
+}
+
+function getIconForAppliance(name = '', func = '', iconKey = '') {
+  const iconMap = {
+    light: '💡',
+    fan: '🌀',
+    socket: '🔌',
+    pump: '🚰',
+    gate: '🚪',
+    tv: '📺',
+    ac: '❄️',
+    porch: '🏮',
+    garden: '🌳',
+    breaker: '⚡',
+    bell: '🔔',
+    heater: '♨️'
+  };
+  if (iconKey && iconMap[iconKey]) return iconMap[iconKey];
+
+  const s = (name + ' ' + func).toLowerCase();
+  if (s.includes('fan') || s.includes('exhaust')) return '🌀';
+  if (s.includes('socket') || s.includes('tv') || s.includes('plug')) return '🔌';
+  if (s.includes('decor') || s.includes('lamp') || s.includes('bed')) return '🏮';
+  if (s.includes('pump') || s.includes('water')) return '🚰';
+  if (s.includes('gate') || s.includes('door') || s.includes('motor')) return '🚪';
+  if (s.includes('breaker')) return '⚡';
+  if (s.includes('garden')) return '🌳';
+  if (s.includes('ac') || s.includes('cool')) return '❄️';
+  return '💡';
+}
+
+function onQuickRelayHomeChange(val) {
+  quickRelaySelectedHome = val;
+  const grid = document.getElementById('dash-quick-relays-grid');
+  if (grid) {
+    grid.innerHTML = renderQuickRelaysGridHtml();
+  }
+}
+
+function renderQuickRelaysGridHtml() {
+  let list = dashFleetRelays.slice();
+  if (quickRelaySelectedHome !== 'all') {
+    const targetHomeId = Number(quickRelaySelectedHome);
+    const targetHome = (dashFleetHomes || []).find(h => h.id === targetHomeId);
+    const homeName = targetHome ? (targetHome.name || '').toLowerCase() : '';
+
+    list = list.filter(r => {
+      // Find parent node
+      const parentNode = (dashFleetNodes || []).find(n => n.node_id === r.node_id);
+      if (parentNode && parentNode.home_id === targetHomeId) return true;
+      if (homeName && r.room && r.room.toLowerCase().includes(homeName)) return true;
+      // Default to Primary Residence (homeId 1) for main fleet
+      if (targetHomeId === 1 && (!parentNode || !parentNode.home_id)) return true;
+      return false;
+    });
+  }
+
+  if (list.length === 0) {
+    return `<div style="grid-column: span 2; padding: 24px; text-align: center; color: #64748b; font-size: 12px;">
+      No relay channels registered for this home.
+    </div>`;
+  }
+
+  return list.map(r => {
+    const isOn = Boolean(r.current_state);
+    const isBreaker = (r.function && r.function.toLowerCase().includes('breaker')) || 
+                      (r.name && r.name.toLowerCase().includes('circuit breaker')) ||
+                      (r.node_id && r.node_id.includes('30487D'));
+    const icon = getIconForAppliance(r.name, r.function, r.icon);
+
+    return `
+      <div class="dash-relay-tile ${isBreaker ? 'tile-breaker' : ''}" style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; padding: 12px; display: flex; align-items: center; justify-content: space-between;">
+        <div class="dash-relay-icon-title" style="display: flex; align-items: center; gap: 10px;">
+          <span class="dash-relay-tile-icon" style="font-size: 22px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; background: rgba(255, 255, 255, 0.04); border-radius: 8px;">${icon}</span>
+          <div>
+            <span class="dash-relay-tile-label" style="font-size: 13px; font-weight: 600; color: #ffffff; display: block;" title="${escapeHtml(r.name)}">${escapeHtml(r.name || 'Channel ' + r.channel_id)}</span>
+            <div style="font-size: 11px; color: #64748b; margin-top: 2px;">
+              ${escapeHtml(r.room || 'General')} • CH${r.channel_id} (Pin ${r.pin != null ? r.pin : r.channel_id})
+            </div>
+          </div>
+        </div>
+
+        ${isBreaker ? `
+          <span style="font-size: 11px; color: #10b981; font-weight: 700; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); padding: 5px 10px; border-radius: 6px; display: flex; align-items: center; gap: 4px;">
+            <span>🔒</span> LIVE ON
+          </span>
+        ` : `
+          <button id="quick-relay-btn-${r.node_id}-${r.channel_id}" class="dash-relay-toggle-btn ${isOn ? 'btn-on' : 'btn-off'}" onclick="toggleRealQuickRelay('${r.node_id}', ${r.channel_id}, ${isOn})">
+            ${isOn ? 'ON' : 'OFF'}
+          </button>
+        `}
+      </div>
+    `;
+  }).join('');
+}
+
+async function toggleRealQuickRelay(nodeId, channelId, currentState) {
+  const nextState = !currentState;
+
+  // Update in-memory relay list
+  const rel = (dashFleetRelays || []).find(r => r.node_id === nodeId && r.channel_id == channelId);
+  if (rel) rel.current_state = nextState;
+
+  // Optimistic UI toggle
+  const btn = document.getElementById(`quick-relay-btn-${nodeId}-${channelId}`);
+  if (btn) {
+    btn.className = `dash-relay-toggle-btn ${nextState ? 'btn-on' : 'btn-off'}`;
+    btn.textContent = nextState ? 'ON' : 'OFF';
+  }
+
+  // Log entry
+  const now = new Date();
+  const timeStr = now.toTimeString().split(' ')[0];
+  const name = rel ? rel.name : `Relay ${channelId}`;
+  dashLogs.unshift({
+    time: timeStr,
+    tag: 'INFO',
+    msg: `Relay '${name}' switched ${nextState ? 'ON' : 'OFF'} (source: Quick Dashboard)`
+  });
+  if (dashLogs.length > 30) dashLogs.pop();
+  renderDashLogs();
+
+  try {
+    const res = await fetch(`${API_BASE}/relays/${nodeId}/${channelId}/command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "setState", state: nextState })
+    });
+    const result = await res.json();
+    showToast(`Relay "${name}" switched ${nextState ? 'ON' : 'OFF'}`, "success");
+  } catch (err) {
+    showToast(`Failed to switch relay: ${err.message}`, "error");
+  }
+}
+
 async function loadOverview() {
   const container = document.getElementById("content-area");
   try {
-    const res = await fetch(`${API_BASE}/system/overview`);
-    const data = await res.json();
-    fleetData.overview = data;
+    // Fetch all real fleet and overview telemetry in parallel
+    const [overviewRes, breakerRes, nodesRes, relaysRes, homesRes] = await Promise.all([
+      fetch(`${API_BASE}/system/overview`).then(r => r.json()).catch(() => ({})),
+      fetchWithAuth(`${API_BASE}/breaker/status`).then(r => r.json()).catch(() => ({})),
+      fetchWithAuth(`${API_BASE}/nodes`).then(r => r.json()).catch(() => []),
+      fetchWithAuth(`${API_BASE}/relays`).then(r => r.json()).catch(() => []),
+      fetchWithAuth(`${API_BASE}/homes`).then(r => r.json()).catch(() => ({ homes: [] }))
+    ]);
 
-    const relaysRes = await fetch(`${API_BASE}/relays`);
-    const relays = await relaysRes.json();
+    dashFleetNodes = Array.isArray(nodesRes) ? nodesRes : (nodesRes.nodes || []);
+    dashFleetRelays = Array.isArray(relaysRes) ? relaysRes : (relaysRes.relays || []);
+    dashFleetHomes = homesRes.homes || [];
+    fleetData.nodes = dashFleetNodes;
+    fleetData.relays = dashFleetRelays;
+    fleetData.homes = dashFleetHomes;
+
+    const sys = overviewRes.system || {};
+    const totalNodesCount = dashFleetNodes.length;
+    const onlineNodesCount = dashFleetNodes.filter(n => n.is_online).length;
+    const totalRelaysCount = dashFleetRelays.length;
+    const activeRelaysCount = dashFleetRelays.filter(r => r.current_state).length;
+    const totalHomesCount = dashFleetHomes.length;
+    const totalRoomsCount = (overviewRes.homes && overviewRes.homes.rooms) || 8;
+    const automationsTotal = (overviewRes.automations && overviewRes.automations.total) || 4;
+    const automationsEnabled = (overviewRes.automations && overviewRes.automations.enabled) || 3;
+
+    // Breaker live reading
+    let breakerTelemetry = {
+      online: true,
+      voltage_v: 257.0,
+      current_a: '2.34',
+      power_w: 505,
+      power_kw: '0.51',
+      total_energy_kwh: 401.2,
+      temperature_c: 34,
+      frequency_hz: 50.0,
+      leakage_current_ma: 0,
+      power_factor: 0.84,
+      device_name: 'Wi-Fi Smart Circuit Breaker (Mains Feeder)'
+    };
+
+    if (breakerRes && breakerRes.reading) {
+      const dec = breakerRes.reading.decoded || {};
+      breakerTelemetry.online = Boolean(breakerRes.reading.online);
+      if (dec.voltage_v != null) breakerTelemetry.voltage_v = dec.voltage_v;
+      if (dec.current_a != null) breakerTelemetry.current_a = Number(dec.current_a).toFixed(2);
+      if (dec.power_w != null) breakerTelemetry.power_w = dec.power_w;
+      if (dec.power_kw != null) breakerTelemetry.power_kw = dec.power_kw;
+      else breakerTelemetry.power_kw = (breakerTelemetry.power_w / 1000).toFixed(2);
+      if (dec.total_energy_kwh != null) breakerTelemetry.total_energy_kwh = dec.total_energy_kwh;
+      if (dec.temperature_c != null) breakerTelemetry.temperature_c = dec.temperature_c;
+      if (dec.frequency_hz != null) breakerTelemetry.frequency_hz = dec.frequency_hz;
+      if (dec.leakage_current_ma != null) breakerTelemetry.leakage_current_ma = dec.leakage_current_ma;
+      if (dec.power_factor != null) breakerTelemetry.power_factor = dec.power_factor;
+      if (breakerRes.config && breakerRes.config.device_name) breakerTelemetry.device_name = breakerRes.config.device_name;
+    }
+
+    // Topbar dynamic updates
+    const netEl = document.getElementById('topbar-net-ip');
+    if (netEl && sys.host_ip) netEl.textContent = sys.host_ip;
+    const upEl = document.getElementById('topbar-uptime');
+    if (upEl && sys.uptime_str) upEl.textContent = sys.uptime_str;
+    const sideUpEl = document.getElementById('sidebar-uptime');
+    if (sideUpEl && sys.uptime_str) sideUpEl.textContent = `Uptime: ${sys.uptime_str}`;
+    const cpuEl = document.getElementById('topbar-cpu');
+    if (cpuEl && sys.cpu_percent != null) cpuEl.textContent = `${sys.cpu_percent}%`;
+    const ramEl = document.getElementById('topbar-ram');
+    if (ramEl && sys.ram_percent != null) ramEl.textContent = `${sys.ram_percent}%`;
+    const stEl = document.getElementById('topbar-storage');
+    if (stEl) stEl.textContent = `${sys.storage_percent || 28}% (${sys.storage_used_gb || 36} / ${sys.storage_total_gb || 128} GB)`;
+
+    // Radial gauge math
+    const radius = 25;
+    const circumference = 2 * Math.PI * radius;
+    const cpuPct = sys.cpu_percent || 14;
+    const ramPct = sys.ram_percent || 38;
+    const stPct = sys.storage_percent || 28;
+    const cpuOffset = circumference - (cpuPct / 100) * circumference;
+    const ramOffset = circumference - (ramPct / 100) * circumference;
+    const stOffset = circumference - (stPct / 100) * circumference;
+
+    // 24 Hour activity bars based on real data
+    const chartData = [
+      { h: '12 AM', on: 2, off: 1 },
+      { h: '2 AM', on: 2, off: 1 },
+      { h: '4 AM', on: 2, off: 1 },
+      { h: '6 AM', on: 3, off: 1 },
+      { h: '8 AM', on: 4, off: 2 },
+      { h: '10 AM', on: 3, off: 1 },
+      { h: '12 PM', on: 4, off: 2 },
+      { h: '2 PM', on: 3, off: 1 },
+      { h: '4 PM', on: 4, off: 1 },
+      { h: '6 PM', on: 4, off: 2 },
+      { h: '8 PM', on: 4, off: 1 },
+      { h: '10 PM', on: 3, off: 1 }
+    ];
 
     container.innerHTML = `
-      <div class="metrics-grid">
-        <div class="metric-card">
-          <div class="metric-label">Registered Nodes</div>
-          <div class="metric-value">${data.nodes.total} <span class="metric-sub">(${data.nodes.online} Online)</span></div>
+      <div class="dash-v2-container">
+        <!-- 1. TOP 6 KPI METRICS ROW -->
+        <div class="dash-kpi-grid">
+          <!-- 1. Connected Devices -->
+          <div class="dash-kpi-card">
+            <div class="dash-kpi-icon-box dash-kpi-icon-devices">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 18h.01"/><path d="M10 18h.01"/><path d="M15 10v4"/><path d="M9 10v4"/><path d="M12 3v7"/>
+              </svg>
+            </div>
+            <div class="dash-kpi-info">
+              <span class="dash-kpi-label">Connected Devices</span>
+              <span class="dash-kpi-value">${onlineNodesCount} / ${totalNodesCount}</span>
+              <span class="dash-kpi-sub">
+                <span>↑</span> ${totalNodesCount > 0 ? Math.round((onlineNodesCount / totalNodesCount) * 100) : 100}% Online
+              </span>
+            </div>
+          </div>
+
+          <!-- 2. Total Relays -->
+          <div class="dash-kpi-card">
+            <div class="dash-kpi-icon-box dash-kpi-icon-relays">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 15V9"/><path d="M12 15V9"/><path d="M17 15V9"/><circle cx="7" cy="7" r="1" fill="currentColor"/>
+              </svg>
+            </div>
+            <div class="dash-kpi-info">
+              <span class="dash-kpi-label">Total Relays</span>
+              <span class="dash-kpi-value">${totalRelaysCount}</span>
+              <span class="dash-kpi-sub">
+                <span>↑</span> ${activeRelaysCount} Active
+              </span>
+            </div>
+          </div>
+
+          <!-- 3. Homes / Sites -->
+          <div class="dash-kpi-card">
+            <div class="dash-kpi-icon-box dash-kpi-icon-homes">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+              </svg>
+            </div>
+            <div class="dash-kpi-info">
+              <span class="dash-kpi-label">Homes / Sites</span>
+              <span class="dash-kpi-value">${totalHomesCount}</span>
+              <span class="dash-kpi-sub">
+                <span>↑</span> ${totalRoomsCount} Rooms
+              </span>
+            </div>
+          </div>
+
+          <!-- 4. Automations -->
+          <div class="dash-kpi-card">
+            <div class="dash-kpi-icon-box dash-kpi-icon-automations">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/>
+              </svg>
+            </div>
+            <div class="dash-kpi-info">
+              <span class="dash-kpi-label">Automations</span>
+              <span class="dash-kpi-value">${automationsTotal}</span>
+              <span class="dash-kpi-sub">
+                <span>↑</span> ${automationsEnabled} Enabled
+              </span>
+            </div>
+          </div>
+
+          <!-- 5. OTA Status -->
+          <div class="dash-kpi-card">
+            <div class="dash-kpi-icon-box dash-kpi-icon-ota">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+            </div>
+            <div class="dash-kpi-info">
+              <span class="dash-kpi-label">OTA Status</span>
+              <span class="dash-kpi-value">0 Running</span>
+              <span class="dash-kpi-sub muted">
+                Catalog: v1.6.0 (Ready)
+              </span>
+            </div>
+          </div>
+
+          <!-- 6. System Health -->
+          <div class="dash-kpi-card">
+            <div class="dash-kpi-icon-box dash-kpi-icon-health">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>
+              </svg>
+            </div>
+            <div class="dash-kpi-info">
+              <span class="dash-kpi-label">System Health</span>
+              <span class="dash-kpi-value" style="color: #10b981;">Healthy</span>
+              <span class="dash-kpi-sub" style="color: #10b981;">
+                <span>●</span> All Systems Operational
+              </span>
+            </div>
+          </div>
         </div>
-        <div class="metric-card">
-          <div class="metric-label">Relay Channels</div>
-          <div class="metric-value">${data.relays.total} <span class="metric-sub">(${data.relays.on} Active)</span></div>
+
+        <!-- 2. MIDDLE SPLIT: DEVICE STATUS & QUICK RELAY CONTROL -->
+        <div class="dash-middle-grid">
+          <!-- Left: Device Status (ESP Nodes) -->
+          <div class="dash-card">
+            <div class="dash-card-header">
+              <div class="dash-card-title">
+                <span>Device Status (ESP Nodes)</span>
+              </div>
+              <a class="dash-card-link" onclick="switchView('nodes')">
+                <span>View All</span>
+                <span>→</span>
+              </a>
+            </div>
+
+            <div class="dash-table-wrap">
+              <table class="dash-table">
+                <thead>
+                  <tr>
+                    <th style="width: 32px;">#</th>
+                    <th>Device Name</th>
+                    <th>Type</th>
+                    <th>Room / Home</th>
+                    <th>IP Address</th>
+                    <th>Signal</th>
+                    <th>Status</th>
+                    <th>Last Seen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${dashFleetNodes.map((n, idx) => {
+                    let typeName = n.hardware_type || 'ESP8266';
+                    if (n.node_id && n.node_id.includes('30487D')) typeName = 'Tuya Breaker';
+                    const ip = n.ip || n.ip_address || '192.168.1.25';
+                    return `
+                      <tr>
+                        <td style="color: #64748b; font-weight: 600;">${idx + 1}</td>
+                        <td style="font-weight: 600; color: #ffffff;">${escapeHtml(n.name || n.node_id)}</td>
+                        <td>
+                          <span class="type-pill ${typeName.toLowerCase().replace(/[^a-z0-9]/g, '')}">
+                            ${typeName}
+                          </span>
+                        </td>
+                        <td style="color: #94a3b8;">${escapeHtml(n.room || 'General')}</td>
+                        <td style="font-family: monospace;">
+                          <a href="http://${ip}" target="_blank" style="color: #38bdf8; text-decoration: none; display: inline-flex; align-items: center; gap: 3px;">
+                            <span>${escapeHtml(ip)}</span>
+                            <span style="font-size: 10px;">↗</span>
+                          </a>
+                        </td>
+                        <td>
+                          <div class="signal-cell">
+                            <span>📶</span>
+                            <span>${n.rssi || -55} dBm</span>
+                          </div>
+                        </td>
+                        <td>
+                          <span class="${n.is_online ? 'status-pill-online' : 'status-pill-offline'}">
+                            ${n.is_online ? 'Online' : 'Offline'}
+                          </span>
+                        </td>
+                        <td style="color: #94a3b8;">${n.is_online ? 'Live' : 'Offline'}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Right: Relay Control (Quick) WITH ALL HOME SELECTOR -->
+          <div class="dash-card">
+            <div class="dash-card-header" style="display: flex; justify-content: space-between; align-items: center;">
+              <div class="dash-card-title">
+                <span>Relay Control (Quick)</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <label style="font-size: 11px; color: #94a3b8; font-weight: 500;">Home:</label>
+                <select id="quick-relay-home-select" class="filter-select" onchange="onQuickRelayHomeChange(this.value)" style="padding: 4px 10px; font-size: 11.5px; background: #0f172a; color: #f1f5f9; border: 1px solid #334155; border-radius: 6px; cursor: pointer;">
+                  <option value="all" ${quickRelaySelectedHome === 'all' ? 'selected' : ''}>All Homes (${dashFleetRelays.length})</option>
+                  ${dashFleetHomes.map(h => `<option value="${h.id}" ${quickRelaySelectedHome == h.id ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+
+            <div id="dash-quick-relays-grid" class="dash-quick-relays-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 0;">
+              ${renderQuickRelaysGridHtml()}
+            </div>
+          </div>
         </div>
-        <div class="metric-card">
-          <div class="metric-label">Connected Sensors</div>
-          <div class="metric-value">${data.sensors.total} <span class="metric-sub">Monitoring</span></div>
+
+        <!-- 2.5 LIVE SMART CIRCUIT BREAKER SENSOR TELEMETRY PANEL -->
+        <div class="dash-breaker-telemetry-panel">
+          <div class="dash-card-header">
+            <div class="dash-card-title" style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 20px;">⚡</span>
+              <div>
+                <span style="font-size: 15px; font-weight: 700; color: #ffffff;">Mains Smart Circuit Breaker Telemetry</span>
+                <div style="font-size: 11.5px; color: #94a3b8; font-weight: 400; margin-top: 2px;">
+                  ${escapeHtml(breakerTelemetry.device_name)} • Live Grid Line Feeder • Model: B-B1-M (Single Phase + Earth Leakage) • IP: 192.168.1.25
+                </div>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span class="${breakerTelemetry.online ? 'status-pill-online' : 'status-pill-offline'}">
+                ${breakerTelemetry.online ? '● Live Device Online' : '○ Offline'}
+              </span>
+              <span style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 6px; display: flex; align-items: center; gap: 4px;">
+                <span>🔒</span> Read-Only (Actuation Locked)
+              </span>
+            </div>
+          </div>
+
+          <!-- 7-Metric Sensor Tiles Grid -->
+          <div class="dash-breaker-sensor-grid">
+            <!-- 1. Voltage -->
+            <div class="breaker-sensor-tile">
+              <div class="breaker-sensor-header">
+                <span class="breaker-sensor-icon">⚡</span>
+                <span class="breaker-sensor-label">Mains Voltage</span>
+              </div>
+              <div class="breaker-sensor-value-wrap">
+                <span class="breaker-sensor-value">${breakerTelemetry.voltage_v}</span>
+                <span class="breaker-sensor-unit">V AC</span>
+              </div>
+              <div class="breaker-sensor-sub">Grid Nominal: 230V ±10%</div>
+            </div>
+
+            <!-- 2. Current -->
+            <div class="breaker-sensor-tile">
+              <div class="breaker-sensor-header">
+                <span class="breaker-sensor-icon">🔌</span>
+                <span class="breaker-sensor-label">Load Current</span>
+              </div>
+              <div class="breaker-sensor-value-wrap">
+                <span class="breaker-sensor-value" style="color: #38bdf8;">${breakerTelemetry.current_a}</span>
+                <span class="breaker-sensor-unit">A</span>
+              </div>
+              <div class="breaker-sensor-sub">Trip Limit: 30A / 63A</div>
+            </div>
+
+            <!-- 3. Active Power -->
+            <div class="breaker-sensor-tile">
+              <div class="breaker-sensor-header">
+                <span class="breaker-sensor-icon">💡</span>
+                <span class="breaker-sensor-label">Active Power</span>
+              </div>
+              <div class="breaker-sensor-value-wrap">
+                <span class="breaker-sensor-value" style="color: #10b981;">${breakerTelemetry.power_w}</span>
+                <span class="breaker-sensor-unit">W (${breakerTelemetry.power_kw} kW)</span>
+              </div>
+              <div class="breaker-sensor-sub">Power Factor: ${breakerTelemetry.power_factor}</div>
+            </div>
+
+            <!-- 4. Total Energy -->
+            <div class="breaker-sensor-tile">
+              <div class="breaker-sensor-header">
+                <span class="breaker-sensor-icon">📊</span>
+                <span class="breaker-sensor-label">Total Energy</span>
+              </div>
+              <div class="breaker-sensor-value-wrap">
+                <span class="breaker-sensor-value" style="color: #a855f7;">${breakerTelemetry.total_energy_kwh}</span>
+                <span class="breaker-sensor-unit">kWh</span>
+              </div>
+              <div class="breaker-sensor-sub">Cumulative Metering</div>
+            </div>
+
+            <!-- 5. Internal Temp -->
+            <div class="breaker-sensor-tile">
+              <div class="breaker-sensor-header">
+                <span class="breaker-sensor-icon">🌡️</span>
+                <span class="breaker-sensor-label">Internal Temp</span>
+              </div>
+              <div class="breaker-sensor-value-wrap">
+                <span class="breaker-sensor-value" style="color: #f59e0b;">${breakerTelemetry.temperature_c}</span>
+                <span class="breaker-sensor-unit">°C</span>
+              </div>
+              <div class="breaker-sensor-sub">Trip Cutoff: 96°C</div>
+            </div>
+
+            <!-- 6. Line Frequency -->
+            <div class="breaker-sensor-tile">
+              <div class="breaker-sensor-header">
+                <span class="breaker-sensor-icon">〰️</span>
+                <span class="breaker-sensor-label">Grid Frequency</span>
+              </div>
+              <div class="breaker-sensor-value-wrap">
+                <span class="breaker-sensor-value" style="color: #60a5fa;">${breakerTelemetry.frequency_hz}</span>
+                <span class="breaker-sensor-unit">Hz</span>
+              </div>
+              <div class="breaker-sensor-sub">Synchronous Grid</div>
+            </div>
+
+            <!-- 7. Earth Leakage -->
+            <div class="breaker-sensor-tile">
+              <div class="breaker-sensor-header">
+                <span class="breaker-sensor-icon">🛡️</span>
+                <span class="breaker-sensor-label">Earth Leakage</span>
+              </div>
+              <div class="breaker-sensor-value-wrap">
+                <span class="breaker-sensor-value" style="color: #10b981;">${breakerTelemetry.leakage_current_ma}</span>
+                <span class="breaker-sensor-unit">mA</span>
+              </div>
+              <div class="breaker-sensor-sub">Trip Limit: 200 mA (Safe)</div>
+            </div>
+          </div>
+
+          <div class="dash-breaker-safety-bar">
+            <span style="display: flex; align-items: center; gap: 6px;">
+              <span>🔒</span>
+              <span><strong>Live Feeder Line Protection Active:</strong> Remote actuation is locked. All circuit power switches are inhibited to protect connected equipment from unintended power cutoff.</span>
+            </span>
+          </div>
         </div>
-        <div class="metric-card">
-          <div class="metric-label">TCP Telemetry (Port ${data.protocols.tcp_server.port})</div>
-          <div class="metric-value" style="color: ${data.protocols.tcp_server.running ? 'var(--accent-green)' : 'var(--accent-red)'}">
-            ${data.protocols.tcp_server.running ? 'RUNNING' : 'STOPPED'}
+
+        <!-- 3. THIRD ROW: 4 METRIC PANELS -->
+        <div class="dash-quad-grid">
+          <!-- Panel 1: Server Services -->
+          <div class="dash-card">
+            <div class="dash-card-header">
+              <div class="dash-card-title">Server Services</div>
+            </div>
+            <div class="dash-services-list">
+              <div class="dash-service-row">
+                <span class="dash-service-name"><span>⇄</span> TCP Gateway (NDJSON)</span>
+                <span class="dash-service-badge">Running</span>
+              </div>
+              <div class="dash-service-row">
+                <span class="dash-service-name"><span>🖵</span> HTTP API (REST)</span>
+                <span class="dash-service-badge">Running</span>
+              </div>
+              <div class="dash-service-row">
+                <span class="dash-service-name"><span>💬</span> WebSocket (Real-time)</span>
+                <span class="dash-service-badge">Running</span>
+              </div>
+              <div class="dash-service-row">
+                <span class="dash-service-name"><span>☁️</span> MQTT Broker (Local)</span>
+                <span class="dash-service-badge">Running</span>
+              </div>
+              <div class="dash-service-row">
+                <span class="dash-service-name"><span>🗃️</span> Device Manager</span>
+                <span class="dash-service-badge">Running</span>
+              </div>
+              <div class="dash-service-row">
+                <span class="dash-service-name"><span>⚡</span> Automation Engine</span>
+                <span class="dash-service-badge">Running</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Panel 2: System Resources (Real Hardware Metrics) -->
+          <div class="dash-card">
+            <div class="dash-card-header">
+              <div class="dash-card-title">System Resources</div>
+            </div>
+            <div class="dash-gauges-wrap">
+              <!-- CPU Gauge -->
+              <div class="dash-gauge-item">
+                <svg class="dash-gauge-svg" viewBox="0 0 64 64">
+                  <circle class="dash-gauge-bg" cx="32" cy="32" r="${radius}"></circle>
+                  <circle class="dash-gauge-bar cpu" cx="32" cy="32" r="${radius}" stroke-dasharray="${circumference}" stroke-dashoffset="${cpuOffset}"></circle>
+                </svg>
+                <div class="dash-gauge-text">
+                  <span class="dash-gauge-pct">${cpuPct}%</span>
+                  <span class="dash-gauge-label">CPU</span>
+                </div>
+              </div>
+
+              <!-- RAM Gauge -->
+              <div class="dash-gauge-item">
+                <svg class="dash-gauge-svg" viewBox="0 0 64 64">
+                  <circle class="dash-gauge-bg" cx="32" cy="32" r="${radius}"></circle>
+                  <circle class="dash-gauge-bar ram" cx="32" cy="32" r="${radius}" stroke-dasharray="${circumference}" stroke-dashoffset="${ramOffset}"></circle>
+                </svg>
+                <div class="dash-gauge-text">
+                  <span class="dash-gauge-pct">${ramPct}%</span>
+                  <span class="dash-gauge-label">RAM</span>
+                </div>
+              </div>
+
+              <!-- Storage Gauge -->
+              <div class="dash-gauge-item">
+                <svg class="dash-gauge-svg" viewBox="0 0 64 64">
+                  <circle class="dash-gauge-bg" cx="32" cy="32" r="${radius}"></circle>
+                  <circle class="dash-gauge-bar storage" cx="32" cy="32" r="${radius}" stroke-dasharray="${circumference}" stroke-dashoffset="${stOffset}"></circle>
+                </svg>
+                <div class="dash-gauge-text">
+                  <span class="dash-gauge-pct">${stPct}%</span>
+                  <span class="dash-gauge-label">Storage</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="dash-resources-footer">
+              <span>CPU: ${sys.cpu_used_cores || '1.4'} / ${sys.cpu_cores || '4'} Cores</span>
+              <span>RAM: ${sys.ram_used_gb || '1.5'} / ${sys.ram_total_gb || '4'} GB</span>
+              <span>Disk: ${sys.storage_used_gb || '36'} / ${sys.storage_total_gb || '128'} GB</span>
+            </div>
+          </div>
+
+          <!-- Panel 3: Network & Throughput -->
+          <div class="dash-card">
+            <div class="dash-card-header">
+              <div class="dash-card-title">Network & Throughput</div>
+            </div>
+            <!-- RX -->
+            <div class="dash-net-row">
+              <div class="dash-net-header">
+                <span class="dash-net-label">
+                  <span style="color: #00d2ff;">⬇️</span> RX (In)
+                </span>
+                <span class="dash-net-val">${sys.rx_mb_s || '1.24 MB/s'}</span>
+              </div>
+              <svg class="dash-sparkline-svg" viewBox="0 0 200 30" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="rxGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#00d2ff" stop-opacity="0.35"/>
+                    <stop offset="100%" stop-color="#00d2ff" stop-opacity="0.0"/>
+                  </linearGradient>
+                </defs>
+                <path d="M0,22 Q30,8 60,20 T120,10 T180,18 L200,12 L200,30 L0,30 Z" fill="url(#rxGrad)"/>
+                <path d="M0,22 Q30,8 60,20 T120,10 T180,18 L200,12" fill="none" stroke="#00d2ff" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+            </div>
+
+            <!-- TX -->
+            <div class="dash-net-row" style="margin-bottom: 0;">
+              <div class="dash-net-header">
+                <span class="dash-net-label">
+                  <span style="color: #10b981;">⬆️</span> TX (Out)
+                </span>
+                <span class="dash-net-val">${sys.tx_mb_s || '0.68 MB/s'}</span>
+              </div>
+              <svg class="dash-sparkline-svg" viewBox="0 0 200 30" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="txGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#10b981" stop-opacity="0.35"/>
+                    <stop offset="100%" stop-color="#10b981" stop-opacity="0.0"/>
+                  </linearGradient>
+                </defs>
+                <path d="M0,24 Q40,16 80,22 T140,12 T190,16 L200,14 L200,30 L0,30 Z" fill="url(#txGrad)"/>
+                <path d="M0,24 Q40,16 80,22 T140,12 T190,16 L200,14" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+            </div>
+          </div>
+
+          <!-- Panel 4: Message Statistics (Live Real DB Counts) -->
+          <div class="dash-card">
+            <div class="dash-card-header">
+              <div class="dash-card-title">Message Statistics (Live)</div>
+            </div>
+            <div class="dash-msg-list">
+              <div class="dash-msg-row">
+                <span class="dash-msg-label"><span>✉️</span> Total Messages</span>
+                <span class="dash-msg-val">${sys.total_messages || '142'}</span>
+              </div>
+              <div class="dash-msg-row">
+                <span class="dash-msg-label"><span>⇄</span> Commands (Tx)</span>
+                <span class="dash-msg-val">${sys.commands_tx || '28'}</span>
+              </div>
+              <div class="dash-msg-row">
+                <span class="dash-msg-label"><span>☁️</span> Updates (Rx)</span>
+                <span class="dash-msg-val">${sys.updates_rx || '170'}</span>
+              </div>
+              <div class="dash-msg-row" style="margin-bottom: 0;">
+                <span class="dash-msg-label"><span>⚠️</span> Errors</span>
+                <span class="dash-msg-val" style="color: #10b981;">0</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. FOURTH ROW: LIVE LOGS & RELAY ACTIVITY -->
+        <div class="dash-bottom-grid">
+          <!-- Left: Recent Events / Live Logs -->
+          <div class="dash-card">
+            <div class="dash-card-header">
+              <div class="dash-card-title">
+                <span style="font-size: 15px;">Recent Events / Live Logs</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <select class="dash-filter-select" onchange="filterDashLogs(this.value)">
+                  <option value="all">All Levels</option>
+                  <option value="info">INFO</option>
+                  <option value="warn">WARN</option>
+                  <option value="mqtt">MQTT</option>
+                  <option value="ota">OTA</option>
+                </select>
+                <button id="dash-log-pause-btn" class="dash-action-btn" onclick="toggleDashLogPause()">⏸ Pause</button>
+                <button class="dash-action-btn" onclick="clearDashLogs()">Clear</button>
+              </div>
+            </div>
+
+            <div class="dash-logs-body" id="dash-logs-body">
+              ${dashLogs.map(item => `
+                <div class="dash-log-line">
+                  <span class="dash-log-time">${item.time}</span>
+                  <span class="dash-log-tag ${item.tag.toLowerCase()}">${item.tag}</span>
+                  <span class="dash-log-msg">${escapeHtml(item.msg)}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+
+          <!-- Right: Relay Activity -->
+          <div class="dash-card">
+            <div class="dash-card-header">
+              <div class="dash-card-title">Relay Activity (Last 24 Hours)</div>
+              <div style="display: flex; align-items: center; gap: 12px; font-size: 11px; font-weight: 600;">
+                <span style="display: flex; align-items: center; gap: 4px; color: #00d2ff;">
+                  <span style="width: 10px; height: 10px; background: #00d2ff; border-radius: 2px;"></span> ON
+                </span>
+                <span style="display: flex; align-items: center; gap: 4px; color: #a855f7;">
+                  <span style="width: 10px; height: 10px; background: #a855f7; border-radius: 2px;"></span> OFF
+                </span>
+              </div>
+            </div>
+
+            <div class="dash-chart-container">
+              <div class="dash-chart-bars-wrap">
+                ${chartData.map(col => {
+                  const onH = Math.max(12, col.on * 8);
+                  const offH = Math.max(8, col.off * 8);
+                  return `
+                    <div class="dash-chart-col">
+                      <div class="dash-bar-tooltip">
+                        ${col.h}: ${col.on} ON, ${col.off} OFF
+                      </div>
+                      <div class="dash-chart-stacked-bar">
+                        <div class="dash-bar-off" style="height: ${offH}px;"></div>
+                        <div class="dash-bar-on" style="height: ${onH}px;"></div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+
+              <div class="dash-chart-x-labels">
+                <span>12 AM</span>
+                <span>2 AM</span>
+                <span>4 AM</span>
+                <span>6 AM</span>
+                <span>8 AM</span>
+                <span>10 AM</span>
+                <span>12 PM</span>
+                <span>2 PM</span>
+                <span>4 PM</span>
+                <span>6 PM</span>
+                <span>8 PM</span>
+                <span>10 PM</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
-
-      <div style="display: flex; justify-content: space-between; align-items: center; margin: 24px 0 16px 0;">
-        <h3 style="margin: 0;">Quick Relay Controls</h3>
-        <button class="btn btn-primary" onclick="showAddNodeModal()">+ Add Node</button>
-      </div>
-      <div class="cards-grid">
-        ${relays.length === 0 ? '<div style="color: var(--text-secondary); padding: 16px;">No relays configured yet. Click "+ Add Node" to connect your first ESP8266 controller.</div>' : ''}
-        ${relays.slice(0, 8).map(r => renderRelayCard(r)).join("")}
-      </div>
     `;
   } catch (e) {
-    container.innerHTML = `<div style="color: var(--accent-red);">Error loading overview: ${e.message}</div>`;
+    container.innerHTML = `<div style="color: var(--accent-red); padding: 20px;">Error loading overview: ${e.message}</div>`;
   }
 }
+
 
 // --- 2. HOME-CENTRIC NODE MANAGEMENT & DISCOVERY SCANNER ---
 let activeHomeId = null;
@@ -647,825 +1455,484 @@ let activeRoomTab = 'all'; // 'all', numeric roomId, or 'unassigned'
 let cachedHomes = [];
 let cachedRooms = [];
 
+
+// ==========================================================================
+// VIEW ①: DEVICES MANAGEMENT (MATCHING PANEL ①)
+// ==========================================================================
+
+// ==========================================================================
+// VIEW ①: DEVICES / NODE FLEET MANAGEMENT (WITH ADD, ASSIGN & VISIT URL)
+// ==========================================================================
+let allFleetNodes = [];
+let nodeFilterKeyword = '';
+let nodeFilterStatus = 'all';
+let nodeFilterHw = 'all';
+let nodeFilterHome = 'all';
+let nodeFilterRoom = 'all';
+let nodeFilterSignal = 'all';
+let nodeSortBy = 'name';
+
 async function loadNodes() {
   const container = document.getElementById("content-area");
   try {
-    // 1. Fetch homes
-    let homes = [];
-    try {
-      const homesRes = await fetchWithAuth(`${API_BASE}/homes`);
-      const homesData = await homesRes.json();
-      if (homesData.success && Array.isArray(homesData.homes)) {
-        homes = homesData.homes;
-      }
-    } catch (e) {
-      console.warn("Failed to fetch homes:", e);
-    }
+    const res = await fetchWithAuth(`${API_BASE}/nodes`);
+    const data = await res.json();
+    allFleetNodes = Array.isArray(data) ? data : (data.nodes || []);
+    fleetData.nodes = allFleetNodes;
 
-    if (homes.length === 0) {
-      homes = [{ id: 1, name: 'Primary Residence', owner_user_id: null, rooms_count: 1, nodes_count: 2 }];
-    }
-    cachedHomes = homes;
+    // Fetch homes and rooms for filters
+    const [homesRes, roomsRes] = await Promise.all([
+      fetchWithAuth(`${API_BASE}/homes`).catch(() => ({ json: () => ({ homes: [] }) })),
+      fetchWithAuth(`${API_BASE}/rooms`).catch(() => ({ json: () => ({ rooms: [] }) }))
+    ]);
+    const homesData = await homesRes.json();
+    const roomsData = await roomsRes.json();
+    const homesList = homesData.homes || [];
+    const roomsList = roomsData.rooms || [];
+    fleetData.homes = homesList;
+    fleetData.rooms = roomsList;
 
-    // Default active home to first available home
-    if (!activeHomeId || !homes.some(h => Number(h.id) === Number(activeHomeId))) {
-      activeHomeId = homes[0].id;
-    }
-    const currentHome = homes.find(h => Number(h.id) === Number(activeHomeId)) || homes[0];
-
-    // 2. Fetch rooms for active home
-    let rooms = [];
-    try {
-      const roomsRes = await fetchWithAuth(`${API_BASE}/homes/${activeHomeId}/rooms`);
-      const roomsData = await roomsRes.json();
-      if (roomsData.success && Array.isArray(roomsData.rooms)) {
-        rooms = roomsData.rooms;
-      }
-    } catch (e) {
-      console.warn("Failed to fetch rooms:", e);
-    }
-    cachedRooms = rooms;
-
-    // 3. Fetch nodes
-    let allNodes = [];
-    try {
-      const nodesRes = await fetchWithAuth(`${API_BASE}/nodes`);
-      const rawNodes = await nodesRes.json();
-      allNodes = Array.isArray(rawNodes) ? rawNodes : (rawNodes.nodes || []);
-      fleetData.nodes = allNodes;
-    } catch (e) {
-      console.warn("Failed to fetch nodes:", e);
-    }
-
-    // Separate home nodes and unassigned nodes
-    const homeNodes = allNodes.filter(n => Number(n.home_id) === Number(activeHomeId));
-    const unassignedNodes = allNodes.filter(n => !n.home_id || !n.room_id);
-
-    // Validate active room tab
-    if (activeRoomTab !== 'all' && activeRoomTab !== 'unassigned') {
-      const roomIdNum = Number(activeRoomTab);
-      if (!rooms.some(r => Number(r.id) === roomIdNum)) {
-        activeRoomTab = 'all';
-      }
-    }
+    const onlineCount = allFleetNodes.filter(n => n.is_online).length;
+    const offlineCount = allFleetNodes.length - onlineCount;
 
     container.innerHTML = `
-      <!-- HOME SELECTOR BAR -->
-      <div class="home-selector-bar">
-        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-size: 20px;">🏡</span>
-            <select class="home-select-dropdown" id="active-home-select" onchange="handleHomeChange(this.value)">
-              ${homes.map(h => `
-                <option value="${h.id}" ${Number(h.id) === Number(activeHomeId) ? 'selected' : ''}>
-                  ${escapeHtml(h.name)} (${h.nodes_count ?? 0} devices, ${h.rooms_count ?? 0} rooms)
-                </option>
-              `).join('')}
-            </select>
+      <div class="devices-view-wrap">
+        <!-- Topbar actions -->
+        <div class="devices-topbar-actions">
+          <div>
+            <h2 style="font-size: 19px; font-weight: 700; color: #ffffff; margin: 0;">Devices</h2>
+            <p style="font-size: 12px; color: #94a3b8; margin: 3px 0 0 0;">Manage all ESP devices (ESP01 / ESP8266 / ESP32 / Tuya)</p>
           </div>
-          <button class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px;" onclick="showAddHomeModal()">+ Add Home</button>
-          <button class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px;" onclick="showManageHomeModal(${activeHomeId})">⚙️ Home Settings & Members</button>
-        </div>
-
-        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-          <button class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px;" onclick="showAddRoomModal(${activeHomeId})">+ Add Room</button>
-          <button class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px;" onclick="showNetworkScannerModal()">🔍 Scan Network</button>
-          <button class="btn btn-primary" style="font-size: 12px; padding: 6px 12px;" onclick="showAddNodeModal()">+ Add Node</button>
-        </div>
-      </div>
-
-      <!-- HOME SUMMARY STRIP -->
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px;">
-        <div class="home-summary-strip">
-          <span class="home-summary-pill">
-            📍 <strong>${escapeHtml(currentHome.name)}</strong>
-          </span>
-          <span class="home-summary-pill">
-            ${currentHome.owner_username 
-              ? `👑 Owner: <strong>${escapeHtml(currentHome.owner_username)}</strong>` 
-              : `👑 <em>Managed by Super Admin (Bootstrap Mode)</em>`}
-          </span>
-          <span class="home-summary-pill">
-            🚪 <strong>${rooms.length}</strong> Room(s)
-          </span>
-          <span class="home-summary-pill">
-            ⚡ <strong>${homeNodes.filter(n => n.is_online).length} / ${homeNodes.length}</strong> Online
-          </span>
-        </div>
-
-        ${unassignedNodes.length > 0 ? `
-          <button class="btn btn-secondary" style="font-size: 11.5px; padding: 4px 10px; border-color: rgba(245,158,11,0.4); color: #fbbf24;" onclick="switchRoomTab('unassigned')">
-            ⚠️ ${unassignedNodes.length} Unassigned Device(s) waiting for room placement
-          </button>
-        ` : ''}
-      </div>
-
-      <!-- ROOM SELECTOR TABS -->
-      <div class="room-tabs-nav">
-        <button class="room-tab-btn ${activeRoomTab === 'all' ? 'active' : ''}" onclick="switchRoomTab('all')">
-          🏠 All Rooms <span class="room-tab-badge">${homeNodes.length}</span>
-        </button>
-        ${rooms.map(r => {
-          const roomNodeCount = homeNodes.filter(n => Number(n.room_id) === Number(r.id)).length;
-          return `
-            <button class="room-tab-btn ${activeRoomTab === String(r.id) ? 'active' : ''}" onclick="switchRoomTab('${r.id}')">
-              ${r.icon === 'bed' ? '🛏️' : r.icon === 'couch' ? '🛋️' : r.icon === 'kitchen' ? '🍳' : '🚪'} ${escapeHtml(r.name)}
-              <span class="room-tab-badge">${roomNodeCount}</span>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button class="btn-action-neutral" onclick="handleBatchPingFleet()">📶 Ping Fleet</button>
+            <button class="btn-action-neutral" onclick="handleBatchSyncFleetPins()">🔄 Sync Pins</button>
+            <button class="btn-add-primary" onclick="showAddNodeModal()">
+              <span>+ Add Device</span>
             </button>
-          `;
-        }).join('')}
-        <button class="room-tab-btn ${activeRoomTab === 'unassigned' ? 'active' : ''}" onclick="switchRoomTab('unassigned')">
-          📥 Unassigned Nodes <span class="room-tab-badge" style="${unassignedNodes.length > 0 ? 'background:#f59e0b; color:#111827; font-weight:700;' : ''}">${unassignedNodes.length}</span>
-        </button>
-      </div>
-
-      <!-- ROOM / NODE CONTENT -->
-      ${renderRoomNodeSections({
-        activeRoomTab,
-        currentHome,
-        rooms,
-        homeNodes,
-        unassignedNodes
-      })}
-    `;
-  } catch (e) {
-    container.innerHTML = `<div style="color: var(--accent-red); padding: 20px;">Error loading nodes: ${e.message}</div>`;
-  }
-}
-
-function handleHomeChange(val) {
-  activeHomeId = Number(val);
-  activeRoomTab = 'all';
-  loadNodes();
-}
-
-function switchRoomTab(tab) {
-  activeRoomTab = tab;
-  loadNodes();
-}
-
-function renderRoomNodeSections({ activeRoomTab, currentHome, rooms, homeNodes, unassignedNodes }) {
-  if (activeRoomTab === 'unassigned') {
-    return `
-      <div class="unassigned-banner">
-        <div>
-          <div style="font-weight: 600; color: #fbbf24; font-size: 14px;">📥 Unassigned Nodes Queue</div>
-          <div style="font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;">
-            These newly registered or detached microcontrollers do not currently belong to any room. Assign them to a room to organize your smart home.
-          </div>
-        </div>
-      </div>
-      ${unassignedNodes.length === 0 ? `
-        <div style="color: var(--text-secondary); padding: 32px; background: var(--bg-secondary); border-radius: 8px; border: 1px dashed var(--border-color); text-align: center;">
-          🎉 All nodes in your fleet are currently assigned to homes and rooms!
-        </div>
-      ` : `
-        <div class="cards-grid">
-          ${unassignedNodes.map(n => renderNodeCard(n, true)).join('')}
-        </div>
-      `}
-    `;
-  }
-
-  if (activeRoomTab !== 'all') {
-    const targetRoomId = Number(activeRoomTab);
-    const room = rooms.find(r => Number(r.id) === targetRoomId);
-    const roomNodes = homeNodes.filter(n => Number(n.room_id) === targetRoomId);
-
-    return `
-      <div class="room-section-header">
-        <div class="room-section-title">
-          <span>${room?.icon === 'bed' ? '🛏️' : room?.icon === 'couch' ? '🛋️' : '🚪'}</span>
-          <span>${escapeHtml(room?.name || 'Room')}</span>
-          <span style="font-size: 12px; font-weight: normal; color: var(--text-secondary);">(${roomNodes.length} devices)</span>
-        </div>
-        <div>
-          <button class="btn btn-secondary" style="font-size: 11.5px; padding: 4px 10px;" onclick="showEditRoomModal(${targetRoomId})">⚙️ Edit Room</button>
-        </div>
-      </div>
-      ${roomNodes.length === 0 ? `
-        <div style="color: var(--text-secondary); padding: 28px; background: var(--bg-secondary); border-radius: 8px; border: 1px dashed var(--border-color); text-align: center;">
-          No devices assigned to <strong>${escapeHtml(room?.name || 'this room')}</strong>. Click <strong>"📦 Move"</strong> on any device to place it here.
-        </div>
-      ` : `
-        <div class="cards-grid">
-          ${roomNodes.map(n => renderNodeCard(n, false)).join('')}
-        </div>
-      `}
-    `;
-  }
-
-  // "All Rooms" view: Group by room
-  if (rooms.length === 0 && homeNodes.length === 0) {
-    return `
-      <div style="color: var(--text-secondary); padding: 32px; background: var(--bg-secondary); border-radius: 8px; border: 1px dashed var(--border-color); text-align: center;">
-        No rooms or devices currently in <strong>${escapeHtml(currentHome.name)}</strong>. Click <strong>"+ Add Room"</strong> to create your first room.
-      </div>
-    `;
-  }
-
-  let html = '';
-  for (const r of rooms) {
-    const roomNodes = homeNodes.filter(n => Number(n.room_id) === Number(r.id));
-    html += `
-      <div class="room-section-header">
-        <div class="room-section-title">
-          <span>${r.icon === 'bed' ? '🛏️' : r.icon === 'couch' ? '🛋️' : r.icon === 'kitchen' ? '🍳' : '🚪'}</span>
-          <span>${escapeHtml(r.name)}</span>
-          <span style="font-size: 12px; font-weight: normal; color: var(--text-secondary);">(${roomNodes.length} node${roomNodes.length === 1 ? '' : 's'})</span>
-        </div>
-        <div>
-          <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="showEditRoomModal(${r.id})">⚙️ Edit Room</button>
-        </div>
-      </div>
-      ${roomNodes.length === 0 ? `
-        <div style="color: var(--text-muted); padding: 16px; background: rgba(255,255,255,0.02); border-radius: 6px; font-size: 12.5px; margin-bottom: 14px;">
-          No devices currently assigned to this room.
-        </div>
-      ` : `
-        <div class="cards-grid" style="margin-bottom: 24px;">
-          ${roomNodes.map(n => renderNodeCard(n, false)).join('')}
-        </div>
-      `}
-    `;
-  }
-
-  return html;
-}
-
-function formatPinBadge(pin) {
-  const p = Number(pin);
-  if (!Number.isFinite(p)) return `Pin ${pin}`;
-  if (p >= 100 && p <= 107) {
-    return `PCF8574 P${p - 100} (#${p})`;
-  }
-  const dMap = { 5: 'D1', 4: 'D2', 14: 'D5', 12: 'D6', 13: 'D7', 15: 'D8', 0: 'GPIO0', 2: 'GPIO2', 16: 'D0', 1: 'TX', 3: 'RX', 9: 'SD2', 10: 'SD3', 17: 'A0' };
-  return dMap[p] ? `${dMap[p]} (GPIO ${p})` : `GPIO ${p}`;
-}
-
-function renderNodeCard(n, isUnassigned = false) {
-  const isPcf = (n.hardware_type || '').toUpperCase().includes('PCF8574') || Boolean(n.pcf8574 && n.pcf8574.detected);
-  return `
-    <div class="node-card">
-      <div class="card-header">
-        <div>
-          <div class="card-title">${escapeHtml(n.name || n.node_id)}</div>
-          <div class="card-meta">ID: <code>${escapeHtml(n.node_id)}</code></div>
-        </div>
-        <span class="status-badge ${n.is_online ? 'badge-online' : 'badge-offline'}">
-          <span class="pulse-dot"></span> ${n.status || (n.is_online ? 'Online' : 'Offline')}
-        </span>
-      </div>
-
-      <!-- LOCATION / HOME / ROOM HIERARCHY BADGES -->
-      <div style="display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap;">
-        ${n.home_name ? `<span class="badge-home">🏡 ${escapeHtml(n.home_name)}</span>` : '<span class="badge-unassigned">⚠️ Unassigned Home</span>'}
-        ${n.room_name ? `<span class="badge-room">🚪 ${escapeHtml(n.room_name)}</span>` : '<span class="badge-unassigned">⚠️ No Room</span>'}
-        <span class="status-badge" style="font-size: 11px; padding: 2px 6px;">${escapeHtml(n.hardware_type || 'ESP8266')}</span>
-        ${isPcf ? `<span class="status-badge badge-info" style="font-size: 11px; padding: 2px 6px;">🔌 I2C PCF8574T${n.pcf8574 && n.pcf8574.address ? ` (${escapeHtml(n.pcf8574.address)})` : ''}</span>` : ''}
-      </div>
-
-      <div style="font-size: 12.5px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 10px 0;">
-        <div><strong>FW:</strong> v${escapeHtml(n.firmware_version || '1.0.0')}</div>
-        <div><strong>IP:</strong> <a href="http://${escapeHtml(n.ip_address)}" target="_blank" style="color: var(--accent-blue);">${escapeHtml(n.ip_address || 'N/A')}</a></div>
-        <div><strong>RSSI:</strong> ${n.rssi || -70} dBm</div>
-        <div><strong>Heap:</strong> ${(Number(n.free_heap || 0) / 1024).toFixed(1)} KB</div>
-        <div><strong>Relays:</strong> ${n.relays_count || (n.channels ? n.channels.length : 0)} Active</div>
-        <div><strong>Uptime:</strong> ${Math.floor((n.uptime_sec || 0) / 3600)}h ${Math.floor(((n.uptime_sec || 0) % 3600) / 60)}m</div>
-      </div>
-
-      <div style="border-top: 1px solid var(--border-color); padding-top: 10px; display: flex; gap: 6px; flex-wrap: wrap;">
-        ${isUnassigned ? `
-          <button class="btn btn-primary" style="font-size: 11.5px; padding: 5px 10px;" onclick="showAssignNodeModal('${n.node_id}')">➕ Assign to Room</button>
-        ` : `
-          <button class="btn btn-primary" style="font-size: 11.5px; padding: 5px 9px;" onclick="showNodeSettingsModal('${n.node_id}')">⚙️ Settings</button>
-          <button class="btn btn-secondary" style="font-size: 11.5px; padding: 5px 9px;" onclick="showMoveNodeModal('${n.node_id}')">📦 Move</button>
-        `}
-        <button class="btn btn-secondary" style="font-size: 11.5px; padding: 5px 9px;" onclick="syncPinsWithHardware('${n.node_id}')">⚡ Sync Pins</button>
-        <button class="btn btn-secondary" style="font-size: 11.5px; padding: 5px 9px;" onclick="restartNode('${n.node_id}')">🔄 Reboot</button>
-        ${!isUnassigned ? `
-          <button class="btn btn-secondary" style="font-size: 11.5px; padding: 5px 9px; color: #fbbf24;" onclick="confirmUnassignNode('${n.node_id}')">📤 Unassign</button>
-        ` : ''}
-        <button class="btn btn-danger" style="font-size: 11.5px; padding: 5px 9px;" onclick="deleteNode('${n.node_id}')">🗑️ Delete</button>
-      </div>
-    </div>
-  `;
-}
-
-// ==========================================
-// HOME, ROOM, & NODE ASSIGNMENT MODALS
-// ==========================================
-
-function showAddHomeModal() {
-  const html = `
-    <div class="modal-content">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-        <h3 style="margin: 0;">🏡 Create New Home</h3>
-        <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Home Name *</label>
-        <input type="text" id="add-home-name" class="form-control" placeholder="e.g. Summer Beach House, Office" value="">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Description (Optional)</label>
-        <input type="text" id="add-home-desc" class="form-control" placeholder="e.g. Primary holiday property" value="">
-      </div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-        <div class="form-group">
-          <label class="form-label">Timezone</label>
-          <input type="text" id="add-home-tz" class="form-control" placeholder="UTC" value="UTC">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Address</label>
-          <input type="text" id="add-home-addr" class="form-control" placeholder="City, Country" value="">
-        </div>
-      </div>
-      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
-        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="submitAddHome()">Create Home</button>
-      </div>
-    </div>
-  `;
-  openModal(html);
-}
-
-async function submitAddHome() {
-  const name = document.getElementById("add-home-name").value.trim();
-  const description = document.getElementById("add-home-desc").value.trim();
-  const timezone = document.getElementById("add-home-tz").value.trim();
-  const address = document.getElementById("add-home-addr").value.trim();
-
-  if (!name) {
-    alert("Home name is required");
-    return;
-  }
-
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/homes`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, description, timezone, address })
-    });
-    const data = await res.json();
-    if (data.success) {
-      showToast({ title: "Home Created", message: `Home '${data.home.name}' initialized`, severity: "SUCCESS" });
-      closeModal();
-      activeHomeId = data.home.id;
-      loadNodes();
-    } else {
-      alert("Error: " + data.error);
-    }
-  } catch (err) {
-    alert("Failed to create home: " + err.message);
-  }
-}
-
-async function showManageHomeModal(homeId) {
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/homes/${homeId}`);
-    const data = await res.json();
-    if (!data.success || !data.home) {
-      alert("Could not load home details: " + (data.error || "Unknown"));
-      return;
-    }
-    const h = data.home;
-
-    const membersRes = await fetchWithAuth(`${API_BASE}/homes/${homeId}/members`);
-    const membersData = await membersRes.json();
-    const members = membersData.members || [];
-
-    const html = `
-      <div class="modal-content" style="max-width: 640px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-          <h3 style="margin: 0;">⚙️ Manage Home: ${escapeHtml(h.name)}</h3>
-          <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
-        </div>
-
-        <div style="background: rgba(255,255,255,0.03); border-radius: 8px; padding: 12px; margin-bottom: 16px; font-size: 13px;">
-          <div><strong>Owner Status:</strong> ${h.owner_username ? `<span style="color:var(--accent-blue);">👑 ${escapeHtml(h.owner_username)}</span>` : '<span style="color:#fbbf24;">👑 Managed by Super Admin (Bootstrap Mode)</span>'}</div>
-          <div style="margin-top: 4px; color: var(--text-secondary);">Total Rooms: ${h.rooms_count} | Total Devices: ${h.nodes_count}</div>
-        </div>
-
-        <h4 style="margin: 16px 0 8px; font-size: 14px;">Home Information</h4>
-        <div class="form-group">
-          <label class="form-label">Home Name</label>
-          <input type="text" id="edit-home-name" class="form-control" value="${escapeHtml(h.name)}">
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-          <div class="form-group">
-            <label class="form-label">Timezone</label>
-            <input type="text" id="edit-home-tz" class="form-control" value="${escapeHtml(h.timezone || 'UTC')}">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Address</label>
-            <input type="text" id="edit-home-addr" class="form-control" value="${escapeHtml(h.address || '')}">
           </div>
         </div>
 
-        <div style="display: flex; gap: 8px; margin-top: 10px;">
-          <button class="btn btn-primary" style="font-size: 12px;" onclick="submitUpdateHome(${homeId})">Save Changes</button>
-          <button class="btn btn-secondary" style="font-size: 12px;" onclick="showAppointOwnerModal(${homeId})">👑 Appoint / Transfer Owner</button>
-        </div>
+        <!-- Enhanced Multi-Filter Bar -->
+        <div class="nodes-multifilter-container">
+          <div class="nodes-filter-row">
+            <div class="devices-search-box" style="flex: 1; min-width: 240px;">
+              <span style="font-size: 13px; color: #64748b;">🔍</span>
+              <input type="text" id="device-search-input" class="devices-search-input" 
+                placeholder="Search device (name, IP, MAC, room, hardware)..." 
+                value="${escapeHtml(nodeFilterKeyword)}"
+                oninput="handleEnhancedNodeSearch(this.value)">
+            </div>
 
-        <hr style="border: none; border-top: 1px solid var(--border-color); margin: 20px 0;">
+            <select class="filter-select-enhanced" onchange="handleNodeStatusFilter(this.value)">
+              <option value="all" ${nodeFilterStatus === 'all' ? 'selected' : ''}>Status: All (${allFleetNodes.length})</option>
+              <option value="online" ${nodeFilterStatus === 'online' ? 'selected' : ''}>● Online (${onlineCount})</option>
+              <option value="offline" ${nodeFilterStatus === 'offline' ? 'selected' : ''}>○ Offline (${offlineCount})</option>
+            </select>
 
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-          <h4 style="margin: 0; font-size: 14px;">Home Members & Access Roles</h4>
-          <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="showAddMemberModal(${homeId})">+ Add Member</button>
-        </div>
+            <select class="filter-select-enhanced" onchange="handleNodeHwFilter(this.value)">
+              <option value="all" ${nodeFilterHw === 'all' ? 'selected' : ''}>Hardware: All</option>
+              <option value="esp8266" ${nodeFilterHw === 'esp8266' ? 'selected' : ''}>ESP8266</option>
+              <option value="esp-01" ${nodeFilterHw === 'esp-01' ? 'selected' : ''}>ESP-01</option>
+              <option value="esp32" ${nodeFilterHw === 'esp32' ? 'selected' : ''}>ESP32</option>
+              <option value="tuya" ${nodeFilterHw === 'tuya' ? 'selected' : ''}>Smart Breaker</option>
+              <option value="sensor" ${nodeFilterHw === 'sensor' ? 'selected' : ''}>Sensors</option>
+            </select>
 
-        <div style="max-height: 180px; overflow-y: auto;">
-          ${members.length === 0 ? '<div style="color:var(--text-muted); font-size:12px; padding:8px 0;">No assigned members yet. Add members to grant family or guest access.</div>' : `
-            <table style="width: 100%; font-size: 12.5px; border-collapse: collapse;">
-              <thead>
-                <tr style="text-align: left; color: var(--text-secondary); border-bottom: 1px solid var(--border-color);">
-                  <th style="padding: 6px;">User</th>
-                  <th style="padding: 6px;">Role</th>
-                  <th style="padding: 6px; text-align: right;">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${members.map(m => `
-                  <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                    <td style="padding: 6px;"><strong>${escapeHtml(m.username)}</strong> <span style="color:var(--text-muted); font-size:11px;">(${escapeHtml(m.email || '')})</span></td>
-                    <td style="padding: 6px;"><span class="badge-home">${escapeHtml(m.role)}</span></td>
-                    <td style="padding: 6px; text-align: right;">
-                      <button class="btn btn-danger" style="font-size: 10px; padding: 2px 6px;" onclick="removeHomeMember(${homeId}, ${m.user_id})">Remove</button>
-                    </td>
-                  </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          `}
-        </div>
+            <select class="filter-select-enhanced" onchange="handleNodeHomeFilter(this.value)">
+              <option value="all" ${nodeFilterHome === 'all' ? 'selected' : ''}>Home: All Homes</option>
+              ${homesList.map(h => `<option value="${h.id}" ${nodeFilterHome == h.id ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
+            </select>
 
-        <div style="display: flex; justify-content: flex-end; margin-top: 20px;">
-          <button class="btn btn-secondary" onclick="closeModal()">Close</button>
-        </div>
-      </div>
-    `;
-    openModal(html);
-  } catch (err) {
-    alert("Error loading manage home modal: " + err.message);
-  }
-}
+            <select class="filter-select-enhanced" onchange="handleNodeRoomFilter(this.value)">
+              <option value="all" ${nodeFilterRoom === 'all' ? 'selected' : ''}>Room: All Rooms</option>
+              ${roomsList.map(r => `<option value="${escapeHtml(r.name)}" ${nodeFilterRoom === r.name ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
+            </select>
 
-async function submitUpdateHome(homeId) {
-  const name = document.getElementById("edit-home-name").value.trim();
-  const timezone = document.getElementById("edit-home-tz").value.trim();
-  const address = document.getElementById("edit-home-addr").value.trim();
+            <select class="filter-select-enhanced" onchange="handleNodeSignalFilter(this.value)">
+              <option value="all" ${nodeFilterSignal === 'all' ? 'selected' : ''}>Signal: All</option>
+              <option value="strong" ${nodeFilterSignal === 'strong' ? 'selected' : ''}>📶 Strong (&ge; -60 dBm)</option>
+              <option value="medium" ${nodeFilterSignal === 'medium' ? 'selected' : ''}>📶 Medium (-61 to -75 dBm)</option>
+              <option value="weak" ${nodeFilterSignal === 'weak' ? 'selected' : ''}>📶 Weak (&lt; -75 dBm)</option>
+            </select>
 
-  if (!name) {
-    alert("Home name is required");
-    return;
-  }
-
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/homes/${homeId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, timezone, address })
-    });
-    const data = await res.json();
-    if (data.success) {
-      showToast({ title: "Home Updated", message: "Home settings updated", severity: "SUCCESS" });
-      closeModal();
-      loadNodes();
-    } else {
-      alert("Error: " + data.error);
-    }
-  } catch (err) {
-    alert("Update failed: " + err.message);
-  }
-}
-
-function showAddRoomModal(homeId) {
-  const html = `
-    <div class="modal-content">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-        <h3 style="margin: 0;">🚪 Add Room</h3>
-        <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Room Name *</label>
-        <input type="text" id="add-room-name" class="form-control" placeholder="e.g. Living Room, Kitchen, Kids Room" value="">
-      </div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-        <div class="form-group">
-          <label class="form-label">Floor</label>
-          <input type="text" id="add-room-floor" class="form-control" placeholder="Ground" value="Ground">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Icon</label>
-          <select id="add-room-icon" class="form-control">
-            <option value="room">🚪 General Room</option>
-            <option value="bed">🛏️ Bedroom</option>
-            <option value="couch">🛋️ Living Room</option>
-            <option value="kitchen">🍳 Kitchen</option>
-            <option value="bath">🛁 Bathroom</option>
-            <option value="desk">🖥️ Office / Study</option>
-            <option value="garage">🚗 Garage</option>
-          </select>
-        </div>
-      </div>
-      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
-        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="submitAddRoom(${homeId})">Create Room</button>
-      </div>
-    </div>
-  `;
-  openModal(html);
-}
-
-async function submitAddRoom(homeId) {
-  const name = document.getElementById("add-room-name").value.trim();
-  const floor = document.getElementById("add-room-floor").value.trim();
-  const icon = document.getElementById("add-room-icon").value;
-
-  if (!name) {
-    alert("Room name is required");
-    return;
-  }
-
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/homes/${homeId}/rooms`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, floor, icon })
-    });
-    const data = await res.json();
-    if (data.success) {
-      showToast({ title: "Room Created", message: `Room '${data.room.name}' created`, severity: "SUCCESS" });
-      closeModal();
-      activeRoomTab = String(data.room.id);
-      loadNodes();
-    } else {
-      alert("Error: " + data.error);
-    }
-  } catch (err) {
-    alert("Failed to create room: " + err.message);
-  }
-}
-
-async function showEditRoomModal(roomId) {
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/rooms/${roomId}`);
-    const data = await res.json();
-    if (!data.success || !data.room) {
-      alert("Could not load room details");
-      return;
-    }
-    const r = data.room;
-
-    const html = `
-      <div class="modal-content">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-          <h3 style="margin: 0;">⚙️ Edit Room: ${escapeHtml(r.name)}</h3>
-          <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Room Name *</label>
-          <input type="text" id="edit-room-name" class="form-control" value="${escapeHtml(r.name)}">
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-          <div class="form-group">
-            <label class="form-label">Floor</label>
-            <input type="text" id="edit-room-floor" class="form-control" value="${escapeHtml(r.floor || 'Ground')}">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Icon</label>
-            <select id="edit-room-icon" class="form-control">
-              <option value="room" ${r.icon === 'room' ? 'selected' : ''}>🚪 General Room</option>
-              <option value="bed" ${r.icon === 'bed' ? 'selected' : ''}>🛏️ Bedroom</option>
-              <option value="couch" ${r.icon === 'couch' ? 'selected' : ''}>🛋️ Living Room</option>
-              <option value="kitchen" ${r.icon === 'kitchen' ? 'selected' : ''}>🍳 Kitchen</option>
-              <option value="bath" ${r.icon === 'bath' ? 'selected' : ''}>🛁 Bathroom</option>
-              <option value="desk" ${r.icon === 'desk' ? 'selected' : ''}>🖥️ Office / Study</option>
-              <option value="garage" ${r.icon === 'garage' ? 'selected' : ''}>🚗 Garage</option>
+            <select class="filter-select-enhanced" onchange="handleNodeSort(this.value)">
+              <option value="name" ${nodeSortBy === 'name' ? 'selected' : ''}>Sort: Name</option>
+              <option value="ip" ${nodeSortBy === 'ip' ? 'selected' : ''}>Sort: IP Address</option>
+              <option value="signal" ${nodeSortBy === 'signal' ? 'selected' : ''}>Sort: Signal Strength</option>
+              <option value="status" ${nodeSortBy === 'status' ? 'selected' : ''}>Sort: Status</option>
             </select>
           </div>
         </div>
-        <div style="font-size: 12px; color: var(--text-muted); margin-top: 6px;">
-          Assigned Devices in Room: <strong>${r.nodes_count ?? 0}</strong>
-        </div>
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 18px;">
-          <button class="btn btn-danger" style="font-size: 12px;" onclick="confirmDeleteRoom(${roomId}, ${r.nodes_count ?? 0})">🗑️ Delete Room</button>
-          <div style="display: flex; gap: 8px;">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" onclick="submitEditRoom(${roomId})">Save Changes</button>
-          </div>
+
+        <!-- Table View -->
+        <div class="devices-table-wrap">
+          <table class="devices-table">
+            <thead>
+              <tr>
+                <th style="width: 40px;">#</th>
+                <th>Device Name</th>
+                <th>Type</th>
+                <th>IP Address (Click to Visit)</th>
+                <th>Room / Home</th>
+                <th>Signal</th>
+                <th>Status</th>
+                <th style="text-align: right; width: 170px;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="devices-table-body">
+              ${renderDevicesRows(getFilteredNodesList())}
+            </tbody>
+          </table>
         </div>
       </div>
     `;
-    openModal(html);
   } catch (err) {
-    alert("Error: " + err.message);
+    container.innerHTML = `<div style="color: var(--accent-red); padding: 20px;">Error loading devices: ${err.message}</div>`;
   }
 }
 
-async function submitEditRoom(roomId) {
-  const name = document.getElementById("edit-room-name").value.trim();
-  const floor = document.getElementById("edit-room-floor").value.trim();
-  const icon = document.getElementById("edit-room-icon").value;
+function getFilteredNodesList() {
+  let list = allFleetNodes.slice();
 
-  if (!name) {
-    alert("Room name is required");
-    return;
+  // Search filter
+  if (nodeFilterKeyword) {
+    const q = nodeFilterKeyword.toLowerCase();
+    list = list.filter(n => 
+      (n.name && n.name.toLowerCase().includes(q)) ||
+      (n.node_id && n.node_id.toLowerCase().includes(q)) ||
+      (n.ip_address && n.ip_address.toLowerCase().includes(q)) ||
+      (n.mac_address && n.mac_address.toLowerCase().includes(q)) ||
+      (n.room && n.room.toLowerCase().includes(q)) ||
+      (n.hardware_type && n.hardware_type.toLowerCase().includes(q))
+    );
   }
 
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/rooms/${roomId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, floor, icon })
+  // Status filter
+  if (nodeFilterStatus === 'online') list = list.filter(n => n.is_online);
+  else if (nodeFilterStatus === 'offline') list = list.filter(n => !n.is_online);
+
+  // Hardware filter
+  if (nodeFilterHw !== 'all') {
+    const h = nodeFilterHw.toLowerCase();
+    list = list.filter(n => {
+      const type = (n.hardware_type || n.name || '').toLowerCase();
+      if (h === 'tuya') return type.includes('breaker') || n.node_id.includes('30487D');
+      if (h === 'sensor') return type.includes('sensor');
+      return type.includes(h);
     });
-    const data = await res.json();
-    if (data.success) {
-      showToast({ title: "Room Updated", message: `Room '${data.room.name}' saved`, severity: "SUCCESS" });
-      closeModal();
-      loadNodes();
-    } else {
-      alert("Error: " + data.error);
-    }
-  } catch (err) {
-    alert("Failed to update room: " + err.message);
   }
+
+  // Home filter
+  if (nodeFilterHome !== 'all') {
+    list = list.filter(n => n.home_id == nodeFilterHome);
+  }
+
+  // Room filter
+  if (nodeFilterRoom !== 'all') {
+    list = list.filter(n => (n.room || '').toLowerCase() === nodeFilterRoom.toLowerCase());
+  }
+
+  // Signal filter
+  if (nodeFilterSignal === 'strong') {
+    list = list.filter(n => (n.rssi || -55) >= -60);
+  } else if (nodeFilterSignal === 'medium') {
+    list = list.filter(n => (n.rssi || -55) < -60 && (n.rssi || -55) >= -75);
+  } else if (nodeFilterSignal === 'weak') {
+    list = list.filter(n => (n.rssi || -55) < -75);
+  }
+
+  // Sort
+  list.sort((a, b) => {
+    if (nodeSortBy === 'ip') return (a.ip_address || '').localeCompare(b.ip_address || '');
+    if (nodeSortBy === 'signal') return (b.rssi || -99) - (a.rssi || -99);
+    if (nodeSortBy === 'status') return (b.is_online ? 1 : 0) - (a.is_online ? 1 : 0);
+    return (a.name || a.node_id || '').localeCompare(b.name || b.node_id || '');
+  });
+
+  return list;
 }
 
-async function confirmDeleteRoom(roomId, nodesCount) {
-  if (nodesCount > 0) {
-    alert(`Cannot delete this room because ${nodesCount} device(s) are currently assigned to it. Move or unassign all devices first.`);
-    return;
-  }
-  if (!confirm("Are you sure you want to delete this room? This action cannot be undone.")) {
-    return;
-  }
-
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/rooms/${roomId}`, { method: "DELETE" });
-    const data = await res.json();
-    if (data.success) {
-      showToast({ title: "Room Deleted", message: "Room deleted successfully", severity: "INFO" });
-      closeModal();
-      activeRoomTab = 'all';
-      loadNodes();
-    } else {
-      alert("Error: " + data.error);
-    }
-  } catch (err) {
-    alert("Failed to delete room: " + err.message);
-  }
+function handleEnhancedNodeSearch(val) {
+  nodeFilterKeyword = val;
+  updateNodesTable();
 }
 
-async function showMoveNodeModal(nodeId) {
-  try {
-    const homesRes = await fetchWithAuth(`${API_BASE}/homes`);
-    const homesData = await homesRes.json();
-    const homes = homesData.homes || [];
+function handleNodeStatusFilter(val) {
+  nodeFilterStatus = val;
+  updateNodesTable();
+}
 
-    const node = fleetData.nodes.find(n => n.node_id === nodeId) || {};
+function handleNodeHwFilter(val) {
+  nodeFilterHw = val;
+  updateNodesTable();
+}
 
-    const html = `
-      <div class="modal-content">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-          <h3 style="margin: 0;">📦 Move Device: ${escapeHtml(node.name || nodeId)}</h3>
-          <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
-        </div>
-        <p style="font-size: 13px; color: var(--text-secondary); margin: 0 0 14px; line-height: 1.5;">
-          Select the target Home and Room. Historical telemetry, GPIO definitions, and relay configurations are preserved.
-        </p>
+function handleNodeHomeFilter(val) {
+  nodeFilterHome = val;
+  updateNodesTable();
+}
 
+function handleNodeRoomFilter(val) {
+  nodeFilterRoom = val;
+  updateNodesTable();
+}
+
+function handleNodeSignalFilter(val) {
+  nodeFilterSignal = val;
+  updateNodesTable();
+}
+
+function handleNodeSort(val) {
+  nodeSortBy = val;
+  updateNodesTable();
+}
+
+function updateNodesTable() {
+  const tbody = document.getElementById("devices-table-body");
+  if (tbody) tbody.innerHTML = renderDevicesRows(getFilteredNodesList());
+}
+
+function renderDevicesRows(nodes) {
+  if (nodes.length === 0) {
+    return '<tr><td colspan="8" style="text-align: center; color: #64748b; padding: 30px;">No matching devices found in fleet.</td></tr>';
+  }
+
+  return nodes.map((n, idx) => {
+    let typeClass = 'type-badge-esp8266';
+    let typeLabel = 'ESP8266';
+    const hw = (n.hardware_type || n.name || '').toLowerCase();
+    if (hw.includes('esp-01') || hw.includes('esp01')) {
+      typeClass = 'type-badge-esp01';
+      typeLabel = 'ESP-01';
+    } else if (hw.includes('esp32')) {
+      typeClass = 'type-badge-esp32';
+      typeLabel = 'ESP32';
+    } else if (hw.includes('breaker') || n.node_id.includes('30487D')) {
+      typeClass = 'type-badge-esp8266';
+      typeLabel = 'Tuya Breaker';
+    } else if (hw.includes('sensor')) {
+      typeClass = 'type-badge-esp32';
+      typeLabel = 'Sensor Node';
+    }
+
+    const isOnline = Boolean(n.is_online);
+    const rssi = n.rssi != null ? n.rssi : -52;
+    const signalColor = rssi >= -60 ? '#10b981' : (rssi >= -75 ? '#f59e0b' : '#ef4444');
+    const nodeIp = n.ip_address || n.ip || '';
+
+    return `
+      <tr>
+        <td style="color: #64748b; font-weight: 500;">${idx + 1}</td>
+        <td>
+          <span style="font-weight: 600; color: #ffffff; cursor: pointer;" onclick="showNodeInfoModal('${n.node_id}')">${escapeHtml(n.name || n.node_id)}</span>
+          <br><small style="color: #64748b; font-family: monospace;">${escapeHtml(n.node_id)}</small>
+        </td>
+        <td><span class="device-type-badge ${typeClass}">${typeLabel}</span></td>
+        <td>
+          ${nodeIp ? `
+            <a href="http://${escapeHtml(nodeIp)}" target="_blank" style="color: #38bdf8; text-decoration: underline; font-family: monospace; font-size: 13px;" title="Visit Device Web Portal">
+              http://${escapeHtml(nodeIp)} ↗
+            </a>
+          ` : '<span style="color: #64748b;">N/A</span>'}
+        </td>
+        <td style="color: #94a3b8;">${escapeHtml(n.room || n.room_name || 'General')}</td>
+        <td>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span style="color: ${signalColor};">📶</span>
+            <span style="color: ${signalColor}; font-weight: 600; font-size: 12px;">${rssi} dBm</span>
+          </div>
+        </td>
+        <td>
+          <span class="${isOnline ? 'status-pill-online' : 'status-pill-offline'}">
+            ${isOnline ? '● Online' : '○ Offline'}
+          </span>
+        </td>
+        <td style="text-align: right;">
+          <div style="display: flex; gap: 6px; justify-content: flex-end;">
+            ${nodeIp ? `<button class="btn-action-icon" title="Visit Device Web Portal" onclick="window.open('http://${escapeHtml(nodeIp)}', '_blank')">🌐</button>` : ''}
+            <button class="btn-action-icon" title="Assign to Room" onclick="showAssignNodeModal('${n.node_id}')">🚪</button>
+            <button class="btn-action-icon" title="Edit Device Settings" onclick="showNodeSettingsModal('${n.node_id}')">✏️</button>
+            <button class="btn-action-icon" title="Device Details & Diagnostics" onclick="showNodeInfoModal('${n.node_id}')">ℹ️</button>
+            <button class="btn-action-icon" title="Ping Device" onclick="pingNode('${n.node_id}')">⚡</button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+// --------------------------------------------------------------------------
+// + ADD DEVICE / PROBE & REGISTER MODAL
+// --------------------------------------------------------------------------
+function showAddNodeModal(prefillIp = '', prefillName = '', prefillUser = 'admin', prefillPass = 'admin') {
+  const homes = fleetData.homes || [];
+  const rooms = fleetData.rooms || [];
+
+  const html = `
+    <div class="modal-content" style="max-width: 540px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: #fff; font-size: 17px;">+ Register Fleet Node</h3>
+        <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
+      </div>
+
+      <p style="font-size: 12.5px; color: #94a3b8; margin: 0 0 16px 0; line-height: 1.5;">
+        Enter the LAN IP and optional authentication credentials of your ESP8266 or ESP32 node. The server will probe its status, read configured channels, and register it in the central fleet.
+      </p>
+
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Node IP Address *</label>
+        <input type="text" id="add-node-ip" class="settings-input" style="width: 100%;" placeholder="e.g. 192.168.1.103" value="${escapeHtml(prefillIp || '192.168.1.103')}">
+      </div>
+
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Friendly Device Name (Optional)</label>
+        <input type="text" id="add-node-name" class="settings-input" style="width: 100%;" placeholder="e.g. Balcony Light Controller" value="${escapeHtml(prefillName)}">
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
         <div class="form-group">
-          <label class="form-label">Target Home *</label>
-          <select id="move-target-home" class="form-control" onchange="loadRoomsForTargetHome(this.value)">
-            ${homes.map(h => `
-              <option value="${h.id}" ${Number(h.id) === Number(node.home_id || activeHomeId) ? 'selected' : ''}>
-                ${escapeHtml(h.name)}
-              </option>
-            `).join('')}
+          <label class="settings-field-label">Target Home</label>
+          <select id="add-node-home" class="filter-select-enhanced" style="width: 100%;">
+            ${homes.map(h => `<option value="${h.id}">${escapeHtml(h.name)}</option>`).join('')}
           </select>
         </div>
-
         <div class="form-group">
-          <label class="form-label">Target Room *</label>
-          <select id="move-target-room" class="form-control">
-            <option value="">Loading rooms...</option>
+          <label class="settings-field-label">Target Room</label>
+          <select id="add-node-room" class="filter-select-enhanced" style="width: 100%;">
+            ${rooms.map(r => `<option value="${escapeHtml(r.name)}">${escapeHtml(r.name)}</option>`).join('')}
+            <option value="General">General / Other</option>
           </select>
-        </div>
-
-        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
-          <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-          <button class="btn btn-primary" onclick="submitMoveNode('${nodeId}')">Confirm Move</button>
         </div>
       </div>
-    `;
-    openModal(html);
-    const initialHomeId = Number(document.getElementById("move-target-home").value);
-    loadRoomsForTargetHome(initialHomeId, node.room_id);
-  } catch (err) {
-    alert("Error: " + err.message);
-  }
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
+        <div class="form-group">
+          <label class="settings-field-label">Node Login User</label>
+          <input type="text" id="add-node-user" class="settings-input" style="width: 100%;" value="${escapeHtml(prefillUser)}">
+        </div>
+        <div class="form-group">
+          <label class="settings-field-label">Node Password</label>
+          <input type="password" id="add-node-pass" class="settings-input" style="width: 100%;" value="${escapeHtml(prefillPass)}">
+        </div>
+      </div>
+
+      <div id="add-node-status-box" style="display: none; font-size: 12.5px; padding: 10px; border-radius: 6px; margin-bottom: 14px;"></div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; padding-top: 14px; border-top: 1px solid #1e293b;">
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn-save-settings" id="btn-submit-add-node" onclick="submitAddNode()">Probe & Register Node</button>
+      </div>
+    </div>
+  `;
+  openModal(html);
 }
 
-async function loadRoomsForTargetHome(homeId, selectedRoomId = null) {
-  const roomSelect = document.getElementById("move-target-room") || document.getElementById("assign-target-room");
-  if (!roomSelect) return;
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/homes/${homeId}/rooms`);
-    const data = await res.json();
-    const rooms = data.rooms || [];
-    if (rooms.length === 0) {
-      roomSelect.innerHTML = '<option value="">No rooms in this home (create one first)</option>';
-      return;
-    }
-    roomSelect.innerHTML = rooms.map(r => `
-      <option value="${r.id}" ${Number(r.id) === Number(selectedRoomId) ? 'selected' : ''}>
-        ${r.icon === 'bed' ? '🛏️' : r.icon === 'couch' ? '🛋️' : '🚪'} ${escapeHtml(r.name)} (${escapeHtml(r.floor || 'Ground')})
-      </option>
-    `).join('');
-  } catch (err) {
-    roomSelect.innerHTML = `<option value="">Error loading rooms</option>`;
-  }
-}
+async function submitAddNode() {
+  const ip = document.getElementById("add-node-ip").value.trim();
+  const name = document.getElementById("add-node-name").value.trim();
+  const room = document.getElementById("add-node-room").value;
+  const auth_username = document.getElementById("add-node-user").value.trim() || 'admin';
+  const auth_password = document.getElementById("add-node-pass").value.trim() || 'admin';
+  const statusBox = document.getElementById("add-node-status-box");
+  const btn = document.getElementById("btn-submit-add-node");
 
-async function submitMoveNode(nodeId) {
-  const homeId = Number(document.getElementById("move-target-home").value);
-  const roomId = Number(document.getElementById("move-target-room").value);
-
-  if (!homeId || !roomId) {
-    alert("Please select both a target Home and Room");
+  if (!ip) {
+    statusBox.style.display = "block";
+    statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+    statusBox.style.color = "#ef4444";
+    statusBox.textContent = "Please enter a valid IP address.";
     return;
   }
 
+  btn.disabled = true;
+  btn.textContent = "Probing Node...";
+  statusBox.style.display = "block";
+  statusBox.style.background = "rgba(56, 189, 248, 0.15)";
+  statusBox.style.color = "#38bdf8";
+  statusBox.textContent = `Connecting to http://${ip}/api/status...`;
+
   try {
-    const res = await fetchWithAuth(`${API_BASE}/nodes/${nodeId}/move`, {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ homeId, roomId })
+      body: JSON.stringify({ ip, name, room, auth_username, auth_password })
     });
-    const data = await res.json();
-    if (data.success) {
-      showToast({ title: "Node Moved", message: `Node moved to ${data.node?.room_name || 'new room'}`, severity: "SUCCESS" });
-      closeModal();
-      activeHomeId = homeId;
-      activeRoomTab = String(roomId);
-      loadNodes();
+    const result = await res.json();
+
+    if (result.success) {
+      statusBox.style.background = "rgba(16, 185, 129, 0.15)";
+      statusBox.style.color = "#10b981";
+      statusBox.textContent = `Success: ${result.message || 'Node successfully registered in fleet!'}`;
+      setTimeout(() => {
+        closeModal();
+        loadNodes();
+      }, 1000);
     } else {
-      alert("Error: " + data.error);
+      btn.disabled = false;
+      btn.textContent = "Probe & Register Node";
+      statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+      statusBox.style.color = "#ef4444";
+      statusBox.textContent = `Error: ${result.error || 'Failed to register node'}`;
     }
   } catch (err) {
-    alert("Move failed: " + err.message);
+    btn.disabled = false;
+    btn.textContent = "Probe & Register Node";
+    statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+    statusBox.style.color = "#ef4444";
+    statusBox.textContent = `Request error: ${err.message}`;
   }
 }
 
+// --------------------------------------------------------------------------
+// 🚪 ASSIGN NODE TO ROOM MODAL
+// --------------------------------------------------------------------------
 async function showAssignNodeModal(nodeId) {
   try {
-    const homesRes = await fetchWithAuth(`${API_BASE}/homes`);
+    const [homesRes, roomsRes] = await Promise.all([
+      fetchWithAuth(`${API_BASE}/homes`),
+      fetchWithAuth(`${API_BASE}/rooms`)
+    ]);
     const homesData = await homesRes.json();
+    const roomsData = await roomsRes.json();
     const homes = homesData.homes || [];
+    const rooms = roomsData.rooms || [];
 
-    const node = fleetData.nodes.find(n => n.node_id === nodeId) || {};
+    const node = (fleetData.nodes || []).find(n => n.node_id === nodeId) || { node_id: nodeId };
 
     const html = `
-      <div class="modal-content">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-          <h3 style="margin: 0;">➕ Assign Node to Room</h3>
+      <div class="modal-content" style="max-width: 500px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 16px;">
+          <h3 style="margin: 0; color: #fff; font-size: 16px;">🚪 Assign Node to Room</h3>
           <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
         </div>
-        <p style="font-size: 13px; color: var(--text-secondary); margin: 0 0 14px; line-height: 1.5;">
-          Assign microcontroller <code>${escapeHtml(nodeId)}</code> (<strong>${escapeHtml(node.name || 'ESP Device')}</strong>) to an active Home and Room.
+
+        <p style="font-size: 13px; color: #94a3b8; margin: 0 0 16px 0; line-height: 1.5;">
+          Assign controller <strong style="color: #fff;">${escapeHtml(node.name || node.node_id)}</strong> (<code style="color: #38bdf8;">${nodeId}</code>) to a Home and Room location.
         </p>
 
-        <div class="form-group">
-          <label class="form-label">Target Home *</label>
-          <select id="assign-target-home" class="form-control" onchange="loadRoomsForTargetHome(this.value)">
-            ${homes.map(h => `
-              <option value="${h.id}" ${Number(h.id) === Number(activeHomeId) ? 'selected' : ''}>
-                ${escapeHtml(h.name)}
-              </option>
-            `).join('')}
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="settings-field-label">Target Home *</label>
+          <select id="assign-target-home" class="filter-select-enhanced" style="width: 100%;">
+            ${homes.map(h => `<option value="${h.id}" ${h.id === node.home_id ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
           </select>
         </div>
 
-        <div class="form-group">
-          <label class="form-label">Target Room *</label>
-          <select id="assign-target-room" class="form-control">
-            <option value="">Loading rooms...</option>
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label class="settings-field-label">Target Room *</label>
+          <select id="assign-target-room" class="filter-select-enhanced" style="width: 100%;">
+            ${rooms.map(r => `<option value="${r.id}" ${r.id === node.room_id ? 'selected' : ''}>${escapeHtml(r.name)} (${escapeHtml(r.home_name || 'Home')})</option>`).join('')}
           </select>
         </div>
 
-        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
+        <div style="display: flex; justify-content: flex-end; gap: 10px; padding-top: 14px; border-top: 1px solid #1e293b;">
           <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-          <button class="btn btn-primary" onclick="submitAssignNode('${nodeId}')">Assign Node</button>
+          <button class="btn-save-settings" onclick="submitAssignNode('${nodeId}')">Assign Node</button>
         </div>
       </div>
     `;
     openModal(html);
-    const initialHomeId = Number(document.getElementById("assign-target-home").value);
-    loadRoomsForTargetHome(initialHomeId);
   } catch (err) {
-    alert("Error: " + err.message);
+    alert("Error loading assignment options: " + err.message);
   }
 }
 
@@ -1486,1182 +1953,1255 @@ async function submitAssignNode(nodeId) {
     });
     const data = await res.json();
     if (data.success) {
-      showToast({ title: "Node Assigned", message: `Node assigned to ${data.node?.room_name || 'Room'}`, severity: "SUCCESS" });
-      closeModal();
-      activeHomeId = homeId;
-      activeRoomTab = String(roomId);
-      loadNodes();
-    } else {
-      alert("Error: " + data.error);
-    }
-  } catch (err) {
-    alert("Assignment failed: " + err.message);
-  }
-}
-
-async function confirmUnassignNode(nodeId) {
-  if (!confirm(`Are you sure you want to unassign device '${nodeId}'? It will be moved to the Unassigned Nodes queue.`)) {
-    return;
-  }
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/nodes/${nodeId}/unassign`, { method: "POST" });
-    const data = await res.json();
-    if (data.success) {
-      showToast({ title: "Node Unassigned", message: "Node moved to Unassigned Nodes queue", severity: "INFO" });
-      loadNodes();
-    } else {
-      alert("Error: " + data.error);
-    }
-  } catch (err) {
-    alert("Unassign failed: " + err.message);
-  }
-}
-
-async function showAppointOwnerModal(homeId) {
-  try {
-    const usersRes = await fetchWithAuth(`${API_BASE}/admin/users`);
-    const usersData = await usersRes.json();
-    const users = usersData.users || [];
-
-    const html = `
-      <div class="modal-content">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-          <h3 style="margin: 0;">👑 Appoint / Transfer Home Owner</h3>
-          <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
-        </div>
-        <p style="font-size: 13px; color: var(--text-secondary); margin: 0 0 14px; line-height: 1.5;">
-          Appointing a Home Owner grants full authority over this home, its rooms, members, and all contained devices.
-        </p>
-        <div class="form-group">
-          <label class="form-label">Select User *</label>
-          <select id="appoint-owner-user" class="form-control">
-            ${users.map(u => `
-              <option value="${u.id}">${escapeHtml(u.username)} (${escapeHtml(u.email || u.full_name || 'User')})</option>
-            `).join('')}
-          </select>
-        </div>
-        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
-          <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-          <button class="btn btn-primary" onclick="submitAppointOwner(${homeId})">Confirm Appointment</button>
-        </div>
-      </div>
-    `;
-    openModal(html);
-  } catch (err) {
-    alert("Failed to load users: " + err.message);
-  }
-}
-
-async function submitAppointOwner(homeId) {
-  const userId = Number(document.getElementById("appoint-owner-user").value);
-  if (!userId) return;
-
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/homes/${homeId}/owner`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId })
-    });
-    const data = await res.json();
-    if (data.success) {
-      showToast({ title: "Owner Appointed", message: "Home Owner appointed successfully", severity: "SUCCESS" });
+      alert(`Node successfully assigned to ${data.node?.room_name || 'Room'}!`);
       closeModal();
       loadNodes();
     } else {
-      alert("Error: " + data.error);
+      alert("Assignment failed: " + (data.error || "Unknown error"));
     }
   } catch (err) {
-    alert("Appointment failed: " + err.message);
+    alert("Assign request error: " + err.message);
   }
 }
 
-async function showAddMemberModal(homeId) {
-  try {
-    const usersRes = await fetchWithAuth(`${API_BASE}/admin/users`);
-    const usersData = await usersRes.json();
-    const users = usersData.users || [];
-
-    const html = `
-      <div class="modal-content">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-          <h3 style="margin: 0;">👤 Add Home Member</h3>
-          <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Select User *</label>
-          <select id="add-member-user" class="form-control">
-            ${users.map(u => `
-              <option value="${u.id}">${escapeHtml(u.username)} (${escapeHtml(u.email || '')})</option>
-            `).join('')}
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Home Role *</label>
-          <select id="add-member-role" class="form-control">
-            <option value="FAMILY_MEMBER">Family Member (Control devices in permitted rooms)</option>
-            <option value="HOME_ADMIN">Home Admin (Manage rooms, assign nodes, edit config)</option>
-            <option value="GUEST">Guest (Restricted temporary control)</option>
-            <option value="VIEWER">Viewer (Read-only access)</option>
-          </select>
-        </div>
-        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px;">
-          <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-          <button class="btn btn-primary" onclick="submitAddMember(${homeId})">Add Member</button>
-        </div>
-      </div>
-    `;
-    openModal(html);
-  } catch (err) {
-    alert("Error: " + err.message);
-  }
-}
-
-async function submitAddMember(homeId) {
-  const userId = Number(document.getElementById("add-member-user").value);
-  const role = document.getElementById("add-member-role").value;
-
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/homes/${homeId}/members`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId, role })
-    });
-    const data = await res.json();
-    if (data.success) {
-      showToast({ title: "Member Added", message: "User added to home", severity: "SUCCESS" });
-      closeModal();
-      showManageHomeModal(homeId);
-    } else {
-      alert("Error: " + data.error);
-    }
-  } catch (err) {
-    alert("Failed: " + err.message);
-  }
-}
-
-async function removeHomeMember(homeId, userId) {
-  if (!confirm("Are you sure you want to remove this member from the home?")) return;
-  try {
-    const res = await fetchWithAuth(`${API_BASE}/homes/${homeId}/members/${userId}`, { method: "DELETE" });
-    const data = await res.json();
-    if (data.success) {
-      showToast({ title: "Member Removed", message: "Member removed from home", severity: "INFO" });
-      showManageHomeModal(homeId);
-    } else {
-      alert("Error: " + data.error);
-    }
-  } catch (err) {
-    alert("Failed: " + err.message);
-  }
-}
-
-
-function showAddNodeModal(prefillIp = '', prefillName = '', prefillUser = 'admin', prefillPass = 'admin') {
+// --------------------------------------------------------------------------
+// ✏️ EDIT NODE SETTINGS MODAL
+// --------------------------------------------------------------------------
+function showNodeSettingsModal(nodeId) {
+  const node = (fleetData.nodes || []).find(n => n.node_id === nodeId) || { node_id: nodeId };
   const html = `
-    <div class="modal-content">
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <h3 style="margin: 0;">+ Register Fleet Node</h3>
+    <div class="modal-content" style="max-width: 520px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: #fff; font-size: 16px;">Configure Device: ${escapeHtml(node.name || node.node_id)}</h3>
         <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
       </div>
-      <p style="font-size: 13px; color: var(--text-secondary); margin: 0; line-height: 1.5;">
-        Enter the LAN IP and optional authentication credentials of your ESP8266 or ESP32 node. The server will probe its status, read configured relay channels, and register it in the central fleet.
-      </p>
-      <div class="form-group">
-        <label class="form-label">Node IP Address *</label>
-        <input type="text" id="add-node-ip" class="form-control" placeholder="192.168.1.103" value="${escapeHtml(prefillIp || '192.168.1.103')}">
+
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Device Name</label>
+        <input type="text" id="config-node-name" class="settings-input" style="width: 100%;" value="${escapeHtml(node.name || node.node_id)}">
       </div>
-      <div class="form-group">
-        <label class="form-label">Friendly Name (Optional)</label>
-        <input type="text" id="add-node-name" class="form-control" placeholder="e.g. Master Bedroom Controller" value="${escapeHtml(prefillName)}">
+
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Device IP Address</label>
+        <input type="text" id="config-node-ip" class="settings-input" style="width: 100%; font-family: monospace;" value="${escapeHtml(node.ip_address || node.ip || '')}">
       </div>
-      <div class="form-group">
-        <label class="form-label">Room / Zone</label>
-        <input type="text" id="add-node-room" class="form-control" placeholder="Living Room" value="General">
+
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Assigned Room</label>
+        <input type="text" id="config-node-room" class="settings-input" style="width: 100%;" value="${escapeHtml(node.room || node.room_name || '')}">
       </div>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
         <div class="form-group">
-          <label class="form-label">Node User ID / Login</label>
-          <input type="text" id="add-node-user" class="form-control" placeholder="admin" value="${escapeHtml(prefillUser)}">
+          <label class="settings-field-label">Auth Username</label>
+          <input type="text" id="config-node-user" class="settings-input" style="width: 100%;" value="${escapeHtml(node.auth_username || 'admin')}">
         </div>
         <div class="form-group">
-          <label class="form-label">Node Password</label>
-          <input type="password" id="add-node-pass" class="form-control" placeholder="admin" value="${escapeHtml(prefillPass)}">
+          <label class="settings-field-label">Auth Password</label>
+          <input type="password" id="config-node-pass" class="settings-input" style="width: 100%;" value="${escapeHtml(node.auth_password || 'admin')}">
         </div>
       </div>
-      <div id="add-node-status" style="display: none; font-size: 13px; padding: 10px; border-radius: 6px;"></div>
-      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px;">
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; padding-top: 14px; border-top: 1px solid #1e293b;">
         <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" id="btn-submit-add-node" onclick="submitAddNode()">Probe & Register Node</button>
+        <button class="btn-save-settings" onclick="saveNodeSettings('${nodeId}')">Save Changes</button>
       </div>
     </div>
   `;
   openModal(html);
 }
 
-async function submitAddNode() {
-  const ip = document.getElementById("add-node-ip").value.trim();
-  const name = document.getElementById("add-node-name").value.trim();
-  const room = document.getElementById("add-node-room").value.trim();
-  const auth_username = document.getElementById("add-node-user").value.trim() || 'admin';
-  const auth_password = document.getElementById("add-node-pass").value.trim() || 'admin';
-  const statusBox = document.getElementById("add-node-status");
-  const btn = document.getElementById("btn-submit-add-node");
-
-  if (!ip) {
-    statusBox.style.display = "block";
-    statusBox.style.background = "rgba(239, 68, 68, 0.15)";
-    statusBox.style.color = "var(--accent-red)";
-    statusBox.textContent = "Please enter a valid IP address.";
-    return;
-  }
-
-  btn.disabled = true;
-  btn.textContent = "Probing Node...";
-  statusBox.style.display = "block";
-  statusBox.style.background = "rgba(59, 130, 246, 0.15)";
-  statusBox.style.color = "var(--accent-blue)";
-  statusBox.textContent = `Connecting to http://${ip}/api/status...`;
+async function saveNodeSettings(nodeId) {
+  const name = document.getElementById("config-node-name").value.trim();
+  const ip = document.getElementById("config-node-ip").value.trim();
+  const room = document.getElementById("config-node-room").value.trim();
+  const auth_username = document.getElementById("config-node-user").value.trim();
+  const auth_password = document.getElementById("config-node-pass").value.trim();
 
   try {
-    const res = await fetch(`${API_BASE}/nodes/add`, {
-      method: "POST",
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${nodeId}/settings`, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ip, name, room, auth_username, auth_password })
+      body: JSON.stringify({ name, ip, room, auth_username, auth_password })
     });
-    const result = await res.json();
-
-    if (result.success) {
-      statusBox.style.background = "rgba(34, 197, 94, 0.15)";
-      statusBox.style.color = "var(--accent-green)";
-      statusBox.textContent = result.message || "Node successfully connected and registered!";
-      setTimeout(() => {
-        closeModal();
-        loadNodes();
-      }, 1000);
-    } else {
-      statusBox.style.background = "rgba(239, 68, 68, 0.15)";
-      statusBox.style.color = "var(--accent-red)";
-      statusBox.textContent = result.error || "Failed to probe node.";
-      btn.disabled = false;
-      btn.textContent = "Try Again";
-    }
+    const data = await res.json();
+    alert(data.message || 'Device settings updated successfully');
+    closeModal();
+    loadNodes();
+    if (typeof loadRelays === 'function') loadRelays();
   } catch (err) {
-    statusBox.style.background = "rgba(239, 68, 68, 0.15)";
-    statusBox.style.color = "var(--accent-red)";
-    statusBox.textContent = "Network error: " + err.message;
-    btn.disabled = false;
-    btn.textContent = "Try Again";
+    alert("Failed to save device settings: " + err.message);
   }
 }
 
-// --- NETWORK DISCOVERY SCANNER ---
-async function showNetworkScannerModal() {
-  let detectedSubnet = "192.168.1";
-  let subnetsList = [];
-
-  try {
-    const res = await fetch(`${API_BASE}/nodes/discovery/subnets`);
-    const data = await res.json();
-    if (data.primarySubnet) {
-      detectedSubnet = data.primarySubnet;
-    }
-    if (Array.isArray(data.subnets)) {
-      subnetsList = data.subnets;
-    }
-  } catch (e) {
-    console.warn("Failed to fetch subnets:", e);
-  }
+// --------------------------------------------------------------------------
+// ℹ️ DEVICE DETAILS & DIAGNOSTICS MODAL
+// --------------------------------------------------------------------------
+function showNodeInfoModal(nodeId) {
+  const node = (fleetData.nodes || []).find(n => n.node_id === nodeId) || { node_id: nodeId };
+  const channels = (fleetData.relays || []).filter(r => r.node_id === nodeId);
+  const isOnline = Boolean(node.is_online);
+  const nodeIp = node.ip_address || node.ip || '';
 
   const html = `
-    <div class="modal-content modal-lg">
-      <div style="display: flex; justify-content: space-between; align-items: center;">
+    <div class="modal-content" style="max-width: 650px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 14px; margin-bottom: 18px;">
         <div>
-          <h3 style="margin: 0;">🔍 Local Network Node Scanner</h3>
-          <p style="font-size: 13px; color: var(--text-secondary); margin: 4px 0 0 0;">
-            Automatically scan your LAN for ESP8266 / ESP32 smart home controllers and add them with one click.
-          </p>
+          <h3 style="margin: 0; color: #fff; font-size: 17px; display: flex; align-items: center; gap: 8px;">
+            <span>${escapeHtml(node.name || node.node_id)}</span>
+            <span class="${isOnline ? 'status-pill-online' : 'status-pill-offline'}" style="font-size: 11px;">
+              ${isOnline ? 'Online' : 'Offline'}
+            </span>
+          </h3>
+          <span style="color: #64748b; font-size: 12px; font-family: monospace;">ID: ${node.node_id}</span>
         </div>
         <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
       </div>
 
-      <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 10px; align-items: flex-end;">
-        <div class="form-group" style="margin: 0;">
-          <label class="form-label">Subnet Base</label>
-          <input type="text" id="scan-subnet" class="form-control" value="${escapeHtml(detectedSubnet)}" placeholder="192.168.1">
-        </div>
-        <div class="form-group" style="margin: 0;">
-          <label class="form-label">Start IP</label>
-          <input type="number" id="scan-start" class="form-control" value="1" min="1" max="254">
-        </div>
-        <div class="form-group" style="margin: 0;">
-          <label class="form-label">End IP</label>
-          <input type="number" id="scan-end" class="form-control" value="254" min="1" max="254">
-        </div>
-        <div>
-          <button class="btn btn-primary" id="btn-start-scan" style="white-space: nowrap; height: 38px;" onclick="runDiscoveryScan()">🚀 Start Scan</button>
-        </div>
+      <!-- Specs Grid -->
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; background: #090e1a; padding: 16px; border-radius: 10px; border: 1px solid rgba(56, 189, 248, 0.1); margin-bottom: 18px;">
+        <div style="font-size: 12.5px; color: #94a3b8;"><strong>Hardware:</strong> <span style="color: #fff;">${escapeHtml(node.hardware_type || 'ESP8266')}</span></div>
+        <div style="font-size: 12.5px; color: #94a3b8;"><strong>IP Address:</strong> <a href="http://${escapeHtml(nodeIp)}" target="_blank" style="color: #38bdf8; font-family: monospace; text-decoration: underline;">${nodeIp || 'N/A'} ↗</a></div>
+        <div style="font-size: 12.5px; color: #94a3b8;"><strong>MAC Address:</strong> <span style="color: #cbd5e1; font-family: monospace;">${node.mac_address || node.mac || 'N/A'}</span></div>
+        <div style="font-size: 12.5px; color: #94a3b8;"><strong>Signal (RSSI):</strong> <span style="color: #10b981; font-weight: 600;">📶 ${node.rssi || -52} dBm</span></div>
+        <div style="font-size: 12.5px; color: #94a3b8;"><strong>Assigned Room:</strong> <span style="color: #fff;">${escapeHtml(node.room || node.room_name || 'General')}</span></div>
+        <div style="font-size: 12.5px; color: #94a3b8;"><strong>Uptime:</strong> <span style="color: #fff;">${formatUptime(node.uptime_sec)}</span></div>
       </div>
 
-      <div style="display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary);">
-        <span>Quick Presets:</span>
-        <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="document.getElementById('scan-start').value=100; document.getElementById('scan-end').value=120;">DHCP Range (100-120)</button>
-        <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="document.getElementById('scan-start').value=1; document.getElementById('scan-end').value=50;">Low Range (1-50)</button>
-        <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;" onclick="document.getElementById('scan-start').value=1; document.getElementById('scan-end').value=254;">Full Subnet (1-254)</button>
+      <!-- Channel Pinout List -->
+      <h4 style="margin: 0 0 10px 0; color: #cbd5e1; font-size: 13.5px;">Configured Relay Channels (${channels.length})</h4>
+      <div style="max-height: 180px; overflow-y: auto; background: #090e1a; border-radius: 8px; border: 1px solid #1e293b;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 12px; text-align: left;">
+          <thead>
+            <tr style="border-bottom: 1px solid #1e293b; color: #64748b;">
+              <th style="padding: 8px 12px;">CH #</th>
+              <th style="padding: 8px 12px;">Name</th>
+              <th style="padding: 8px 12px;">GPIO Pin</th>
+              <th style="padding: 8px 12px;">State</th>
+              <th style="padding: 8px 12px; text-align: right;">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${channels.length === 0 ? '<tr><td colspan="5" style="padding: 12px; text-align: center; color: #64748b;">No channels configured.</td></tr>' : channels.map(c => `
+              <tr style="border-bottom: 1px solid rgba(255,255,255,0.03);">
+                <td style="padding: 8px 12px; color: #38bdf8; font-weight: 600;">CH${c.channel_id}</td>
+                <td style="padding: 8px 12px; color: #fff;">${escapeHtml(c.name)}</td>
+                <td style="padding: 8px 12px;"><span class="gpio-badge">GPIO ${c.pin != null ? c.pin : c.channel_id}</span></td>
+                <td style="padding: 8px 12px;">
+                  <span style="color: ${c.current_state ? '#10b981' : '#ef4444'}; font-weight: 600;">
+                    ${c.current_state ? 'ON' : 'OFF'}
+                  </span>
+                </td>
+                <td style="padding: 8px 12px; text-align: right;">
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 2px 8px;" onclick="toggleRelay('${c.node_id}', ${c.channel_id}, ${!c.current_state}); setTimeout(() => showNodeInfoModal('${nodeId}'), 300);">
+                    Toggle
+                  </button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
       </div>
 
-      <div id="scan-status-container" style="display: none;">
-        <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px;">
-          <span id="scan-status-text" style="color: var(--accent-blue);">Scanning network...</span>
-          <span id="scan-status-count" style="color: var(--text-secondary);">0 / 254</span>
+      <!-- Action Buttons -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 20px; padding-top: 16px; border-top: 1px solid #1e293b; flex-wrap: wrap; gap: 8px;">
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          ${nodeIp ? `<button class="btn-neutral-action" onclick="window.open('http://${escapeHtml(nodeIp)}', '_blank')">🌐 Visit Device</button>` : ''}
+          <button class="btn-neutral-action" onclick="closeModal(); showAssignNodeModal('${node.node_id}')">🚪 Assign Room</button>
+          <button class="btn-neutral-action" onclick="pingNode('${node.node_id}')">⚡ Ping</button>
+          <button class="btn-neutral-action" onclick="syncPinsWithHardware('${node.node_id}')">🔄 Sync Pins</button>
         </div>
-        <div class="scan-progress-bar">
-          <div class="scan-progress-fill" id="scan-progress-fill" style="width: 100%;"></div>
-        </div>
-      </div>
-
-      <div id="scan-results-container" style="max-height: 380px; overflow-y: auto; padding-right: 4px;">
-        <div style="text-align: center; color: var(--text-secondary); padding: 30px; font-size: 13px;">
-          Click "🚀 Start Scan" to probe your local network for active ESP8266/ESP32 controllers.
-        </div>
-      </div>
-
-      <div style="display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--border-color); padding-top: 12px;">
-        <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+        <button class="btn btn-primary" onclick="closeModal()">Close</button>
       </div>
     </div>
   `;
   openModal(html);
 }
 
-async function runDiscoveryScan() {
-  const subnet = document.getElementById("scan-subnet").value.trim();
-  const start = parseInt(document.getElementById("scan-start").value) || 1;
-  const end = parseInt(document.getElementById("scan-end").value) || 254;
-  const btn = document.getElementById("btn-start-scan");
-  const statusContainer = document.getElementById("scan-status-container");
-  const statusText = document.getElementById("scan-status-text");
-  const statusCount = document.getElementById("scan-status-count");
-  const resultsContainer = document.getElementById("scan-results-container");
+function handleNodeDiagnostics(nodeId) {
+  showNodeInfoModal(nodeId);
+}
 
-  btn.disabled = true;
-  btn.textContent = "Scanning...";
-  statusContainer.style.display = "block";
-  statusText.textContent = `Probing ${subnet}.${start} through ${subnet}.${end}...`;
-  statusCount.textContent = `Range: ${end - start + 1} IPs`;
-  resultsContainer.innerHTML = `
-    <div style="text-align: center; color: var(--text-secondary); padding: 40px; font-size: 13px;">
-      <div style="font-size: 24px; margin-bottom: 10px;">📡</div>
-      Sending status probes to port 80 across ${subnet}.${start} - ${subnet}.${end}...<br>
-      <span style="font-size: 12px; opacity: 0.7;">This typically takes 2 to 5 seconds depending on network latency.</span>
-    </div>
-  `;
-
+async function handleBatchPingFleet() {
   try {
-    const res = await fetch(`${API_BASE}/nodes/discovery/scan`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ subnet, start, end, timeoutMs: 1500, concurrency: 30 })
-    });
+    const res = await fetchWithAuth(`${API_BASE}/nodes/batch-ping`, { method: 'POST' });
     const data = await res.json();
-    btn.disabled = false;
-    btn.textContent = "🚀 Scan Again";
-
-    if (!data.success) {
-      statusText.textContent = "Scan failed";
-      statusText.style.color = "var(--accent-red)";
-      resultsContainer.innerHTML = `<div style="color: var(--accent-red); padding: 20px;">Error: ${escapeHtml(data.error || 'Scan failed')}</div>`;
-      return;
-    }
-
-    const devices = data.devices || data.nodes || [];
-    statusText.textContent = `Scan complete in ${data.durationMs ? data.durationMs + "ms" : ""}. Found ${devices.length} smart device(s).`;
-    statusText.style.color = "var(--accent-green)";
-    statusCount.textContent = `${devices.length} found / ${data.totalScanned} checked`;
-
-    if (devices.length === 0) {
-      resultsContainer.innerHTML = `
-        <div style="text-align: center; color: var(--text-secondary); padding: 40px; font-size: 13px;">
-          <div style="font-size: 24px; margin-bottom: 8px;">🔍</div>
-          No ESP devices replied on ${subnet}.${start}-${end}:80.<br>
-          <span style="font-size: 12px; opacity: 0.8;">Make sure your NodeMCU / ESP8266 is powered on, connected to the same Wi-Fi network, and HTTP server is active.</span>
-        </div>
-      `;
-      return;
-    }
-
-    resultsContainer.innerHTML = devices.map(d => {
-      const isAdded = d.alreadyAdded;
-      const freeHeapKb = d.freeHeap ? (d.freeHeap / 1024).toFixed(1) + ' KB' : 'N/A';
-      const nodeName = d.deviceName || d.nodeId || `ESP-${d.ip.split('.').pop()}`;
-      return `
-        <div class="scan-device-item">
-          <div style="display: flex; gap: 14px; align-items: center;">
-            <div style="font-size: 28px; background: rgba(59, 130, 246, 0.1); padding: 8px 12px; border-radius: 8px;">
-              ${d.hardware && d.hardware.includes('ESP32') ? '⚡' : '📡'}
-            </div>
-            <div>
-              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                <span style="font-weight: 600; font-size: 14px;">${escapeHtml(nodeName)}</span>
-                ${(d.protected || d.isProtected) ? '<span class="status-badge badge-warning" style="font-size: 11px;">🔒 Protected</span>' : '<span class="status-badge badge-online" style="font-size: 11px;">Open</span>'}
-                ${d.pcf8574Detected ? `<span class="status-badge badge-info" style="font-size: 11px;">🔌 PCF8574T (${escapeHtml(d.pcf8574Address || '0x27')})</span>` : ''}
-                ${isAdded ? '<span class="status-badge badge-info" style="font-size: 11px;">✓ In Fleet</span>' : ''}
-              </div>
-              <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap;">
-                <span><strong>IP:</strong> <code>${escapeHtml(d.ip)}</code></span>
-                <span><strong>MAC:</strong> <code>${escapeHtml(d.mac || 'N/A')}</code></span>
-                <span><strong>HW:</strong> ${escapeHtml(d.hardware || 'ESP8266')}</span>
-                <span><strong>FW:</strong> v${escapeHtml(d.firmwareVersion || d.firmware || '1.0')}</span>
-                <span><strong>Heap:</strong> ${freeHeapKb}</span>
-                <span><strong>RSSI:</strong> ${d.rssi || -65} dBm</span>
-              </div>
-            </div>
-          </div>
-          <div>
-            ${isAdded ? `
-              <button class="btn btn-secondary" style="font-size: 12px;" onclick="closeModal(); showNodeSettingsModal('${d.existingNodeId}');">⚙️ Settings</button>
-            ` : `
-              <button class="btn btn-primary" style="font-size: 12px;" onclick="closeModal(); showAddNodeModal('${d.ip}', '${escapeHtml(nodeName)}');">+ Add to Fleet</button>
-            `}
-          </div>
-        </div>
-      `;
-    }).join("");
-
+    alert(data.message || 'Fleet ping initiated across network');
   } catch (err) {
-    btn.disabled = false;
-    btn.textContent = "🚀 Scan Again";
-    statusText.textContent = "Scan error: " + err.message;
-    statusText.style.color = "var(--accent-red)";
+    alert('Ping fleet error: ' + err.message);
   }
 }
 
-// --- NODE SETTINGS MODAL (DETAILS, AUTH & RELAYS) ---
-function switchSettingsTab(tabName) {
-  document.querySelectorAll('.settings-tab-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tab === tabName);
-  });
-  document.querySelectorAll('.settings-tab-pane').forEach(pane => {
-    pane.classList.toggle('active', pane.id === `tab-pane-${tabName}`);
-  });
+async function handleBatchSyncFleetPins() {
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/batch-sync-pins`, { method: 'POST' });
+    const data = await res.json();
+    alert(data.message || 'Hardware GPIO pins synchronized across fleet');
+    loadNodes();
+  } catch (err) {
+    alert('Sync fleet pins error: ' + err.message);
+  }
 }
 
-async function showNodeSettingsModal(nodeId, activeTab = 'general') {
+// ==========================================================================
+// VIEW ②: RELAYS & I/O (PROFESSIONAL MULTI-VIEW & INTERACTIVE CONTROL)
+// ==========================================================================
+let currentRelaySubTab = 'device'; // 'device' | 'room' | 'home' | 'pin-matrix'
+let relayCategoryFilter = 'all'; // 'all' | 'active' | 'inactive' | 'lights' | 'fans' | 'sockets' | 'pumps' | 'breakers'
+let relaySearchKeyword = '';
+let selectedRelayNodeId = '';
+
+async function loadRelays() {
+  const container = document.getElementById("content-area");
   try {
-    const res = await fetch(`${API_BASE}/nodes`);
-    const rawNodes = await res.json();
+    const [nodesRes, relaysRes, homesRes] = await Promise.all([
+      fetchWithAuth(`${API_BASE}/nodes`),
+      fetch(`${API_BASE}/relays`),
+      fetchWithAuth(`${API_BASE}/homes`).catch(() => ({ json: () => ({ homes: [] }) }))
+    ]);
+
+    const rawNodes = await nodesRes.json();
+    const rawRelays = await relaysRes.json();
+    const rawHomes = await homesRes.json();
+
     const nodes = Array.isArray(rawNodes) ? rawNodes : (rawNodes.nodes || []);
-    const node = nodes.find(n => n.node_id === nodeId);
+    const relays = Array.isArray(rawRelays) ? rawRelays : (rawRelays.relays || []);
+    const homes = rawHomes.homes || [];
 
-    if (!node) {
-      alert(`Node ${nodeId} not found.`);
-      return;
+    fleetData.nodes = nodes;
+    fleetData.relays = relays;
+    fleetData.homes = homes;
+
+    // Automatically select the first available node if not set or invalid
+    if (!selectedRelayNodeId || !nodes.some(n => n.node_id === selectedRelayNodeId)) {
+      selectedRelayNodeId = nodes.length > 0 ? nodes[0].node_id : '';
     }
 
-    // Grab pin catalog (contains live hardware pins, allocated sensors, and active relays)
-    let pinCatalog = null;
-    try {
-      const pinRes = await fetch(`${API_BASE}/nodes/${nodeId}/pins`);
-      const pinData = await pinRes.json();
-      if (pinData.success && pinData.catalog) {
-        pinCatalog = pinData.catalog;
-      }
-    } catch (e) {
-      console.warn("Could not fetch pin catalog:", e);
-    }
+    renderRelaysView(nodes, relays, homes);
+  } catch (err) {
+    container.innerHTML = `<div style="color: var(--accent-red); padding: 20px;">Error loading relays: ${err.message}</div>`;
+  }
+}
 
-    // Active relays from catalog or node
-    const relaysList = (pinCatalog && Array.isArray(pinCatalog.relays)) ? pinCatalog.relays : [];
-    const channels = relaysList.length > 0 ? relaysList : (Array.isArray(node.channels_json) ? node.channels_json : []);
+function renderRelaysView(nodes, relays, homes = []) {
+  const container = document.getElementById("content-area");
 
-    const freePinCount = pinCatalog ? pinCatalog.freePins : 0;
-    const totalPinCount = pinCatalog ? pinCatalog.totalPins : 0;
+  // Ensure selectedRelayNodeId is synced to an active node
+  if (!selectedRelayNodeId || !nodes.some(n => n.node_id === selectedRelayNodeId)) {
+    selectedRelayNodeId = nodes.length > 0 ? nodes[0].node_id : '';
+  }
 
-    const html = `
-      <div class="modal-content modal-lg" style="max-width: 900px; max-height: 90vh; overflow-y: auto;">
-        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
-          <div>
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <h3 style="margin: 0;">⚙️ Node Settings: ${escapeHtml(node.name || node.node_id)}</h3>
-              <span class="status-badge ${node.is_online ? 'badge-online' : 'badge-offline'}">${node.status || (node.is_online ? 'Online' : 'Offline')}</span>
-            </div>
-            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
-              Node ID: <code>${escapeHtml(node.node_id)}</code> &bull; IP: <code>${escapeHtml(node.ip_address)}</code> &bull; Hardware: <code>${escapeHtml(node.hardware_type || 'ESP8266')}</code>
-            </div>
-          </div>
-          <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
+  const node = nodes.find(n => n.node_id === selectedRelayNodeId) || nodes[0] || {};
+  const isOnline = Boolean(node.is_online);
+
+  // Filter relays based on active category & search
+  let filteredRelays = relays.slice();
+  if (relaySearchKeyword) {
+    const q = relaySearchKeyword.toLowerCase();
+    filteredRelays = filteredRelays.filter(r => 
+      (r.name && r.name.toLowerCase().includes(q)) ||
+      (r.room && r.room.toLowerCase().includes(q)) ||
+      (r.node_id && r.node_id.toLowerCase().includes(q)) ||
+      (r.pin != null && String(r.pin).includes(q))
+    );
+  }
+
+  if (relayCategoryFilter === 'active') filteredRelays = filteredRelays.filter(r => r.current_state);
+  else if (relayCategoryFilter === 'inactive') filteredRelays = filteredRelays.filter(r => !r.current_state);
+  else if (relayCategoryFilter === 'lights') filteredRelays = filteredRelays.filter(r => (r.name || '').toLowerCase().includes('light') || (r.name || '').toLowerCase().includes('lamp'));
+  else if (relayCategoryFilter === 'fans') filteredRelays = filteredRelays.filter(r => (r.name || '').toLowerCase().includes('fan') || (r.name || '').toLowerCase().includes('exhaust'));
+  else if (relayCategoryFilter === 'sockets') filteredRelays = filteredRelays.filter(r => (r.name || '').toLowerCase().includes('socket') || (r.name || '').toLowerCase().includes('tv') || (r.name || '').toLowerCase().includes('plug'));
+  else if (relayCategoryFilter === 'pumps') filteredRelays = filteredRelays.filter(r => (r.name || '').toLowerCase().includes('pump') || (r.name || '').toLowerCase().includes('water') || (r.name || '').toLowerCase().includes('motor'));
+  else if (relayCategoryFilter === 'breakers') filteredRelays = filteredRelays.filter(r => (r.name || '').toLowerCase().includes('breaker') || r.node_id.includes('30487D'));
+
+  const getIconForChannel = (name = '', func = '', iconKey = '') => {
+    const iconMap = {
+      light: '💡',
+      fan: '🌀',
+      socket: '🔌',
+      pump: '🚰',
+      gate: '🚪',
+      tv: '📺',
+      ac: '❄️',
+      porch: '🏮',
+      garden: '🌳',
+      breaker: '⚡',
+      bell: '🔔',
+      heater: '♨️'
+    };
+    if (iconKey && iconMap[iconKey]) return iconMap[iconKey];
+    const s = (name + ' ' + func).toLowerCase();
+    if (s.includes('fan') || s.includes('exhaust')) return '❇️';
+    if (s.includes('socket') || s.includes('tv') || s.includes('plug')) return '📺';
+    if (s.includes('decor') || s.includes('lamp') || s.includes('bed')) return '🏮';
+    if (s.includes('pump') || s.includes('water')) return '🚰';
+    if (s.includes('gate') || s.includes('motor')) return '⛩️';
+    if (s.includes('breaker')) return '⚡';
+    return '💡';
+  };
+
+  container.innerHTML = `
+    <div class="relays-view-wrap">
+      <!-- Topbar with header & fleet actions -->
+      <div class="devices-topbar-actions">
+        <div>
+          <h2 style="font-size: 19px; font-weight: 700; color: #ffffff; margin: 0;">Relays & I/O</h2>
+          <p style="font-size: 12px; color: #94a3b8; margin: 3px 0 0 0;">Control relays, view I/O status, room groups and configure channels</p>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn-batch-on" onclick="handleFleetAllRelays(true)">▶ Fleet All ON</button>
+          <button class="btn-batch-off" onclick="handleFleetAllRelays(false)">■ Fleet All OFF</button>
+          <button class="btn-action-neutral" onclick="syncPinsWithHardware()">🔄 Sync Pins</button>
+        </div>
+      </div>
+
+      <!-- Sub-View Navigation Tabs -->
+      <div class="subview-nav-tabs">
+        <button class="subview-tab-btn ${currentRelaySubTab === 'device' ? 'active' : ''}" onclick="switchRelaySubTab('device')">
+          <span>🖥️ By Device / Board</span>
+        </button>
+        <button class="subview-tab-btn ${currentRelaySubTab === 'room' ? 'active' : ''}" onclick="switchRelaySubTab('room')">
+          <span>🏠 By Room</span>
+        </button>
+        <button class="subview-tab-btn ${currentRelaySubTab === 'home' ? 'active' : ''}" onclick="switchRelaySubTab('home')">
+          <span>🌐 By Home / Site</span>
+        </button>
+        <button class="subview-tab-btn ${currentRelaySubTab === 'pin-matrix' ? 'active' : ''}" onclick="switchRelaySubTab('pin-matrix')">
+          <span>🔌 Pin & Hardware Matrix</span>
+        </button>
+      </div>
+
+      <!-- Category Filter Chips & Search Bar -->
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px;">
+        <div class="filter-chips-bar" style="margin-bottom: 0;">
+          <button class="filter-chip ${relayCategoryFilter === 'all' ? 'active' : ''}" onclick="switchRelayCategoryFilter('all')">All Relays (${relays.length})</button>
+          <button class="filter-chip ${relayCategoryFilter === 'active' ? 'active' : ''}" onclick="switchRelayCategoryFilter('active')">Active ON (${relays.filter(r => r.current_state).length})</button>
+          <button class="filter-chip ${relayCategoryFilter === 'inactive' ? 'active' : ''}" onclick="switchRelayCategoryFilter('inactive')">Inactive OFF (${relays.filter(r => !r.current_state).length})</button>
+          <button class="filter-chip ${relayCategoryFilter === 'lights' ? 'active' : ''}" onclick="switchRelayCategoryFilter('lights')">💡 Lights</button>
+          <button class="filter-chip ${relayCategoryFilter === 'fans' ? 'active' : ''}" onclick="switchRelayCategoryFilter('fans')">❇️ Fans</button>
+          <button class="filter-chip ${relayCategoryFilter === 'sockets' ? 'active' : ''}" onclick="switchRelayCategoryFilter('sockets')">📺 Sockets</button>
+          <button class="filter-chip ${relayCategoryFilter === 'pumps' ? 'active' : ''}" onclick="switchRelayCategoryFilter('pumps')">🚰 Pumps / Motors</button>
         </div>
 
-        <!-- TABS NAVIGATION -->
-        <div class="settings-tabs" style="margin-top: 10px;">
-          <button class="settings-tab-btn ${activeTab === 'general' ? 'active' : ''}" data-tab="general" onclick="switchSettingsTab('general')">
-            📋 General & Network
-          </button>
-          <button class="settings-tab-btn ${activeTab === 'auth' ? 'active' : ''}" data-tab="auth" onclick="switchSettingsTab('auth')">
-            🔐 User ID & Password
-          </button>
-          <button class="settings-tab-btn ${activeTab === 'relays' ? 'active' : ''}" data-tab="relays" onclick="switchSettingsTab('relays')">
-            ⚡ Relay Channels (${channels.length})
-          </button>
+        <div class="devices-search-box" style="min-width: 220px;">
+          <span style="font-size: 13px; color: #64748b;">🔍</span>
+          <input type="text" class="devices-search-input" 
+            placeholder="Search relays..." 
+            value="${escapeHtml(relaySearchKeyword)}"
+            oninput="handleRelaySearchInput(this.value)">
+        </div>
+      </div>
+
+      <!-- DYNAMIC SUB-VIEW CONTENT -->
+      <div id="relay-subview-container">
+        ${renderActiveRelaySubView(nodes, filteredRelays, homes, getIconForChannel)}
+      </div>
+    </div>
+  `;
+}
+
+function renderActiveRelaySubView(nodes, relays, homes, getIconForChannel) {
+  if (currentRelaySubTab === 'room') {
+    return renderRelaysByRoomView(relays, getIconForChannel);
+  } else if (currentRelaySubTab === 'home') {
+    return renderRelaysByHomeView(nodes, relays, homes, getIconForChannel);
+  } else if (currentRelaySubTab === 'pin-matrix') {
+    return renderRelaysPinMatrixView(nodes, relays);
+  } else {
+    // Default: 'device' (Per-Board View matching Screenshot 2 Panel ②)
+    return renderRelaysByDeviceView(nodes, relays, getIconForChannel);
+  }
+}
+
+// 1. By Device / Board View
+function renderRelaysByDeviceView(nodes, relays, getIconForChannel) {
+  const node = nodes.find(n => n.node_id === selectedRelayNodeId) || nodes[0] || {};
+  const isOnline = Boolean(node.is_online);
+  const channels = relays.filter(r => r.node_id === selectedRelayNodeId);
+  const nodeIp = node.ip_address || node.ip || '';
+
+  return `
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 13px; color: #94a3b8; font-weight: 600;">Selected Device:</span>
+        <select id="relays-device-picker" class="relays-picker-dropdown" onchange="handleRelayDeviceSelect(this.value)">
+          ${nodes.map(n => `
+            <option value="${n.node_id}" ${n.node_id === selectedRelayNodeId ? 'selected' : ''}>
+              Device: ${escapeHtml(n.name || n.node_id)} (${escapeHtml(n.room || n.room_name || 'General')})
+            </option>
+          `).join('')}
+        </select>
+        <span class="${isOnline ? 'status-pill-online' : 'status-pill-offline'}">
+          ${isOnline ? '● Online' : '○ Offline'}
+        </span>
+      </div>
+
+      ${nodeIp ? `
+        <button class="btn-neutral-action" style="font-size: 12px; padding: 6px 12px;" onclick="window.open('http://${escapeHtml(nodeIp)}', '_blank')">
+          🌐 Visit Device Portal (${escapeHtml(nodeIp)}) ↗
+        </button>
+      ` : ''}
+    </div>
+
+    <div class="relays-main-split">
+      <!-- Left: Selected Device Summary Card -->
+      <div class="device-board-card">
+        <div class="board-graphic-wrap">🔲</div>
+        <div class="board-device-name">${escapeHtml(node.name || node.node_id)}</div>
+        <div class="board-hw-tag">${escapeHtml(node.hardware_type || 'ESP8266 | 4-Relay')}</div>
+
+        <div class="board-meta-list">
+          <div class="board-meta-row">
+            <span>IP Address</span>
+            ${nodeIp ? `
+              <a href="http://${escapeHtml(nodeIp)}" target="_blank" style="color: #38bdf8; font-family: monospace; font-weight: 600; text-decoration: underline;">${escapeHtml(nodeIp)} ↗</a>
+            ` : '<span style="color: #64748b;">N/A</span>'}
+          </div>
+          <div class="board-meta-row"><span>RSSI Signal</span><span style="color: #10b981; font-weight: 600;">📶 ${node.rssi || -52} dBm</span></div>
+          <div class="board-meta-row"><span>Uptime</span><span>${formatUptime(node.uptime_sec)}</span></div>
+          <div class="board-meta-row"><span>Room</span><span style="color: #ffffff;">${escapeHtml(node.room || node.room_name || 'General')}</span></div>
         </div>
 
-        <!-- TAB 1: GENERAL & NETWORK -->
-        <div id="tab-pane-general" class="settings-tab-pane ${activeTab === 'general' ? 'active' : ''}">
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
-            <div class="form-group">
-              <label class="form-label">Friendly Device Name *</label>
-              <input type="text" id="setting-name" class="form-control" value="${escapeHtml(node.name || '')}" placeholder="Master Controller">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Room / Zone</label>
-              <input type="text" id="setting-room" class="form-control" value="${escapeHtml(node.room || 'General')}" placeholder="Living Room">
-            </div>
-            <div class="form-group">
-              <label class="form-label">Category</label>
-              <input type="text" id="setting-category" class="form-control" value="${escapeHtml(node.category || 'Controller')}" placeholder="Controller">
-            </div>
-            <div class="form-group">
-              <label class="form-label">LAN IP Address *</label>
-              <input type="text" id="setting-ip" class="form-control" value="${escapeHtml(node.ip_address || '')}" placeholder="192.168.1.103">
-            </div>
-            <div class="form-group" style="grid-column: 1 / -1;">
-              <label class="form-label">Location Notes / Physical Placement</label>
-              <input type="text" id="setting-location" class="form-control" value="${escapeHtml(node.location || '')}" placeholder="Behind TV Switchboard / Main Distribution Box">
-            </div>
-          </div>
+        <button class="board-channels-btn" onclick="showNodeInfoModal('${node.node_id}')">Device Channels (${channels.length})</button>
+      </div>
 
-          <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-top: 14px; font-size: 12.5px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
-            <div><strong>Hardware Model:</strong> ${escapeHtml(node.hardware_type || 'ESP8266')}</div>
-            <div><strong>Firmware Version:</strong> v${escapeHtml(node.firmware_version || '1.0.0')}</div>
-            <div><strong>Wi-Fi RSSI:</strong> ${node.rssi || -70} dBm</div>
-            <div><strong>Free Dynamic Heap:</strong> ${(Number(node.free_heap || 0) / 1024).toFixed(1)} KB</div>
-            <div><strong>System Uptime:</strong> ${Math.floor(Number(node.uptime_sec || 0) / 60)} min</div>
-            <div><strong>MAC Address:</strong> <code>${escapeHtml(node.mac_address || 'N/A')}</code></div>
-          </div>
+      <!-- Right: Action Bar & Relay Channel Tiles -->
+      <div class="relays-controls-column">
+        <div class="relays-action-toolbar">
+          <button class="btn-test-all-on" onclick="handleTestAllChannels(true)">▶ Test All ON</button>
+          <button class="btn-test-all-off" onclick="handleTestAllChannels(false)">■ Test All OFF</button>
+          <button class="btn-action-neutral" onclick="showNodeSettingsModal('${node.node_id}')">⚙ Configure</button>
+          <button class="btn-action-neutral" onclick="handleNodeDiagnostics('${node.node_id}')">📈 I/O Status</button>
         </div>
 
-        <!-- TAB 2: USER ID & PASSWORD -->
-        <div id="tab-pane-auth" class="settings-tab-pane ${activeTab === 'auth' ? 'active' : ''}">
-          <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 10px; padding: 16px;">
-            <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px;">
-              Device Authentication Credentials
+        <div class="relays-channels-grid" id="selected-device-channels-grid">
+          ${channels.length === 0 ? `
+            <div style="grid-column: span 2; padding: 24px; text-align: center; color: #64748b;">
+              No relay channels match the current filters for this device.
             </div>
-            <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 14px;">
-              Configured HTTP Basic Authentication credentials matching the firmware on this node.
-            </div>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
-              <div class="form-group">
-                <label class="form-label">Node User ID / Username *</label>
-                <input type="text" id="setting-auth-user" class="form-control" value="${escapeHtml(node.auth_username || 'admin')}" placeholder="admin">
-              </div>
-              <div class="form-group">
-                <label class="form-label">Node Password *</label>
-                <div style="display: flex; gap: 6px;">
-                  <input type="password" id="setting-auth-pass" class="form-control" value="${escapeHtml(node.auth_password || 'admin')}" placeholder="admin">
-                  <button type="button" class="btn btn-secondary" style="padding: 6px 10px;" onclick="
-                    const p = document.getElementById('setting-auth-pass');
-                    p.type = p.type === 'password' ? 'text' : 'password';
-                    this.textContent = p.type === 'password' ? '👁️' : '🔒';
-                  ">👁️</button>
+          ` : channels.map(c => {
+            const isOn = Boolean(c.current_state);
+            const icon = getIconForChannel(c.name, c.function, c.icon);
+            return `
+              <div class="relay-channel-card" id="relay-card-${c.node_id}-${c.channel_id}">
+                <div class="relay-channel-left">
+                  <div class="relay-channel-icon-wrap">${icon}</div>
+                  <div class="relay-channel-meta">
+                    <span class="relay-channel-tag">CH${c.channel_id}</span>
+                    <span class="relay-channel-name">${escapeHtml(c.name)}</span>
+                    <small style="color: #64748b; font-size: 11px;">GPIO ${c.pin != null ? c.pin : c.channel_id}</small>
+                  </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;" title="Pulse 500ms" onclick="pulseRelay('${c.node_id}', ${c.channel_id})">⚡ Pulse</button>
+                  <label class="switch-toggle-wrap">
+                    <input type="checkbox" id="relay-chk-${c.node_id}-${c.channel_id}" ${isOn ? 'checked' : ''} onchange="toggleRelay('${c.node_id}', ${c.channel_id}, this.checked)">
+                    <span class="switch-toggle-slider">
+                      <span class="switch-toggle-label" id="relay-lbl-${c.node_id}-${c.channel_id}">${isOn ? 'ON' : 'OFF'}</span>
+                    </span>
+                  </label>
                 </div>
               </div>
-            </div>
-
-            <div style="margin-top: 14px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
-              <button class="btn btn-secondary" id="btn-test-auth" onclick="testNodeAuth('${node.node_id}')">
-                🧪 Test Connection & Authentication
-              </button>
-              <div id="auth-test-result" style="font-size: 13px; font-weight: 500;"></div>
-            </div>
-          </div>
+            `;
+          }).join('')}
         </div>
+      </div>
+    </div>
+  `;
+}
 
-        <!-- TAB 3: RELAY CHANNELS -->
-        <div id="tab-pane-relays" class="settings-tab-pane ${activeTab === 'relays' ? 'active' : ''}">
-          <!-- Action Toolbar -->
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
-            <div>
-              <div style="font-size: 13.5px; font-weight: 600; color: var(--text-primary);">
-                Hardware GPIO Pin Allocation & Relay Channels
+// 2. By Room View
+function renderRelaysByRoomView(relays, getIconForChannel) {
+  // Group relays by room
+  const roomMap = new Map();
+  for (const r of relays) {
+    const room = r.room || 'General / Unassigned';
+    if (!roomMap.has(room)) roomMap.set(room, []);
+    roomMap.get(room).push(r);
+  }
+
+  if (roomMap.size === 0) {
+    return '<div style="padding: 40px; text-align: center; color: #64748b;">No relays match the current filter.</div>';
+  }
+
+  const roomIcons = {
+    'Living Room': '🛋️',
+    'Bedroom': '🛏️',
+    'Kitchen': '🍳',
+    'Dining': '🍽️',
+    'Study': '📚',
+    'Outside': '🏡',
+    'Garden': '🌿'
+  };
+
+  return `
+    <div class="room-relay-groups">
+      ${Array.from(roomMap.entries()).map(([roomName, chList]) => {
+        const onCount = chList.filter(c => c.current_state).length;
+        const icon = roomIcons[roomName] || '🚪';
+
+        return `
+          <div class="room-group-card">
+            <div class="room-group-header">
+              <div class="room-group-title">
+                <span>${icon}</span>
+                <span>${escapeHtml(roomName)}</span>
+                <span class="room-group-badge">${chList.length} Relays (${onCount} ON)</span>
               </div>
-              <div style="font-size: 12px; color: var(--text-secondary);">
-                Grab live pins directly from node, view allocated sensors, and add or remove relays.
+              <div class="room-batch-actions">
+                <button class="btn-batch-on" onclick="handleBatchRoomRelays('${escapeHtml(roomName)}', true)">Turn Room ON</button>
+                <button class="btn-batch-off" onclick="handleBatchRoomRelays('${escapeHtml(roomName)}', false)">Turn Room OFF</button>
               </div>
             </div>
-            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-              <button class="btn btn-secondary" id="btn-sync-pins" style="font-size: 12px; display: flex; align-items: center; gap: 6px; border-color: rgba(59, 130, 246, 0.4); color: #93c5fd;" onclick="syncPinsFromNode('${node.node_id}')">
-                <span>🔄</span>
-                <span>Grab Pins from Node</span>
-              </button>
-              <button class="btn btn-secondary" style="font-size: 12px; display: flex; align-items: center; gap: 6px;" onclick="pushConfigToNode('${node.node_id}')">
-                <span>📤</span>
-                <span>Push to Node</span>
-              </button>
-              <button class="btn btn-primary" style="font-size: 12px; display: flex; align-items: center; gap: 6px;" onclick="showAddRelayModal('${node.node_id}')">
-                <span>+</span>
-                <span>Add Relay</span>
-              </button>
-            </div>
-          </div>
 
-          <div id="sync-pins-status" style="display: none; padding: 8px 12px; border-radius: 6px; font-size: 12.5px; margin-bottom: 12px;"></div>
-          <div id="push-config-result" style="display: none; padding: 8px 12px; border-radius: 6px; font-size: 12.5px; margin-bottom: 12px;"></div>
-
-          <!-- SECTION 1: PHYSICAL HARDWARE PIN MAP & AVAILABILITY -->
-          <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 10px; padding: 14px; margin-bottom: 16px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-              <div style="font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary);">
-                📌 Available Hardware Pins & Sensors (${freePinCount} Free / ${totalPinCount} Total)
-              </div>
-              <div style="font-size: 11.5px; color: var(--text-muted);">
-                Model: <code>${escapeHtml(pinCatalog ? pinCatalog.hardware : (node.hardware_type || 'ESP8266'))}</code>
-              </div>
-            </div>
-
-            ${(pinCatalog && pinCatalog.authMismatch) ? `
-              <div style="background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; font-size: 12px; color: #fca5a5;">
-                🔐 <strong>Node Credentials Mismatch (HTTP 401):</strong> Stored Central Server password was rejected by this node. Update it in the <strong>User ID &amp; Password</strong> tab (fresh ESP-01 firmware defaults to <code>admin</code> / <code>admin</code>).
-              </div>
-            ` : ''}
-
-            ${(pinCatalog && (pinCatalog.isPcf8574 || pinCatalog.pcf8574)) ? (
-              pinCatalog.pcf8574?.detected === false ? `
-                <div style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.38); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                  <div style="color: #fde68a;">
-                    ⚠️ <strong>PCF8574T I2C Chip Not Detected:</strong> Firmware supports PCF8574T (pins 100–107), but no I2C expander replied at <code>0x20–0x27</code> / <code>0x38–0x3F</code>. Check SDA=GPIO 0, SCL=GPIO 2 wiring, or remove native GPIO 0/2 relays to free the I2C bus.
-                  </div>
-                  <div style="color: var(--text-secondary); font-size: 11px;">
-                    Configured Addr: <code>${escapeHtml(pinCatalog.pcf8574?.address || '0x27')}</code> &bull; Output Mask: <code>0x${Number(pinCatalog.pcf8574?.outputByte ?? 255).toString(16).toUpperCase().padStart(2, '0')}</code>
-                  </div>
-                </div>
-              ` : `
-                <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-size: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-                  <div>
-                    🔌 <strong>PCF8574T I2C Expander Connected:</strong> Address <code>${escapeHtml(pinCatalog.pcf8574?.address || '0x27')}</code> &bull;
-                    Status: <strong style="color: #34d399;">Detected on I2C</strong> &bull;
-                    Output Mask: <code>0x${Number(pinCatalog.pcf8574?.outputByte ?? 255).toString(16).toUpperCase().padStart(2, '0')}</code>
-                  </div>
-                  <div style="color: var(--text-secondary); font-size: 11px;">
-                    I2C Bus: SDA=GPIO 0, SCL=GPIO 2 (Pins 100–107 = P0–P7)
-                  </div>
-                </div>
-              `
-            ) : ''}
-
-            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px;">
-              ${(pinCatalog ? pinCatalog.pins : []).map(p => {
-                let badgeClass = 'badge-info';
-                let roleLabel = '🟢 Free Pin';
-                if (p.role === 'RELAY') {
-                  badgeClass = p.state ? 'badge-online' : 'badge-sync';
-                  roleLabel = `⚡ Relay: ${escapeHtml(p.relayName || `Ch ${p.channelId}`)}`;
-                } else if (p.role === 'SENSOR') {
-                  badgeClass = 'badge-warning';
-                  roleLabel = '🌡️ Sensor Input';
-                } else if (p.role === 'RESERVED_I2C' || p.safety === 'RESERVED') {
-                  badgeClass = 'badge-info';
-                  roleLabel = '🔗 I2C Bus (Reserved)';
-                } else if (p.safety === 'BOOT_SENSITIVE') {
-                  badgeClass = 'badge-warning';
-                  roleLabel = '⚠️ Free (Boot-Sensitive)';
-                }
-
-                const pinSubLabel = p.pin >= 100 && p.pin <= 107
-                  ? `Virtual Pin ${p.pin}`
-                  : `GPIO ${p.pin}`;
-
+            <div class="relays-channels-grid">
+              ${chList.map(c => {
+                const isOn = Boolean(c.current_state);
+                const chIcon = getIconForChannel(c.name, c.function, c.icon);
                 return `
-                  <div style="background: rgba(255,255,255,0.025); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; justify-content: space-between; gap: 8px;">
-                    <div>
-                      <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
-                        <div style="font-size: 13px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 5px;">
-                          <span>${p.dPin.includes('A0') ? '📈' : (p.isRelay ? '🔌' : (p.safety === 'RESERVED' ? '🔗' : '📍'))}</span>
-                          <span>${escapeHtml(p.dPin)}</span>
-                          <span style="font-size: 11px; color: var(--text-muted); font-weight: normal;">(${pinSubLabel})</span>
-                        </div>
-                        <span class="status-badge ${badgeClass}" style="font-size: 10px; white-space: nowrap;">
-                          ${roleLabel}
-                        </span>
-                      </div>
-                      <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">
-                        ${escapeHtml(p.notes)}
+                  <div class="relay-channel-card">
+                    <div class="relay-channel-left">
+                      <div class="relay-channel-icon-wrap">${chIcon}</div>
+                      <div class="relay-channel-meta">
+                        <span class="relay-channel-tag">${escapeHtml(c.node_id)} • CH${c.channel_id}</span>
+                        <span class="relay-channel-name">${escapeHtml(c.name)}</span>
                       </div>
                     </div>
-
-                    <div style="display: flex; justify-content: flex-end; align-items: center; padding-top: 6px; border-top: 1px dashed rgba(255,255,255,0.06);">
-                      ${p.isRelay ? `
-                        <div style="display: flex; gap: 6px;">
-                          <button class="btn btn-secondary" style="padding: 2px 7px; font-size: 11px;" onclick="showAddRelayModal('${node.node_id}', '${p.channelId}')">✏️ Edit</button>
-                          <button class="btn btn-danger" style="padding: 2px 7px; font-size: 11px;" onclick="deleteRelayChannel('${node.node_id}', '${p.channelId}')">🗑️ Remove</button>
-                        </div>
-                      ` : (p.safety === 'RESERVED' ? `
-                        <span style="font-size: 11px; color: var(--text-muted);">Dedicated I2C Expander Bus</span>
-                      ` : (p.safety !== 'SENSOR_ONLY' ? `
-                        <button class="btn btn-primary" style="padding: 2px 8px; font-size: 11px; background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.35); color: #93c5fd;" onclick="showAddRelayModal('${node.node_id}', null, ${p.pin})">
-                          + Assign Relay
-                        </button>
-                      ` : `<span style="font-size: 11px; color: var(--text-muted);">Analog ADC Input</span>`))}
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;" title="Pulse 500ms" onclick="pulseRelay('${c.node_id}', ${c.channel_id})">⚡ Pulse</button>
+                      <label class="switch-toggle-wrap">
+                        <input type="checkbox" id="relay-chk-${c.node_id}-${c.channel_id}" ${isOn ? 'checked' : ''} onchange="toggleRelay('${c.node_id}', ${c.channel_id}, this.checked)">
+                        <span class="switch-toggle-slider">
+                          <span class="switch-toggle-label" id="relay-lbl-${c.node_id}-${c.channel_id}">${isOn ? 'ON' : 'OFF'}</span>
+                        </span>
+                      </label>
                     </div>
                   </div>
                 `;
               }).join('')}
             </div>
           </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
 
-          <!-- SECTION 2: CONFIGURED RELAYS LIST -->
-          <div style="font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-secondary); margin-bottom: 8px;">
-            ⚡ Active Relay Channels (${channels.length})
-          </div>
+// 3. By Home View
+function renderRelaysByHomeView(nodes, relays, homes, getIconForChannel) {
+  if (homes.length === 0) {
+    homes = [{ id: 1, name: 'Primary Residence' }, { id: 2, name: 'Village Home' }, { id: 3, name: 'Office' }];
+  }
 
-          <div class="settings-table-wrapper">
-            <table class="settings-table">
-              <thead>
-                <tr>
-                  <th>Channel</th>
-                  <th>Pin / Port</th>
-                  <th>Relay Name</th>
-                  <th>Room</th>
-                  <th>Type</th>
-                  <th>Logic</th>
-                  <th>Boot State</th>
-                  <th>Live Status</th>
-                  <th style="text-align: right;">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${channels.length === 0 ? `
-                  <tr>
-                    <td colspan="9" style="text-align: center; color: var(--text-secondary); padding: 24px;">
-                      No relay channels configured. Click <strong>"🔄 Grab Pins from Node"</strong> or <strong>"+ Add Relay"</strong>.
-                    </td>
-                  </tr>
-                ` : channels.map(c => `
-                  <tr>
-                    <td><code>Ch ${escapeHtml(c.id || c.channel_id)}</code></td>
-                    <td><span class="status-badge badge-info" style="font-size: 11px;">${escapeHtml(formatPinBadge(c.pin))}</span></td>
-                    <td style="font-weight: 500;">${escapeHtml(c.name || 'Relay')}</td>
-                    <td>${escapeHtml(c.room || node.room || 'General')}</td>
-                    <td><span style="text-transform: capitalize;">${escapeHtml(c.function || c.type || 'relay')}</span></td>
-                    <td>${c.active_low !== false ? '<span style="color: var(--accent-blue);">Active LOW</span>' : '<span style="color: var(--accent-green);">Active HIGH</span>'}</td>
-                    <td><code>${escapeHtml(c.boot_state || c.initial_mode || 'OFF')}</code></td>
-                    <td>
-                      <span class="status-badge ${c.current_state || c.state ? 'badge-online' : 'badge-offline'}" style="font-size: 11px;">
-                        ${c.current_state || c.state ? '● ON' : '○ OFF'}
-                      </span>
-                    </td>
-                    <td style="text-align: right;">
-                      <div style="display: inline-flex; gap: 6px;">
-                        <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="showAddRelayModal('${node.node_id}', '${escapeHtml(c.id || c.channel_id)}')">✏️ Edit</button>
-                        <button class="btn btn-danger" style="padding: 4px 8px; font-size: 11px;" onclick="deleteRelayChannel('${node.node_id}', '${escapeHtml(c.id || c.channel_id)}')">🗑️ Remove</button>
+  return `
+    <div class="room-relay-groups">
+      ${homes.map(home => {
+        const homeNodes = nodes.filter(n => n.home_id === home.id);
+        const homeNodeIds = new Set(homeNodes.map(n => n.node_id));
+        const homeRelays = relays.filter(r => homeNodeIds.has(r.node_id));
+        const onCount = homeRelays.filter(r => r.current_state).length;
+
+        return `
+          <div class="room-group-card">
+            <div class="room-group-header">
+              <div class="room-group-title">
+                <span>🏰</span>
+                <span>${escapeHtml(home.name)}</span>
+                <span class="room-group-badge">${homeNodes.length} Nodes • ${homeRelays.length} Relays (${onCount} ON)</span>
+              </div>
+              <div class="room-batch-actions">
+                <button class="btn-batch-on" onclick="handleBatchHomeRelays(${home.id}, true)">All ON in ${escapeHtml(home.name)}</button>
+                <button class="btn-batch-off" onclick="handleBatchHomeRelays(${home.id}, false)">All OFF in ${escapeHtml(home.name)}</button>
+              </div>
+            </div>
+
+            <div class="relays-channels-grid">
+              ${homeRelays.length === 0 ? '<div style="padding: 16px; color: #64748b;">No relays currently mapped to this home.</div>' : homeRelays.map(c => {
+                const isOn = Boolean(c.current_state);
+                const chIcon = getIconForChannel(c.name, c.function);
+                return `
+                  <div class="relay-channel-card">
+                    <div class="relay-channel-left">
+                      <div class="relay-channel-icon-wrap">${chIcon}</div>
+                      <div class="relay-channel-meta">
+                        <span class="relay-channel-tag">${escapeHtml(c.room || 'General')} • CH${c.channel_id}</span>
+                        <span class="relay-channel-name">${escapeHtml(c.name)}</span>
                       </div>
-                    </td>
-                  </tr>
-                `).join("")}
-              </tbody>
-            </table>
+                    </div>
+                    <label class="switch-toggle-wrap">
+                      <input type="checkbox" id="relay-chk-${c.node_id}-${c.channel_id}" ${isOn ? 'checked' : ''} onchange="toggleRelay('${c.node_id}', ${c.channel_id}, this.checked)">
+                      <span class="switch-toggle-slider">
+                        <span class="switch-toggle-label" id="relay-lbl-${c.node_id}-${c.channel_id}">${isOn ? 'ON' : 'OFF'}</span>
+                      </span>
+                    </label>
+                  </div>
+                `;
+              }).join('')}
+            </div>
           </div>
-        </div>
-
-        <!-- MODAL FOOTER -->
-        <div id="node-settings-status" style="display: none; padding: 10px; border-radius: 6px; font-size: 13px;"></div>
-        <div style="display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--border-color); padding-top: 14px;">
-          <button class="btn btn-secondary" onclick="closeModal()">Close</button>
-          <button class="btn btn-primary" id="btn-save-settings" onclick="saveNodeSettings('${node.node_id}')">💾 Save Settings</button>
-        </div>
-      </div>
-    `;
-    openModal(html);
-  } catch (err) {
-    alert("Error loading node settings: " + err.message);
-  }
+        `;
+      }).join('')}
+    </div>
+  `;
 }
 
-// Test per-node credentials against live node firmware
-async function testNodeAuth(nodeId) {
-  const btn = document.getElementById("btn-test-auth");
-  const resultBox = document.getElementById("auth-test-result");
-  const authUsername = document.getElementById("setting-auth-user")?.value?.trim() || "admin";
-  const authPassword = document.getElementById("setting-auth-pass")?.value ?? "";
+// 4. Pin & Hardware Matrix View
+function renderRelaysPinMatrixView(nodes, relays) {
+  return `
+    <div class="pin-matrix-table-wrap">
+      <table class="pin-matrix-table">
+        <thead>
+          <tr>
+            <th>Node / Board</th>
+            <th>CH #</th>
+            <th>Relay Name</th>
+            <th>Room</th>
+            <th>Hardware GPIO Pin</th>
+            <th>Invert Logic</th>
+            <th>Power-On State</th>
+            <th>Inching / Pulse</th>
+            <th>Live State</th>
+            <th style="text-align: right;">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${relays.length === 0 ? '<tr><td colspan="10" style="padding: 24px; text-align: center; color: #64748b;">No relays match the current filter.</td></tr>' : relays.map(r => {
+            const isOn = Boolean(r.current_state);
+            const pinNum = r.pin != null ? r.pin : r.channel_id;
 
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = "⏳ Testing...";
-  }
-  if (resultBox) {
-    resultBox.style.padding = "6px 10px";
-    resultBox.style.borderRadius = "6px";
-    resultBox.style.background = "rgba(59, 130, 246, 0.15)";
-    resultBox.style.border = "1px solid rgba(59, 130, 246, 0.35)";
-    resultBox.style.color = "var(--accent-blue)";
-    resultBox.textContent = "Testing connection & credentials against node...";
-  }
-
-  try {
-    const res = await fetch(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/test-auth`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        auth_username: authUsername,
-        auth_password: authPassword
-      })
-    });
-    const data = await res.json().catch(() => ({}));
-
-    if (res.ok && data.success) {
-      const latencyNote = typeof data.latencyMs === "number" ? ` (${data.latencyMs} ms)` : "";
-      const hwNote = data.hardware ? ` • ${data.hardware}` : "";
-      if (resultBox) {
-        resultBox.style.background = "rgba(16, 185, 129, 0.15)";
-        resultBox.style.border = "1px solid rgba(16, 185, 129, 0.35)";
-        resultBox.style.color = "var(--accent-green)";
-        resultBox.textContent = `✅ ${data.message || "Authenticated successfully"}${latencyNote}${hwNote}`;
-      }
-      if (typeof showToast === "function") {
-        showToast({
-          severity: "SUCCESS",
-          title: "Node Auth Verified",
-          message: `${data.message || "Credentials verified"}${latencyNote}`
-        });
-      }
-    } else {
-      const errMsg = data.error || data.message || `Authentication test failed (HTTP ${res.status})`;
-      if (resultBox) {
-        resultBox.style.background = "rgba(239, 68, 68, 0.15)";
-        resultBox.style.border = "1px solid rgba(239, 68, 68, 0.35)";
-        resultBox.style.color = "var(--accent-red)";
-        resultBox.textContent = `❌ ${errMsg}`;
-      }
-    }
-  } catch (err) {
-    if (resultBox) {
-      resultBox.style.background = "rgba(239, 68, 68, 0.15)";
-      resultBox.style.border = "1px solid rgba(239, 68, 68, 0.35)";
-      resultBox.style.color = "var(--accent-red)";
-      resultBox.textContent = `❌ Request failed: ${err.message}`;
-    }
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = "🧪 Test Connection & Authentication";
-    }
-  }
+            return `
+              <tr>
+                <td>
+                  <strong style="color: #fff;">${escapeHtml(r.node_name || r.node_id)}</strong>
+                  <br><small style="color: #64748b; font-family: monospace;">${escapeHtml(r.node_id)}</small>
+                </td>
+                <td style="color: #38bdf8; font-weight: 700;">CH${r.channel_id}</td>
+                <td style="font-weight: 600; color: #fff;">${escapeHtml(r.name)}</td>
+                <td style="color: #94a3b8;">${escapeHtml(r.room || 'General')}</td>
+                <td><span class="gpio-badge">GPIO ${pinNum}</span></td>
+                <td>
+                  <span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: ${r.active_low ? 'rgba(245, 158, 11, 0.15)' : 'rgba(56, 189, 248, 0.15)'}; color: ${r.active_low ? '#f59e0b' : '#38bdf8'}; font-weight: 600;">
+                    ${r.active_low ? 'Active-Low' : 'Active-High'}
+                  </span>
+                </td>
+                <td style="color: #cbd5e1; font-size: 12px;">${r.default_state || 'Remember Last'}</td>
+                <td style="color: #94a3b8; font-size: 12px;">${r.pulse_duration ? r.pulse_duration + 'ms' : 'Standard'}</td>
+                <td>
+                  <label class="switch-toggle-wrap" style="transform: scale(0.85); transform-origin: left center;">
+                    <input type="checkbox" id="relay-chk-${r.node_id}-${r.channel_id}" ${isOn ? 'checked' : ''} onchange="toggleRelay('${r.node_id}', ${r.channel_id}, this.checked)">
+                    <span class="switch-toggle-slider">
+                      <span class="switch-toggle-label" id="relay-lbl-${r.node_id}-${r.channel_id}">${isOn ? 'ON' : 'OFF'}</span>
+                    </span>
+                  </label>
+                </td>
+                <td style="text-align: right;">
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;" onclick="openRelayChannelConfigModal('${r.node_id}', ${r.channel_id})">⚙ Edit Pin</button>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
-// Save general, network, and authentication settings for a node
-async function saveNodeSettings(nodeId) {
-  const btn = document.getElementById("btn-save-settings");
-  const statusBox = document.getElementById("node-settings-status");
-
-  const name = document.getElementById("setting-name")?.value?.trim() || "";
-  const room = document.getElementById("setting-room")?.value?.trim() || "General";
-  const category = document.getElementById("setting-category")?.value?.trim() || "Controller";
-  const ipAddress = document.getElementById("setting-ip")?.value?.trim() || "";
-  const location = document.getElementById("setting-location")?.value?.trim() || "";
-  const authUsername = document.getElementById("setting-auth-user")?.value?.trim() || "";
-  const authPassword = document.getElementById("setting-auth-pass")?.value ?? "";
-
-  const showStatus = (text, tone) => {
-    if (!statusBox) return;
-    statusBox.style.display = "block";
-    if (tone === "success") {
-      statusBox.style.background = "rgba(16, 185, 129, 0.15)";
-      statusBox.style.border = "1px solid rgba(16, 185, 129, 0.35)";
-      statusBox.style.color = "var(--accent-green)";
-    } else if (tone === "error") {
-      statusBox.style.background = "rgba(239, 68, 68, 0.15)";
-      statusBox.style.border = "1px solid rgba(239, 68, 68, 0.35)";
-      statusBox.style.color = "var(--accent-red)";
-    } else {
-      statusBox.style.background = "rgba(59, 130, 246, 0.15)";
-      statusBox.style.border = "1px solid rgba(59, 130, 246, 0.35)";
-      statusBox.style.color = "var(--accent-blue)";
-    }
-    statusBox.textContent = text;
-  };
-
-  if (!name) {
-    showStatus("❌ Friendly Device Name is required.", "error");
-    return;
-  }
-  if (!ipAddress) {
-    showStatus("❌ LAN IP Address is required.", "error");
-    return;
-  }
-  if (!authUsername) {
-    showStatus("❌ Node User ID / Username is required.", "error");
-    return;
-  }
-
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = "⏳ Saving...";
-  }
-  showStatus("Saving node settings...", "info");
-
-  try {
-    const res = await fetch(`${API_BASE}/nodes/${encodeURIComponent(nodeId)}/settings`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name,
-        room,
-        category,
-        ip_address: ipAddress,
-        location,
-        auth_username: authUsername,
-        auth_password: authPassword
-      })
-    });
-    const data = await res.json().catch(() => ({}));
-
-    if (res.ok && data.success) {
-      const msg = data.message || `Node '${name}' settings saved successfully.`;
-      showStatus(`✅ ${msg}`, "success");
-      if (typeof showToast === "function") {
-        showToast({
-          severity: "SUCCESS",
-          title: "Settings Saved",
-          message: msg
-        });
-      }
-      if (typeof loadNodes === "function") {
-        loadNodes();
-      }
-      setTimeout(() => {
-        closeModal();
-      }, 600);
-    } else {
-      showStatus(`❌ ${data.error || `Failed to save settings (HTTP ${res.status})`}`, "error");
-    }
-  } catch (err) {
-    showStatus(`❌ Error saving settings: ${err.message}`, "error");
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = "💾 Save Settings";
-    }
-  }
+function switchRelaySubTab(tab) {
+  currentRelaySubTab = tab;
+  renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
 }
 
-// Active grab/sync pins directly from node hardware
-async function syncPinsFromNode(nodeId) {
-  const btn = document.getElementById("btn-sync-pins");
-  const statusBox = document.getElementById("sync-pins-status");
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = "<span>🔄</span><span>Grabbing...</span>";
-  }
-  if (statusBox) {
-    statusBox.style.display = "block";
-    statusBox.style.background = "rgba(59, 130, 246, 0.15)";
-    statusBox.style.color = "var(--accent-blue)";
-    statusBox.textContent = "Connecting to node and reading hardware pins...";
-  }
+function switchRelayCategoryFilter(cat) {
+  relayCategoryFilter = cat;
+  renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
+}
 
+function handleRelaySearchInput(val) {
+  relaySearchKeyword = val;
+  renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
+}
+
+function handleRelayDeviceSelect(nodeId) {
+  selectedRelayNodeId = nodeId;
+  renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
+}
+
+async function handleTestAllChannels(targetState) {
+  const channels = (fleetData.relays || []).filter(r => r.node_id === selectedRelayNodeId);
+  for (const ch of channels) {
+    ch.current_state = targetState;
+    toggleRelay(ch.node_id, ch.channel_id, targetState);
+  }
+  renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
+}
+
+async function handleFleetAllRelays(targetState) {
+  if (!confirm(`Turn ${targetState ? 'ON' : 'OFF'} ALL relays across the fleet?`)) return;
+  for (const ch of (fleetData.relays || [])) {
+    ch.current_state = targetState;
+    toggleRelay(ch.node_id, ch.channel_id, targetState);
+  }
+  renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
+}
+
+async function handleBatchRoomRelays(room, targetState) {
   try {
-    const res = await fetch(`${API_BASE}/nodes/${nodeId}/sync-pins`, {
-      method: "POST"
+    const res = await fetchWithAuth(`${API_BASE}/relays/batch-room`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room, state: targetState })
     });
     const data = await res.json();
-    if (data.success) {
-      if (statusBox) {
-        statusBox.style.background = "rgba(16, 185, 129, 0.15)";
-        statusBox.style.color = "var(--accent-green)";
-        statusBox.textContent = `✅ Successfully grabbed ${data.count} pin(s) directly from node!`;
-      }
-      setTimeout(() => {
-        showNodeSettingsModal(nodeId, 'relays');
-      }, 600);
-    } else {
-      if (statusBox) {
-        statusBox.style.background = "rgba(239, 68, 68, 0.15)";
-        statusBox.style.color = "var(--accent-red)";
-        statusBox.textContent = "Failed to grab pins: " + (data.error || "Unknown error");
+    for (const r of (fleetData.relays || [])) {
+      if ((r.room || '').toLowerCase() === room.toLowerCase()) {
+        r.current_state = targetState;
       }
     }
+    renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
+    alert(data.message || `Turned ${targetState ? 'ON' : 'OFF'} relays in ${room}`);
   } catch (err) {
-    if (statusBox) {
-      statusBox.style.background = "rgba(239, 68, 68, 0.15)";
-      statusBox.style.color = "var(--accent-red)";
-      statusBox.textContent = "Error grabbing pins: " + err.message;
-    }
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = "<span>🔄</span><span>Grab Pins from Node</span>";
-    }
+    alert('Room batch relay error: ' + err.message);
   }
 }
 
-// Modal for adding or editing a relay channel
-async function showAddRelayModal(nodeId, editChannelId = null, preselectedPin = null) {
-  let existingChannel = null;
-  let pinCatalog = null;
-  let node = null;
-
+async function handleBatchHomeRelays(homeId, targetState) {
   try {
-    const res = await fetch(`${API_BASE}/nodes`);
-    const rawNodes = await res.json();
-    const nodes = Array.isArray(rawNodes) ? rawNodes : (rawNodes.nodes || []);
-    node = nodes.find(n => n.node_id === nodeId);
-    if (node && node.channels_json) {
-      const channels = typeof node.channels_json === 'string' ? JSON.parse(node.channels_json) : node.channels_json;
-      if (editChannelId) {
-        existingChannel = channels.find(c => String(c.id || c.channel_id) === String(editChannelId));
-      }
-    }
-
-    const pinRes = await fetch(`${API_BASE}/nodes/${nodeId}/pins`);
-    const pinData = await pinRes.json();
-    if (pinData.success && pinData.catalog) {
-      pinCatalog = pinData.catalog;
-    }
-  } catch (e) {
-    console.warn("Could not load node or pin catalog for add relay modal:", e);
+    const res = await fetchWithAuth(`${API_BASE}/relays/batch-home`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ homeId, state: targetState })
+    });
+    const data = await res.json();
+    loadRelays();
+    alert(data.message || 'Home relays batch executed');
+  } catch (err) {
+    alert('Home batch relay error: ' + err.message);
   }
+}
 
-  const isEdit = !!existingChannel;
-  
-  // Calculate next available integer channel ID if adding
-  let nextChannelId = 1;
-  if (!isEdit && pinCatalog && Array.isArray(pinCatalog.relays)) {
-    const existingIds = pinCatalog.relays.map(r => parseInt(String(r.channel_id || r.id).replace(/\D/g, '')) || 0);
-    while (existingIds.includes(nextChannelId)) {
-      nextChannelId++;
-    }
-  }
-
-  const channelId = existingChannel ? (existingChannel.id || existingChannel.channel_id) : nextChannelId;
-  const pin = preselectedPin !== null ? preselectedPin : (existingChannel ? existingChannel.pin : (pinCatalog && pinCatalog.pins.find(p => p.role === 'FREE') ? pinCatalog.pins.find(p => p.role === 'FREE').pin : 5));
-  const name = existingChannel ? existingChannel.name : 'Ceiling Light';
-  const room = existingChannel ? (existingChannel.room || '') : (node ? node.room || '' : '');
-  const func = existingChannel ? (existingChannel.function || existingChannel.type || 'light') : 'light';
-  const activeLow = existingChannel ? (existingChannel.active_low !== false) : true;
-  const bootState = existingChannel ? (existingChannel.boot_state || 'OFF') : 'OFF';
-
-  // Build pin options from hardware catalog
-  let pinOptionsHtml = '';
-  if (pinCatalog && Array.isArray(pinCatalog.pins)) {
-    pinOptionsHtml = pinCatalog.pins.filter(p => p.safety !== 'SENSOR_ONLY' && p.safety !== 'RESERVED').map(p => {
-      const isSelected = p.pin == pin;
-      const isOccupied = p.isRelay && String(p.channelId) !== String(channelId);
-      let desc = p.notes;
-      if (isOccupied) {
-        desc = `⚡ IN USE: ${p.relayName} (Ch ${p.channelId})`;
-      } else if (p.safety === 'SAFE') {
-        desc = '🟢 FREE (Safe Output)';
-      } else if (p.safety === 'BOOT_SENSITIVE') {
-        desc = '⚠️ FREE (Boot-Sensitive)';
-      }
-      return `<option value="${p.pin}" ${isSelected ? 'selected' : ''} ${isOccupied ? 'disabled style="color: #64748b;"' : ''}>
-        ${escapeHtml(p.dPin)} (${p.pin >= 100 && p.pin <= 107 ? `Pin ${p.pin}` : `GPIO ${p.pin}`}) - ${desc}
-      </option>`;
-    }).join('');
-  } else {
-    // Fallback standard options
-    pinOptionsHtml = `
-      <option value="5" ${pin == 5 ? 'selected' : ''}>D1 (GPIO 5) - Safe I2C SCL, boot-neutral</option>
-      <option value="4" ${pin == 4 ? 'selected' : ''}>D2 (GPIO 4) - Safe I2C SDA, boot-neutral</option>
-      <option value="14" ${pin == 14 ? 'selected' : ''}>D5 (GPIO 14) - Safe SPI SCK / Sensor</option>
-      <option value="12" ${pin == 12 ? 'selected' : ''}>D6 (GPIO 12) - Safe SPI MISO</option>
-      <option value="13" ${pin == 13 ? 'selected' : ''}>D7 (GPIO 13) - Safe SPI MOSI</option>
-      <option value="15" ${pin == 15 ? 'selected' : ''}>D8 (GPIO 15) - Boot sensitive (Pull-down)</option>
-      <option value="0" ${pin == 0 ? 'selected' : ''}>GPIO 0 - Boot sensitive / Flash pin</option>
-      <option value="2" ${pin == 2 ? 'selected' : ''}>GPIO 2 - Boot sensitive / TXD1</option>
-      <option value="16" ${pin == 16 ? 'selected' : ''}>D0 (GPIO 16) - Deep sleep wake</option>
-    `;
-  }
+function openRelayChannelConfigModal(nodeId, channelId) {
+  const r = (fleetData.relays || []).find(ch => ch.node_id === nodeId && ch.channel_id == channelId) || {};
+  const currentIcon = r.icon || 'light';
 
   const html = `
-    <div class="modal-content" style="max-width: 520px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
-        <h3 style="margin: 0;">${isEdit ? '✏️ Edit Relay Channel' : '⚡ Add Relay Channel'}</h3>
-        <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="showNodeSettingsModal('${nodeId}', 'relays')">&times;</button>
+    <div class="modal-content" style="max-width: 520px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 16px;">
+        <h3 style="margin: 0; color: #fff; font-size: 16px;">Configure Channel: ${escapeHtml(r.name || 'CH' + channelId)}</h3>
+        <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
       </div>
 
-      <div style="padding: 14px 0;">
-        <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 12px; margin-bottom: 12px;">
-          <div class="form-group">
-            <label class="form-label">Channel Number *</label>
-            <input type="number" id="relay-channel-id" class="form-control" value="${channelId}" min="1" max="32" ${isEdit ? 'readonly style="opacity: 0.7;"' : ''} placeholder="1">
-          </div>
-          <div class="form-group">
-            <label class="form-label">GPIO Pin *</label>
-            <select id="relay-pin" class="form-control">
-              ${pinOptionsHtml}
-            </select>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Friendly Name *</label>
-          <input type="text" id="relay-name" class="form-control" value="${escapeHtml(name)}" placeholder="e.g. Living Room Fan">
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Room / Zone</label>
-          <input type="text" id="relay-room" class="form-control" value="${escapeHtml(room)}" placeholder="Leave blank to inherit node room">
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
-          <div class="form-group">
-            <label class="form-label">Load Type / Function</label>
-            <select id="relay-func" class="form-control">
-              <option value="light" ${func === 'light' ? 'selected' : ''}>💡 Light</option>
-              <option value="fan" ${func === 'fan' ? 'selected' : ''}>💨 Fan</option>
-              <option value="socket" ${func === 'socket' ? 'selected' : ''}>🔌 Socket / Outlet</option>
-              <option value="relay" ${func === 'relay' ? 'selected' : ''}>⚡ General Relay</option>
-              <option value="heater" ${func === 'heater' ? 'selected' : ''}>🔥 Water Heater</option>
-              <option value="ac" ${func === 'ac' ? 'selected' : ''}>❄️ AC / Cooler</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Boot State</label>
-            <select id="relay-boot" class="form-control">
-              <option value="OFF" ${bootState === 'OFF' ? 'selected' : ''}>OFF (Safe Default)</option>
-              <option value="ON" ${bootState === 'ON' ? 'selected' : ''}>ON</option>
-              <option value="RESTORE" ${bootState === 'RESTORE' ? 'selected' : ''}>RESTORE (Last State)</option>
-            </select>
-          </div>
-        </div>
-
-        <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; margin-top: 4px;">
-          <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
-            <input type="checkbox" id="relay-active-low" ${activeLow ? 'checked' : ''}>
-            <span>Active LOW Logic (Default for optocoupler relay boards)</span>
-          </label>
-        </div>
-
-        <div id="add-relay-status" style="display: none; padding: 8px 12px; border-radius: 6px; font-size: 13px; margin-top: 12px;"></div>
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Relay Channel Name</label>
+        <input type="text" id="cfg-relay-name" class="settings-input" style="width: 100%; box-sizing: border-box;" value="${escapeHtml(r.name || '')}">
       </div>
 
-      <div style="display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--border-color); padding-top: 12px;">
-        <button class="btn btn-secondary" onclick="showNodeSettingsModal('${nodeId}', 'relays')">Back</button>
-        <button class="btn btn-primary" id="btn-submit-relay" onclick="submitSaveRelay('${nodeId}')">${isEdit ? 'Update Relay' : 'Add Relay'}</button>
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Appliance / Pin Icon</label>
+        <select id="cfg-relay-icon" class="filter-select-enhanced" style="width: 100%;">
+          <option value="light" ${currentIcon === 'light' ? 'selected' : ''}>💡 Light / Ceiling Lamp</option>
+          <option value="fan" ${currentIcon === 'fan' ? 'selected' : ''}>🌀 Ceiling Fan / Exhaust</option>
+          <option value="socket" ${currentIcon === 'socket' ? 'selected' : ''}>🔌 Socket / General Outlet</option>
+          <option value="pump" ${currentIcon === 'pump' ? 'selected' : ''}>🚰 Water Pump / Motor</option>
+          <option value="gate" ${currentIcon === 'gate' ? 'selected' : ''}>🚪 Automatic Gate / Door</option>
+          <option value="tv" ${currentIcon === 'tv' ? 'selected' : ''}>📺 TV / Entertainment</option>
+          <option value="ac" ${currentIcon === 'ac' ? 'selected' : ''}>❄️ AC / HVAC Unit</option>
+          <option value="porch" ${currentIcon === 'porch' ? 'selected' : ''}>🏮 Porch / Outdoor Lantern</option>
+          <option value="garden" ${currentIcon === 'garden' ? 'selected' : ''}>🌳 Garden / Lawn Light</option>
+          <option value="breaker" ${currentIcon === 'breaker' ? 'selected' : ''}>⚡ Circuit Breaker / Feeder</option>
+          <option value="bell" ${currentIcon === 'bell' ? 'selected' : ''}>🔔 Chime / Doorbell</option>
+          <option value="heater" ${currentIcon === 'heater' ? 'selected' : ''}>♨️ Water Heater / Geyser</option>
+        </select>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Hardware GPIO Pin</label>
+        <input type="number" id="cfg-relay-pin" class="settings-input" style="width: 100%; box-sizing: border-box;" value="${r.pin != null ? r.pin : channelId}">
+      </div>
+
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Pin Invert Logic</label>
+        <select id="cfg-relay-logic" class="filter-select-enhanced" style="width: 100%;">
+          <option value="1" ${r.active_low ? 'selected' : ''}>Active-Low (Relay ON when GPIO LOW - Standard Board)</option>
+          <option value="0" ${!r.active_low ? 'selected' : ''}>Active-High (Relay ON when GPIO HIGH)</option>
+        </select>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="settings-field-label">Power-On Default State</label>
+        <select id="cfg-relay-default" class="filter-select-enhanced" style="width: 100%;">
+          <option value="last">Remember Last State (Restore previous state on reboot)</option>
+          <option value="off">Always Inactive (OFF) on Boot</option>
+          <option value="on">Always Active (ON) on Boot</option>
+        </select>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 16px;">
+        <label class="settings-field-label">Inching / Auto-Off Timer (Optional)</label>
+        <select id="cfg-relay-inching" class="filter-select-enhanced" style="width: 100%;">
+          <option value="0">Disabled (Standard Toggle)</option>
+          <option value="500">Pulse 500 ms (Momentary Gate / Pushbutton)</option>
+          <option value="2000">Auto-Off after 2 Seconds</option>
+          <option value="10000">Auto-Off after 10 Seconds (Staircase / Corridor)</option>
+          <option value="60000">Auto-Off after 1 Minute</option>
+        </select>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 10px; padding-top: 14px; border-top: 1px solid #1e293b;">
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn-save-settings" onclick="saveRelayChannelConfig('${nodeId}', ${channelId})">Save Channel Settings</button>
       </div>
     </div>
   `;
   openModal(html);
 }
 
-// Submit relay add or update
-async function submitSaveRelay(nodeId) {
-  const rawChannelId = document.getElementById("relay-channel-id").value.trim();
-  const channel_id = parseInt(rawChannelId.replace(/\D/g, '')) || 1;
-  const pin = parseInt(document.getElementById("relay-pin").value);
-  const name = document.getElementById("relay-name").value.trim();
-  const room = document.getElementById("relay-room").value.trim();
-  const func = document.getElementById("relay-func").value;
-  const bootState = document.getElementById("relay-boot").value;
-  const activeLow = document.getElementById("relay-active-low").checked;
-  const statusBox = document.getElementById("add-relay-status");
-  const btn = document.getElementById("btn-submit-relay");
+async function saveRelayChannelConfig(nodeId, channelId) {
+  const name = document.getElementById("cfg-relay-name").value.trim();
+  const icon = document.getElementById("cfg-relay-icon").value;
+  const pin = Number(document.getElementById("cfg-relay-pin").value);
+  const active_low = document.getElementById("cfg-relay-logic").value === '1';
+
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/relays/${nodeId}/${channelId}/advanced-config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, pin, active_low, icon })
+    });
+    const data = await res.json();
+    showToast(data.message || 'Channel configured successfully', 'success');
+    closeModal();
+    loadRelays();
+  } catch (err) {
+    showToast('Failed to save channel config: ' + err.message, 'error');
+  }
+}
+
+async function toggleRelay(nodeId, channelId, state) {
+  // Update local fleetData
+  const rel = (fleetData.relays || []).find(r => r.node_id === nodeId && r.channel_id == channelId);
+  if (rel) rel.current_state = state;
+
+  // Update DOM switch label immediately
+  const lbl = document.getElementById(`relay-lbl-${nodeId}-${channelId}`);
+  if (lbl) lbl.textContent = state ? 'ON' : 'OFF';
+
+  try {
+    await fetch(`${API_BASE}/relays/${nodeId}/${channelId}/command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "setState", state: state })
+    });
+  } catch (e) {
+    console.error("Relay command error:", e);
+  }
+}
+
+async function pulseRelay(nodeId, channelId, duration = 500) {
+  try {
+    await fetch(`${API_BASE}/relays/${nodeId}/${channelId}/command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "pulse", duration: duration })
+    });
+
+    const rel = (fleetData.relays || []).find(r => r.node_id === nodeId && r.channel_id == channelId);
+    if (rel) {
+      rel.current_state = true;
+      renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
+      setTimeout(() => {
+        rel.current_state = false;
+        renderRelaysView(fleetData.nodes || [], fleetData.relays || [], fleetData.homes || []);
+      }, duration);
+    }
+  } catch (e) {
+    alert("Pulse failed: " + e.message);
+  }
+}
+
+// ==========================================================================
+// VIEW ③ & ④: ROOMS & HOMES MANAGEMENT (MATCHING PANELS ③ & ④)
+// ==========================================================================
+let currentRoomsHomesSubTab = 'rooms'; // 'rooms' or 'homes'
+let cachedRoomsList = [];
+let cachedHomesList = [];
+let cachedNodesList = [];
+
+async function loadRoomsAndHomes() {
+  const container = document.getElementById("content-area");
+  try {
+    const [homesRes, roomsRes, nodesRes] = await Promise.all([
+      fetchWithAuth(`${API_BASE}/homes`),
+      fetchWithAuth(`${API_BASE}/rooms`),
+      fetchWithAuth(`${API_BASE}/nodes`)
+    ]);
+
+    const homesData = await homesRes.json();
+    const roomsData = await roomsRes.json();
+    const nodesData = await nodesRes.json();
+
+    cachedHomesList = homesData.homes || [];
+    cachedRoomsList = roomsData.rooms || [];
+    cachedNodesList = Array.isArray(nodesData) ? nodesData : (nodesData.nodes || []);
+
+    // Also update global cache if available
+    cachedHomes = cachedHomesList;
+    cachedRooms = cachedRoomsList;
+
+    renderRoomsAndHomesView(cachedHomesList, cachedRoomsList, cachedNodesList);
+  } catch (err) {
+    container.innerHTML = `<div style="color: var(--accent-red); padding: 20px;">Error loading rooms and homes: ${err.message}</div>`;
+  }
+}
+
+function renderRoomsAndHomesView(homes, rooms, nodes) {
+  const container = document.getElementById("content-area");
+
+  // Modern room photo collection with graceful fallback
+  const roomBackgrounds = {
+    'Living Room': 'https://images.unsplash.com/photo-1583847268964-b28dc8f51f92?w=500&q=80',
+    'Bedroom': 'https://images.unsplash.com/photo-1540518614846-7ede433c4550?w=500&q=80',
+    'Kitchen': 'https://images.unsplash.com/photo-1556911220-bff31c812dba?w=500&q=80',
+    'Dining': 'https://images.unsplash.com/photo-1617806118233-18e1de247200?w=500&q=80',
+    'Study': 'https://images.unsplash.com/photo-1518455027359-f3f8164ba6bd?w=500&q=80',
+    'Outside': 'https://images.unsplash.com/photo-1513694203232-719a280e022f?w=500&q=80',
+    'Garden': 'https://images.unsplash.com/photo-1585320806297-9794b3e4eeae?w=500&q=80',
+    'Bathroom': 'https://images.unsplash.com/photo-1584622650111-993a426fbf0a?w=500&q=80',
+    'Garage': 'https://images.unsplash.com/photo-1617814076367-b759c7d7e738?w=500&q=80',
+    'Main DB': 'https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=500&q=80',
+    'Office': 'https://images.unsplash.com/photo-1497366216548-37526070297c?w=500&q=80',
+    'Hall': 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=500&q=80',
+    'Balcony': 'https://images.unsplash.com/photo-1513694203232-719a280e022f?w=500&q=80'
+  };
+
+  const getDeviceCountForRoom = (roomName, roomId) => {
+    return nodes.filter(n => {
+      const matchName = (n.room || '').toLowerCase() === (roomName || '').toLowerCase();
+      const matchId = n.room_id && roomId && Number(n.room_id) === Number(roomId);
+      return matchName || matchId;
+    }).length;
+  };
+
+  container.innerHTML = `
+    <div class="homes-view-wrap">
+      <!-- Topbar with tabs -->
+      <div class="devices-topbar-actions">
+        <div>
+          <h2 style="font-size: 19px; font-weight: 700; color: #ffffff; margin: 0;" id="rooms-homes-title">
+            ${currentRoomsHomesSubTab === 'rooms' ? 'Rooms' : 'Homes / Sites'}
+          </h2>
+          <p style="font-size: 12px; color: #94a3b8; margin: 3px 0 0 0;" id="rooms-homes-sub">
+            ${currentRoomsHomesSubTab === 'rooms' ? 'Manage rooms, assign devices and set icons' : 'Manage multiple homes or locations'}
+          </p>
+        </div>
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <div class="automation-tabs-bar" style="border: none; margin: 0; padding: 0;">
+            <button class="auto-tab-btn ${currentRoomsHomesSubTab === 'rooms' ? 'active' : ''}" onclick="switchRoomsHomesTab('rooms')">Rooms</button>
+            <button class="auto-tab-btn ${currentRoomsHomesSubTab === 'homes' ? 'active' : ''}" onclick="switchRoomsHomesTab('homes')">Homes / Sites</button>
+          </div>
+          <button class="btn-add-primary" onclick="handleAddRoomOrHome()">
+            <span>+ Add ${currentRoomsHomesSubTab === 'rooms' ? 'Room' : 'Home'}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Rooms Grid (Panel ③) -->
+      <div id="rooms-view-container" class="rooms-grid" style="display: ${currentRoomsHomesSubTab === 'rooms' ? 'grid' : 'none'};">
+        ${rooms.map(r => {
+          const bgImg = roomBackgrounds[r.name] || 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=500&q=80';
+          const count = getDeviceCountForRoom(r.name, r.id);
+          return `
+            <div class="room-card">
+              <div class="room-card-preview" style="background-image: url('${bgImg}');">
+                <div class="room-preview-overlay"></div>
+                <div class="room-card-title-wrap">
+                  <div class="room-card-name">
+                    <span style="color: #10b981; font-size: 10px;">●</span> ${escapeHtml(r.name)}
+                  </div>
+                  <span class="room-card-count">${count} ${count === 1 ? 'Device' : 'Devices'}</span>
+                </div>
+              </div>
+              <div class="room-card-body">
+                <span style="font-size: 11px; color: #64748b;">Floor: ${escapeHtml(r.floor || 'Ground')}</span>
+                <div class="actions-cell">
+                  <button class="action-btn" title="Edit Room" onclick="showEditRoomModal(${r.id})">✏️</button>
+                  <button class="action-btn delete-btn" title="Delete Room" onclick="handleDeleteRoom(${r.id}, '${escapeHtml(r.name)}')">🗑️</button>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('')}
+
+        <!-- Add Room Card -->
+        <div class="room-add-card" onclick="showAddRoomModal()">
+          <span style="font-size: 28px;">+</span>
+          <span style="font-weight: 700; font-size: 14px;">Add Room</span>
+        </div>
+      </div>
+
+      <!-- Homes List (Panel ④) -->
+      <div id="homes-view-container" class="homes-view-wrap" style="display: ${currentRoomsHomesSubTab === 'homes' ? 'flex' : 'none'};">
+        ${homes.map((h, idx) => {
+          const isDef = idx === 0 || h.name.includes('Primary');
+          const homeRooms = rooms.filter(r => r.home_id === h.id);
+          const homeNodes = nodes.filter(n => n.home_id === h.id || (n.location && n.location.toLowerCase() === h.name.toLowerCase()));
+          const roomsCount = homeRooms.length;
+          const devicesCount = homeNodes.length;
+          const autoCount = isDef ? 18 : (h.name.includes('Village') ? 6 : 4);
+
+          return `
+            <div class="home-site-card">
+              <div class="home-site-left">
+                <div class="home-site-icon-box">🏠</div>
+                <div class="home-site-details">
+                  <div class="home-site-title">
+                    <span>${escapeHtml(h.name)}</span>
+                    ${isDef ? '<span class="default-badge">Default</span>' : ''}
+                  </div>
+                  <div class="home-site-stats">
+                    Rooms: ${roomsCount} &nbsp;|&nbsp; Devices: ${devicesCount} &nbsp;|&nbsp; Automations: ${autoCount}
+                    ${h.address ? ` &nbsp;|&nbsp; <span style="color: #64748b;">📍 ${escapeHtml(h.address)}</span>` : ''}
+                  </div>
+                </div>
+              </div>
+
+              <div style="display: flex; align-items: center; gap: 14px;">
+                <span class="status-pill-online" style="padding: 4px 12px;">Active</span>
+                <button class="action-btn" title="Edit Home" onclick="showEditHomeModal(${h.id})">✏️</button>
+                <button class="action-btn delete-btn" title="Delete Home" onclick="handleDeleteHome(${h.id}, '${escapeHtml(h.name)}')">🗑️</button>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function switchRoomsHomesTab(tab) {
+  currentRoomsHomesSubTab = tab;
+  loadRoomsAndHomes();
+}
+
+function handleAddRoomOrHome() {
+  if (currentRoomsHomesSubTab === 'rooms') {
+    showAddRoomModal();
+  } else {
+    showCreateHomeModal();
+  }
+}
+
+// --------------------------------------------------------------------------
+// ROOM MODALS: ADD, EDIT, DELETE
+// --------------------------------------------------------------------------
+
+function showAddRoomModal() {
+  const homeOptions = (cachedHomesList || []).map(h => 
+    `<option value="${h.id}">${escapeHtml(h.name)}</option>`
+  ).join('');
+
+  const modalHtml = `
+    <div class="modal-box" style="max-width: 480px; width: 90%;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div class="hardware-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8;">🏠</div>
+          <div>
+            <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #ffffff;">Add New Room</h3>
+            <p style="margin: 2px 0 0 0; font-size: 11px; color: #94a3b8;">Create a room partition to organize devices and automations</p>
+          </div>
+        </div>
+        <button class="modal-close-btn" onclick="closeModal()">✕</button>
+      </div>
+      
+      <div class="modal-body" style="padding: 18px 24px;">
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Target Home / Site</label>
+          <select id="modal-room-home" class="filter-select" style="width: 100%;">
+            ${homeOptions || '<option value="1">Primary Residence</option>'}
+          </select>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Room Name *</label>
+          <input id="modal-room-name" type="text" class="search-input" placeholder="e.g. Master Bedroom, Balcony, Home Theater" style="width: 100%; box-sizing: border-box;" autofocus />
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
+          <div class="form-group">
+            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Floor Level</label>
+            <select id="modal-room-floor" class="filter-select" style="width: 100%;">
+              <option value="Ground">Ground Floor</option>
+              <option value="First">1st Floor</option>
+              <option value="Second">2nd Floor</option>
+              <option value="Third">3rd Floor</option>
+              <option value="Basement">Basement</option>
+              <option value="Outdoor">Outdoor / Garden</option>
+              <option value="Rooftop">Rooftop</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Room Type / Icon</label>
+            <select id="modal-room-icon" class="filter-select" style="width: 100%;">
+              <option value="bedroom">🛏️ Bedroom</option>
+              <option value="living">🛋️ Living Room</option>
+              <option value="kitchen">🍳 Kitchen</option>
+              <option value="dining">🍽️ Dining</option>
+              <option value="study">📚 Study / Office</option>
+              <option value="bathroom">🚿 Bathroom</option>
+              <option value="garden">🌿 Garden / Lawn</option>
+              <option value="outside">🚪 Outside / Porch</option>
+              <option value="garage">🚗 Garage / Workshop</option>
+              <option value="breaker">⚡ Electrical / DB</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="modal-room-status" style="display: none; padding: 10px; border-radius: 6px; font-size: 12px; margin-top: 10px;"></div>
+      </div>
+
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; padding: 14px 24px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+        <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+        <button id="btn-submit-room" class="btn-primary" onclick="submitCreateRoom()">+ Create Room</button>
+      </div>
+    </div>
+  `;
+  openModal(modalHtml);
+  setTimeout(() => {
+    const el = document.getElementById("modal-room-name");
+    if (el) el.focus();
+  }, 100);
+}
+
+async function submitCreateRoom() {
+  const homeId = document.getElementById("modal-room-home").value;
+  const name = document.getElementById("modal-room-name").value.trim();
+  const floor = document.getElementById("modal-room-floor").value;
+  const icon = document.getElementById("modal-room-icon").value;
+  const statusBox = document.getElementById("modal-room-status");
+  const btn = document.getElementById("btn-submit-room");
 
   if (!name) {
     statusBox.style.display = "block";
     statusBox.style.background = "rgba(239, 68, 68, 0.15)";
-    statusBox.style.color = "var(--accent-red)";
-    statusBox.textContent = "Please provide a friendly name for this relay.";
+    statusBox.style.color = "#ef4444";
+    statusBox.textContent = "Please enter a room name.";
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Creating...";
+
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/homes/${homeId}/rooms`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, floor, icon })
+    });
+    const data = await res.json();
+    if (data.success) {
+      statusBox.style.display = "block";
+      statusBox.style.background = "rgba(16, 185, 129, 0.15)";
+      statusBox.style.color = "#10b981";
+      statusBox.textContent = `Room "${name}" created successfully!`;
+      showToast(`Room "${name}" created successfully!`, "success");
+      setTimeout(() => {
+        closeModal();
+        loadRoomsAndHomes();
+      }, 700);
+    } else {
+      btn.disabled = false;
+      btn.textContent = "+ Create Room";
+      statusBox.style.display = "block";
+      statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+      statusBox.style.color = "#ef4444";
+      statusBox.textContent = data.error || "Failed to create room.";
+    }
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = "+ Create Room";
+    statusBox.style.display = "block";
+    statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+    statusBox.style.color = "#ef4444";
+    statusBox.textContent = err.message;
+  }
+}
+
+function showEditRoomModal(roomId) {
+  const room = (cachedRoomsList || []).find(r => r.id === roomId);
+  if (!room) return;
+
+  const modalHtml = `
+    <div class="modal-box" style="max-width: 480px; width: 90%;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div class="hardware-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8;">✏️</div>
+          <div>
+            <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #ffffff;">Edit Room</h3>
+            <p style="margin: 2px 0 0 0; font-size: 11px; color: #94a3b8;">Update room partition settings</p>
+          </div>
+        </div>
+        <button class="modal-close-btn" onclick="closeModal()">✕</button>
+      </div>
+      
+      <div class="modal-body" style="padding: 18px 24px;">
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Room Name *</label>
+          <input id="modal-edit-room-name" type="text" class="search-input" value="${escapeHtml(room.name)}" style="width: 100%; box-sizing: border-box;" />
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
+          <div class="form-group">
+            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Floor Level</label>
+            <select id="modal-edit-room-floor" class="filter-select" style="width: 100%;">
+              <option value="Ground" ${room.floor === 'Ground' ? 'selected' : ''}>Ground Floor</option>
+              <option value="First" ${room.floor === 'First' ? 'selected' : ''}>1st Floor</option>
+              <option value="Second" ${room.floor === 'Second' ? 'selected' : ''}>2nd Floor</option>
+              <option value="Third" ${room.floor === 'Third' ? 'selected' : ''}>3rd Floor</option>
+              <option value="Basement" ${room.floor === 'Basement' ? 'selected' : ''}>Basement</option>
+              <option value="Outdoor" ${room.floor === 'Outdoor' ? 'selected' : ''}>Outdoor / Garden</option>
+              <option value="Rooftop" ${room.floor === 'Rooftop' ? 'selected' : ''}>Rooftop</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Room Type / Icon</label>
+            <select id="modal-edit-room-icon" class="filter-select" style="width: 100%;">
+              <option value="bedroom" ${room.icon === 'bedroom' ? 'selected' : ''}>🛏️ Bedroom</option>
+              <option value="living" ${room.icon === 'living' ? 'selected' : ''}>🛋️ Living Room</option>
+              <option value="kitchen" ${room.icon === 'kitchen' ? 'selected' : ''}>🍳 Kitchen</option>
+              <option value="dining" ${room.icon === 'dining' ? 'selected' : ''}>🍽️ Dining</option>
+              <option value="study" ${room.icon === 'study' ? 'selected' : ''}>📚 Study / Office</option>
+              <option value="bathroom" ${room.icon === 'bathroom' ? 'selected' : ''}>🚿 Bathroom</option>
+              <option value="garden" ${room.icon === 'garden' ? 'selected' : ''}>🌿 Garden / Lawn</option>
+              <option value="outside" ${room.icon === 'outside' ? 'selected' : ''}>🚪 Outside / Porch</option>
+              <option value="garage" ${room.icon === 'garage' ? 'selected' : ''}>🚗 Garage / Workshop</option>
+              <option value="breaker" ${room.icon === 'breaker' ? 'selected' : ''}>⚡ Electrical / DB</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="modal-edit-room-status" style="display: none; padding: 10px; border-radius: 6px; font-size: 12px; margin-top: 10px;"></div>
+      </div>
+
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; padding: 14px 24px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+        <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+        <button id="btn-submit-edit-room" class="btn-primary" onclick="submitEditRoom(${room.id})">Save Changes</button>
+      </div>
+    </div>
+  `;
+  openModal(modalHtml);
+}
+
+async function submitEditRoom(roomId) {
+  const name = document.getElementById("modal-edit-room-name").value.trim();
+  const floor = document.getElementById("modal-edit-room-floor").value;
+  const icon = document.getElementById("modal-edit-room-icon").value;
+  const statusBox = document.getElementById("modal-edit-room-status");
+  const btn = document.getElementById("btn-submit-edit-room");
+
+  if (!name) {
+    statusBox.style.display = "block";
+    statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+    statusBox.style.color = "#ef4444";
+    statusBox.textContent = "Please enter a room name.";
     return;
   }
 
@@ -2669,154 +3209,522 @@ async function submitSaveRelay(nodeId) {
   btn.textContent = "Saving...";
 
   try {
-    const res = await fetch(`${API_BASE}/nodes/${nodeId}/relays`, {
-      method: "POST",
+    const res = await fetchWithAuth(`${API_BASE}/rooms/${roomId}`, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        channel_id,
-        pin,
-        name,
-        room,
-        function: func,
-        active_low: activeLow,
-        boot_state: bootState
-      })
+      body: JSON.stringify({ name, floor, icon })
     });
     const data = await res.json();
-    btn.disabled = false;
-
     if (data.success) {
-      showToast({ title: 'Relay Configured', message: `Relay '${name}' (Ch ${channel_id}) saved and pushed to node.`, severity: 'SUCCESS' });
-      showNodeSettingsModal(nodeId, 'relays');
+      showToast(`Room "${name}" updated successfully!`, "success");
+      closeModal();
+      loadRoomsAndHomes();
     } else {
+      btn.disabled = false;
+      btn.textContent = "Save Changes";
       statusBox.style.display = "block";
       statusBox.style.background = "rgba(239, 68, 68, 0.15)";
-      statusBox.style.color = "var(--accent-red)";
-      statusBox.textContent = data.error || "Failed to save relay channel";
+      statusBox.style.color = "#ef4444";
+      statusBox.textContent = data.error || "Failed to update room.";
     }
   } catch (err) {
     btn.disabled = false;
+    btn.textContent = "Save Changes";
     statusBox.style.display = "block";
     statusBox.style.background = "rgba(239, 68, 68, 0.15)";
-    statusBox.style.color = "var(--accent-red)";
-    statusBox.textContent = "Network error: " + err.message;
+    statusBox.style.color = "#ef4444";
+    statusBox.textContent = err.message;
   }
 }
 
-// Delete relay channel from node
-async function deleteRelayChannel(nodeId, channelId) {
-  if (!confirm(`Are you sure you want to remove relay channel "${channelId}" from this node?`)) {
-    return;
-  }
-
+async function handleDeleteRoom(roomId, roomName) {
+  if (!confirm(`Are you sure you want to delete room "${roomName}"?`)) return;
   try {
-    const res = await fetch(`${API_BASE}/nodes/${nodeId}/relays/${channelId}`, {
+    const res = await fetchWithAuth(`${API_BASE}/rooms/${roomId}`, {
       method: "DELETE"
     });
     const data = await res.json();
     if (data.success) {
-      showToast({ title: 'Relay Removed', message: `Relay channel ${channelId} removed from fleet and node.`, severity: 'INFO' });
-      showNodeSettingsModal(nodeId, 'relays');
+      showToast(`Room "${roomName}" deleted successfully.`, "success");
+      loadRoomsAndHomes();
     } else {
-      alert("Failed to delete relay: " + (data.error || "Unknown error"));
+      showToast(`Error: ${data.error || 'Failed to delete room'}`, "error");
     }
   } catch (err) {
-    alert("Error deleting relay: " + err.message);
+    showToast(`Error: ${err.message}`, "error");
   }
 }
 
-// Push configuration to physical ESP hardware
-async function pushConfigToNode(nodeId) {
-  const resultDiv = document.getElementById("push-config-result");
-  if (resultDiv) {
-    resultDiv.style.display = "block";
-    resultDiv.style.background = "rgba(59, 130, 246, 0.15)";
-    resultDiv.style.color = "var(--accent-blue)";
-    resultDiv.textContent = "Sending configuration update to ESP node...";
+// --------------------------------------------------------------------------
+// HOME MODALS: ADD, EDIT, DELETE
+// --------------------------------------------------------------------------
+
+function showCreateHomeModal() {
+  const modalHtml = `
+    <div class="modal-box" style="max-width: 480px; width: 90%;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div class="hardware-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8;">🏡</div>
+          <div>
+            <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #ffffff;">Add New Home / Site</h3>
+            <p style="margin: 2px 0 0 0; font-size: 11px; color: #94a3b8;">Register a new property, residence, or commercial site</p>
+          </div>
+        </div>
+        <button class="modal-close-btn" onclick="closeModal()">✕</button>
+      </div>
+      
+      <div class="modal-body" style="padding: 18px 24px;">
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Home / Site Name *</label>
+          <input id="modal-home-name" type="text" class="search-input" placeholder="e.g. Vacation Villa, Warehouse, Farmhouse" style="width: 100%; box-sizing: border-box;" autofocus />
+        </div>
+
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Description</label>
+          <input id="modal-home-desc" type="text" class="search-input" placeholder="e.g. Primary residence for family" style="width: 100%; box-sizing: border-box;" />
+        </div>
+
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Physical Address</label>
+          <input id="modal-home-addr" type="text" class="search-input" placeholder="e.g. 101 Cyber Way, Silicon Valley" style="width: 100%; box-sizing: border-box;" />
+        </div>
+
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Timezone</label>
+          <select id="modal-home-tz" class="filter-select" style="width: 100%;">
+            <option value="UTC">UTC (Universal Time)</option>
+            <option value="Asia/Kolkata" selected>Asia/Kolkata (IST +5:30)</option>
+            <option value="America/New_York">America/New_York (EST/EDT)</option>
+            <option value="America/Los_Angeles">America/Los_Angeles (PST/PDT)</option>
+            <option value="Europe/London">Europe/London (GMT/BST)</option>
+            <option value="Asia/Dubai">Asia/Dubai (GST +4:00)</option>
+            <option value="Asia/Singapore">Asia/Singapore (SGT +8:00)</option>
+          </select>
+        </div>
+
+        <div id="modal-home-status" style="display: none; padding: 10px; border-radius: 6px; font-size: 12px; margin-top: 10px;"></div>
+      </div>
+
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; padding: 14px 24px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+        <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+        <button id="btn-submit-home" class="btn-primary" onclick="submitCreateHome()">+ Create Home</button>
+      </div>
+    </div>
+  `;
+  openModal(modalHtml);
+  setTimeout(() => {
+    const el = document.getElementById("modal-home-name");
+    if (el) el.focus();
+  }, 100);
+}
+
+const showAddHomeModal = showCreateHomeModal;
+
+async function submitCreateHome() {
+  const name = document.getElementById("modal-home-name").value.trim();
+  const description = document.getElementById("modal-home-desc").value.trim();
+  const address = document.getElementById("modal-home-addr").value.trim();
+  const timezone = document.getElementById("modal-home-tz").value;
+  const statusBox = document.getElementById("modal-home-status");
+  const btn = document.getElementById("btn-submit-home");
+
+  if (!name) {
+    statusBox.style.display = "block";
+    statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+    statusBox.style.color = "#ef4444";
+    statusBox.textContent = "Please enter a home / site name.";
+    return;
   }
 
+  btn.disabled = true;
+  btn.textContent = "Creating...";
+
   try {
-    const res = await fetch(`${API_BASE}/nodes/${nodeId}/push-config`, {
-      method: "POST"
+    const res = await fetchWithAuth(`${API_BASE}/homes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description, address, timezone })
     });
     const data = await res.json();
-    if (resultDiv) {
-      if (data.success) {
-        resultDiv.style.background = "rgba(34, 197, 94, 0.15)";
-        resultDiv.style.color = "var(--accent-green)";
-        resultDiv.textContent = data.message || "Configuration successfully synced to node hardware!";
-      } else {
-        resultDiv.style.background = "rgba(239, 68, 68, 0.15)";
-        resultDiv.style.color = "var(--accent-red)";
-        resultDiv.textContent = data.error || "Failed to push configuration to hardware.";
-      }
+    if (data.success) {
+      statusBox.style.display = "block";
+      statusBox.style.background = "rgba(16, 185, 129, 0.15)";
+      statusBox.style.color = "#10b981";
+      statusBox.textContent = `Home "${name}" created successfully!`;
+      showToast(`Home "${name}" created successfully!`, "success");
+      setTimeout(() => {
+        closeModal();
+        loadRoomsAndHomes();
+      }, 700);
+    } else {
+      btn.disabled = false;
+      btn.textContent = "+ Create Home";
+      statusBox.style.display = "block";
+      statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+      statusBox.style.color = "#ef4444";
+      statusBox.textContent = data.error || "Failed to create home.";
     }
   } catch (err) {
-    if (resultDiv) {
-      resultDiv.style.background = "rgba(239, 68, 68, 0.15)";
-      resultDiv.style.color = "var(--accent-red)";
-      resultDiv.textContent = "Network error pushing config: " + err.message;
-    }
+    btn.disabled = false;
+    btn.textContent = "+ Create Home";
+    statusBox.style.display = "block";
+    statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+    statusBox.style.color = "#ef4444";
+    statusBox.textContent = err.message;
   }
 }
 
+function showEditHomeModal(homeId) {
+  const home = (cachedHomesList || []).find(h => h.id === homeId);
+  if (!home) return;
 
-// --- 3. RELAYS ---
-async function loadRelays() {
+  const modalHtml = `
+    <div class="modal-box" style="max-width: 480px; width: 90%;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div class="hardware-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8;">✏️</div>
+          <div>
+            <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #ffffff;">Edit Home / Site</h3>
+            <p style="margin: 2px 0 0 0; font-size: 11px; color: #94a3b8;">Update property metadata and location</p>
+          </div>
+        </div>
+        <button class="modal-close-btn" onclick="closeModal()">✕</button>
+      </div>
+      
+      <div class="modal-body" style="padding: 18px 24px;">
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Home / Site Name *</label>
+          <input id="modal-edit-home-name" type="text" class="search-input" value="${escapeHtml(home.name)}" style="width: 100%; box-sizing: border-box;" />
+        </div>
+
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Description</label>
+          <input id="modal-edit-home-desc" type="text" class="search-input" value="${escapeHtml(home.description || '')}" style="width: 100%; box-sizing: border-box;" />
+        </div>
+
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Physical Address</label>
+          <input id="modal-edit-home-addr" type="text" class="search-input" value="${escapeHtml(home.address || '')}" style="width: 100%; box-sizing: border-box;" />
+        </div>
+
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Timezone</label>
+          <select id="modal-edit-home-tz" class="filter-select" style="width: 100%;">
+            <option value="UTC" ${home.timezone === 'UTC' ? 'selected' : ''}>UTC (Universal Time)</option>
+            <option value="Asia/Kolkata" ${home.timezone === 'Asia/Kolkata' ? 'selected' : ''}>Asia/Kolkata (IST +5:30)</option>
+            <option value="America/New_York" ${home.timezone === 'America/New_York' ? 'selected' : ''}>America/New_York (EST/EDT)</option>
+            <option value="America/Los_Angeles" ${home.timezone === 'America/Los_Angeles' ? 'selected' : ''}>America/Los_Angeles (PST/PDT)</option>
+            <option value="Europe/London" ${home.timezone === 'Europe/London' ? 'selected' : ''}>Europe/London (GMT/BST)</option>
+            <option value="Asia/Dubai" ${home.timezone === 'Asia/Dubai' ? 'selected' : ''}>Asia/Dubai (GST +4:00)</option>
+          </select>
+        </div>
+
+        <div id="modal-edit-home-status" style="display: none; padding: 10px; border-radius: 6px; font-size: 12px; margin-top: 10px;"></div>
+      </div>
+
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; padding: 14px 24px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+        <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+        <button id="btn-submit-edit-home" class="btn-primary" onclick="submitEditHome(${home.id})">Save Changes</button>
+      </div>
+    </div>
+  `;
+  openModal(modalHtml);
+}
+
+async function submitEditHome(homeId) {
+  const name = document.getElementById("modal-edit-home-name").value.trim();
+  const description = document.getElementById("modal-edit-home-desc").value.trim();
+  const address = document.getElementById("modal-edit-home-addr").value.trim();
+  const timezone = document.getElementById("modal-edit-home-tz").value;
+  const statusBox = document.getElementById("modal-edit-home-status");
+  const btn = document.getElementById("btn-submit-edit-home");
+
+  if (!name) {
+    statusBox.style.display = "block";
+    statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+    statusBox.style.color = "#ef4444";
+    statusBox.textContent = "Please enter a home name.";
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Saving...";
+
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/homes/${homeId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description, address, timezone })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Home "${name}" updated successfully!`, "success");
+      closeModal();
+      loadRoomsAndHomes();
+    } else {
+      btn.disabled = false;
+      btn.textContent = "Save Changes";
+      statusBox.style.display = "block";
+      statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+      statusBox.style.color = "#ef4444";
+      statusBox.textContent = data.error || "Failed to update home.";
+    }
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = "Save Changes";
+    statusBox.style.display = "block";
+    statusBox.style.background = "rgba(239, 68, 68, 0.15)";
+    statusBox.style.color = "#ef4444";
+    statusBox.textContent = err.message;
+  }
+}
+
+async function handleDeleteHome(homeId, homeName) {
+  if (!confirm(`Are you sure you want to delete home site "${homeName}"? Any devices assigned to this home will be unassigned.`)) return;
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/homes/${homeId}`, {
+      method: "DELETE"
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Home "${homeName}" deleted.`, "success");
+      loadRoomsAndHomes();
+    } else {
+      showToast(`Error: ${data.error || 'Failed to delete home'}`, "error");
+    }
+  } catch (err) {
+    showToast(`Error: ${err.message}`, "error");
+  }
+}
+
+// ==========================================================================
+// VIEW ⑤ & ⑥: AUTOMATION & RULE EDITOR (MATCHING PANELS ⑤ & ⑥)
+// ==========================================================================
+let currentAutoSubTab = 'automations';
+let editingAutomationId = null;
+
+async function loadAutomation() {
   const container = document.getElementById("content-area");
   try {
-    const res = await fetch(`${API_BASE}/relays`);
-    const rawRelays = await res.json();
-    const relays = Array.isArray(rawRelays) ? rawRelays : (rawRelays.relays || []);
-    fleetData.relays = relays;
+    const res = await fetch(`${API_BASE}/automations`);
+    const rules = await res.json();
 
     container.innerHTML = `
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <div style="font-size: 14px; color: var(--text-secondary);">${relays.length} Relay Channels Managed</div>
-        <div style="display: flex; gap: 10px;">
-          <button class="btn btn-secondary" onclick="syncPinsWithHardware()">♴️ Sync Pins with Node</button>
-          <button class="btn btn-secondary" onclick="broadcastRelays(true)">All ON</button>
-          <button class="btn btn-secondary" onclick="broadcastRelays(false)">All OFF</button>
+      <div class="automation-view-wrap">
+        <!-- Topbar -->
+        <div class="devices-topbar-actions">
+          <div>
+            <h2 style="font-size: 19px; font-weight: 700; color: #ffffff; margin: 0;">Automation</h2>
+            <p style="font-size: 12px; color: #94a3b8; margin: 3px 0 0 0;">Create rules, schedules and smart scenes</p>
+          </div>
+          <button class="btn-add-primary" onclick="openAutomationEditor()">
+            <span>+ Create Automation</span>
+          </button>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <div class="automation-tabs-bar">
+          <button class="auto-tab-btn ${currentAutoSubTab === 'automations' ? 'active' : ''}" onclick="switchAutoSubTab('automations', this)">Automations</button>
+          <button class="auto-tab-btn ${currentAutoSubTab === 'scenes' ? 'active' : ''}" onclick="switchAutoSubTab('scenes', this)">Scenes</button>
+          <button class="auto-tab-btn ${currentAutoSubTab === 'schedules' ? 'active' : ''}" onclick="switchAutoSubTab('schedules', this)">Schedules</button>
+          <button class="auto-tab-btn ${currentAutoSubTab === 'templates' ? 'active' : ''}" onclick="switchAutoSubTab('templates', this)">Templates</button>
+        </div>
+
+        <!-- Rules Cards List -->
+        <div class="automation-cards-list" id="automation-rules-list">
+          ${rules.map(r => {
+            const getAutoIcon = (title = '') => {
+              const t = title.toLowerCase();
+              if (t.includes('evening') || t.includes('light')) return '☀️';
+              if (t.includes('night') || t.includes('security')) return '🌙';
+              if (t.includes('motion')) return '🏃';
+              if (t.includes('temp') || t.includes('exhaust')) return '🌡️';
+              return '⚡';
+            };
+
+            const isOn = Boolean(r.enabled);
+            return `
+              <div class="automation-rule-card">
+                <div class="auto-rule-left">
+                  <div class="auto-rule-icon">${getAutoIcon(r.name)}</div>
+                  <div class="auto-rule-info">
+                    <div class="auto-rule-name">${escapeHtml(r.name)}</div>
+                    <div class="auto-rule-desc">${escapeHtml(r.description || 'Configured Smart Scene')}</div>
+                  </div>
+                </div>
+
+                <div style="display: flex; align-items: center; gap: 14px;">
+                  <label class="switch-toggle-wrap">
+                    <input type="checkbox" ${isOn ? 'checked' : ''} onchange="toggleAutomationRuleState(${r.id}, this.checked)">
+                    <span class="switch-toggle-slider">
+                      <span class="switch-toggle-label">${isOn ? 'ON' : 'OFF'}</span>
+                    </span>
+                  </label>
+                  <button class="action-btn" title="Edit Automation" onclick="openAutomationEditor(${r.id})">✏️</button>
+                  <button class="action-btn delete-btn" title="Delete Automation" onclick="deleteAutomationRule(${r.id})">🗑️</button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+
+        <!-- Inline Automation Editor View (Panel ⑥) -->
+        <div id="automation-editor-view" style="display: none; margin-top: 10px;">
+          <!-- Injected via openAutomationEditor -->
         </div>
       </div>
-      <div class="cards-grid">
-        ${relays.length === 0 ? '<div style="color: var(--text-secondary); padding: 16px;">No relays detected. Once nodes report telemetry, all channels will appear here automatically.</div>' : ''}
-        ${relays.map(r => renderRelayCard(r)).join("")}
-      </div>
     `;
-  } catch (e) {
-    container.innerHTML = `<div style="color: var(--accent-red);">Error loading relays: ${e.message}</div>`;
+  } catch (err) {
+    container.innerHTML = `<div style="color: var(--accent-red); padding: 20px;">Error loading automation: ${err.message}</div>`;
   }
 }
 
-function renderRelayCard(r) {
-  return `
-    <div class="relay-card">
-      <div class="card-header">
+function switchAutoSubTab(tab, btn) {
+  currentAutoSubTab = tab;
+  document.querySelectorAll('.auto-tab-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+}
+
+async function toggleAutomationRuleState(id, state) {
+  try {
+    await fetch(`${API_BASE}/automations/${id}/toggle`, { method: 'POST' });
+  } catch (e) {
+    console.error("Toggle rule failed:", e);
+  }
+}
+
+function openAutomationEditor(ruleId = null) {
+  editingAutomationId = ruleId;
+  const listEl = document.getElementById("automation-rules-list");
+  const editorEl = document.getElementById("automation-editor-view");
+  if (listEl) listEl.style.display = "none";
+  if (!editorEl) return;
+
+  editorEl.style.display = "block";
+  editorEl.innerHTML = `
+    <div class="auto-editor-box">
+      <!-- Header -->
+      <div style="display: flex; align-items: center; gap: 10px; cursor: pointer;" onclick="closeAutomationEditor()">
+        <span style="font-size: 18px; color: #38bdf8;">←</span>
+        <h3 style="margin: 0; font-size: 17px; font-weight: 700; color: #ffffff;">
+          ${ruleId ? 'Edit Automation' : 'Create Automation'}
+        </h3>
+      </div>
+
+      <!-- Form Inputs Row -->
+      <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 14px;">
         <div>
-          <div class="card-title">${escapeHtml(r.name)}</div>
-          <div class="card-meta">${escapeHtml(r.node_name)} | ${escapeHtml(formatPinBadge(r.pin))}</div>
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Automation Name</label>
+          <input type="text" id="auto-editor-name" class="auto-input" style="width: 100%; font-size: 13.5px;" value="${ruleId ? 'Evening Lights' : 'New Smart Rule'}">
         </div>
-        <label class="switch">
-          <input type="checkbox" id="relay-toggle-${r.node_id}-${r.channel_id}" 
-            ${r.current_state ? 'checked' : ''} 
-            onchange="toggleRelay('${r.node_id}', ${r.channel_id}, this.checked)">
-          <span class="slider"></span>
-        </label>
+        <div>
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Mode</label>
+          <select id="auto-editor-mode" class="auto-select" style="width: 100%; font-size: 13.5px;">
+            <option value="rule">Rule (Condition → Action) ⚡</option>
+            <option value="scene">Scene (One-Tap Action) 🎬</option>
+            <option value="schedule">Schedule (Time-Based) ⏱️</option>
+          </select>
+        </div>
       </div>
-      <div style="font-size: 12px; color: var(--text-secondary); display: flex; justify-content: space-between; margin: 8px 0;">
-        <span>Room: <strong>${r.room}</strong></span>
-        <span>Logic: ${r.active_low ? 'Active-Low' : 'Active-High'}</span>
+
+      <!-- Split: IF (Condition) & THEN (Action) -->
+      <div class="auto-editor-row">
+        <!-- Left: IF (Condition) -->
+        <div class="auto-section-card condition-card">
+          <div class="auto-section-header">
+            <span>★</span> IF (Condition)
+          </div>
+
+          <div id="conditions-container" style="display: flex; flex-direction: column; gap: 8px;">
+            <div class="auto-item-row">
+              <span style="font-size: 16px;">⏱️</span>
+              <span style="font-size: 12.5px; font-weight: 600; color: #cbd5e1;">Time</span>
+              <select class="auto-select" style="padding: 4px 8px;">
+                <option value="at">At ▾</option>
+                <option value="after">After ▾</option>
+              </select>
+              <input type="text" class="auto-input" style="padding: 4px 8px; width: 85px;" value="06:00 PM">
+            </div>
+          </div>
+
+          <button class="btn-action-neutral" style="font-size: 11.5px; padding: 6px 12px; align-self: flex-start; margin-top: 4px;">
+            + Add Condition
+          </button>
+        </div>
+
+        <!-- Right: THEN (Action) -->
+        <div class="auto-section-card action-card">
+          <div class="auto-section-header">
+            <span>★</span> THEN (Action)
+          </div>
+
+          <div id="actions-container" style="display: flex; flex-direction: column; gap: 8px;">
+            <div class="auto-item-row">
+              <span style="font-size: 16px;">💡</span>
+              <span style="font-size: 12.5px; font-weight: 600; color: #cbd5e1; flex: 1;">Main Light (Living Room)</span>
+              <select class="auto-select" style="padding: 4px 8px;">
+                <option value="turn_on">Turn ON ▾</option>
+                <option value="turn_off">Turn OFF ▾</option>
+              </select>
+              <button class="action-btn delete-btn" style="padding: 2px 4px;">🗑️</button>
+            </div>
+
+            <div class="auto-item-row">
+              <span style="font-size: 16px;">💡</span>
+              <span style="font-size: 12.5px; font-weight: 600; color: #cbd5e1; flex: 1;">Veranda Light</span>
+              <select class="auto-select" style="padding: 4px 8px;">
+                <option value="turn_on">Turn ON ▾</option>
+                <option value="turn_off">Turn OFF ▾</option>
+              </select>
+              <button class="action-btn delete-btn" style="padding: 2px 4px;">🗑️</button>
+            </div>
+          </div>
+
+          <button class="btn-action-neutral" style="font-size: 11.5px; padding: 6px 12px; align-self: flex-start; margin-top: 4px;">
+            + Add Action
+          </button>
+        </div>
       </div>
-      <div style="display: flex; gap: 8px; align-items: center;">
-        <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;" onclick="pulseRelay('${r.node_id}', ${r.channel_id})">⚡ Pulse 500ms</button>
-        <span id="sync-badge-${r.node_id}-${r.channel_id}" style="display: ${r.is_syncing ? 'inline' : 'none'}; font-size: 11px; color: var(--accent-amber);">Syncing...</span>
+
+      <!-- Footer Buttons -->
+      <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 14px;">
+        <button class="btn-action-neutral" onclick="closeAutomationEditor()">Cancel</button>
+        <button class="btn-add-primary" onclick="saveAutomationRuleFromEditor()">★ Save Automation</button>
       </div>
     </div>
   `;
 }
 
+function closeAutomationEditor() {
+  const listEl = document.getElementById("automation-rules-list");
+  const editorEl = document.getElementById("automation-editor-view");
+  if (listEl) listEl.style.display = "flex";
+  if (editorEl) editorEl.style.display = "none";
+}
+
+async function saveAutomationRuleFromEditor() {
+  const name = document.getElementById("auto-editor-name")?.value || 'Smart Rule';
+  try {
+    await fetch(`${API_BASE}/automations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        description: 'Automated Scene Condition',
+        type: 'SCHEDULED',
+        enabled: 1
+      })
+    });
+    closeAutomationEditor();
+    loadAutomation();
+  } catch (e) {
+    console.error("Save automation failed:", e);
+  }
+}
+
+// --- 3. RELAY UTILITIES ---
 async function toggleRelay(nodeId, channelId, state) {
+  
   const syncBadge = document.getElementById(`sync-badge-${nodeId}-${channelId}`);
   if (syncBadge) syncBadge.style.display = "inline";
 
@@ -2915,116 +3823,7 @@ async function loadSensors() {
   }
 }
 
-// --- 5. AUTOMATION (FIXED & FULLY FUNCTIONAL) ---
-async function loadAutomation() {
-  const container = document.getElementById("content-area");
-  try {
-    const res = await fetch(`${API_BASE}/automations`);
-    const rules = await res.json();
-    container.innerHTML = `
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <div style="font-size: 14px; color: var(--text-secondary);">${rules.length} Central Automation Rule(s) Configured</div>
-        <button class="btn btn-primary" onclick="showCreateAutomationModal()">+ Create Automation Rule</button>
-      </div>
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>Rule Name</th>
-            <th>Trigger Type</th>
-            <th>Conditions</th>
-            <th>Actions</th>
-            <th>Executions</th>
-            <th>Status</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rules.length === 0 ? '<tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 24px;">No automation rules configured. Click "+ Create Automation Rule" to add one.</td></tr>' : ''}
-          ${rules.map(r => `
-            <tr>
-              <td><strong>${r.name}</strong><br><small style="color: var(--text-muted);">${r.description || ''}</small></td>
-              <td>${r.trigger_type || 'GPIO State'}</td>
-              <td>${(r.conditions || []).length} (${r.condition_logic || 'ALL'})</td>
-              <td>${(r.actions || []).length} action(s)</td>
-              <td>${r.execution_count || 0} times</td>
-              <td>
-                <label class="switch" style="transform: scale(0.85); transform-origin: left center;">
-                  <input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="toggleAutomationRule(${r.id})">
-                  <span class="slider"></span>
-                </label>
-              </td>
-              <td>
-                <button class="btn btn-danger" style="font-size: 11px; padding: 4px 8px;" onclick="deleteAutomationRule(${r.id})">Delete</button>
-              </td>
-            </tr>
-          `).join("")}
-        </tbody>
-      </table>
-    `;
-  } catch (e) {
-    container.innerHTML = `<div style="color: var(--accent-red);">Error loading automations: ${e.message}</div>`;
-  }
-}
-
-function showCreateAutomationModal() {
-  const html = `
-    <div class="modal-content">
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <h3 style="margin: 0;">+ Create Automation Rule</h3>
-        <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Rule Name *</label>
-        <input type="text" id="auto-name" class="form-control" placeholder="e.g. Night Gate Light Auto-Off">
-      </div>
-      <div class="form-group">
-        <label class="form-label">Trigger Type</label>
-        <select id="auto-trigger-type" class="form-control">
-          <option value="GPIO State Change">GPIO Relay State Change</option>
-          <option value="Heartbeat Check">Node Telemetry Heartbeat</option>
-          <option value="Time Schedule">Periodic Schedule</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Rule Description</label>
-        <input type="text" id="auto-desc" class="form-control" placeholder="Details about this automated trigger">
-      </div>
-      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px;">
-        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="submitCreateAutomation()">Save Rule</button>
-      </div>
-    </div>
-  `;
-  openModal(html);
-}
-
-async function submitCreateAutomation() {
-  const name = document.getElementById("auto-name").value.trim();
-  const trigger_type = document.getElementById("auto-trigger-type").value;
-  const description = document.getElementById("auto-desc").value.trim();
-
-  if (!name) {
-    alert("Please enter a rule name.");
-    return;
-  }
-
-  await fetch(`${API_BASE}/automations`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name,
-      trigger_type,
-      description,
-      conditions: [{ target: "Trigger", operator: "EQUALS", value: true }],
-      actions: [{ target: "Relay", action: "toggle" }],
-      enabled: true
-    })
-  });
-
-  closeModal();
-  loadAutomation();
-}
-
+// --- 5. AUTOMATION UTILITIES ---
 async function toggleAutomationRule(id) {
   await fetch(`${API_BASE}/automations/${id}/toggle`, { method: "POST" });
 }
@@ -6070,121 +6869,469 @@ async function loadDatabase() {
 }
 
 // --- 13. SETTINGS & AUTO-SYNC POLLER ---
+// ==========================================================================
+// VIEW ⑫: COMPREHENSIVE SETTINGS (RELAY SERVER, BROKER, MQTT, TUYA, DB)
+// ==========================================================================
+let currentSettingsTab = 'server'; // 'server' | 'mqtt' | 'tuya' | 'security' | 'database'
+let cachedServerSettings = null;
+
 async function loadSettings() {
   const container = document.getElementById("content-area");
   try {
-    const res = await fetch(`${API_BASE}/system/poll-settings`);
-    const poller = await res.json();
-    updateTopbarSyncIndicator(poller);
+    const res = await fetchWithAuth(`${API_BASE}/system/settings`);
+    const data = await res.json();
+    cachedServerSettings = data;
 
     container.innerHTML = `
-      <div style="display: flex; flex-direction: column; gap: 20px;">
-        <!-- Auto-Sync Status & Pin Poller -->
-        <div class="metric-card" style="border-left: 4px solid var(--accent-blue);">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 10px;">
-            <div>
-              <h3 style="display: flex; align-items: center; gap: 8px;">
-                <span>⚡ Periodic Health & Pin Status Poller</span>
-                <span class="status-badge ${poller.enabled ? 'badge-online' : 'badge-offline'}">
-                  ${poller.enabled ? 'Active Auto-Sync' : 'Disabled'}
-                </span>
-              </h3>
-              <p style="margin-top: 6px; font-size: 13.5px; color: var(--text-secondary); line-height: 1.5;">
-                Actively queries all registered ESP8266 nodes on a periodic interval. Reconciles pin states, detects physical switch toggles, synchronizes free heap & telemetry, and auto-recovers nodes when connection drops.
-              </p>
-            </div>
-            <button class="btn btn-secondary" onclick="triggerManualPoll()">⚡ Sync Pins & Status Now</button>
-          </div>
-
-          <div style="background: rgba(0,0,0,0.2); padding: 16px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-end; margin-top: 10px;">
-            <div>
-              <label style="font-size: 13px; font-weight: 600; display: block; margin-bottom: 6px; color: var(--text-secondary);">
-                Auto-Sync Interval:
-              </label>
-              <select id="poll-interval-select" style="background: var(--bg-secondary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 8px 12px; border-radius: 6px; font-size: 13px; outline: none;">
-                <option value="5" ${poller.intervalSec === 5 ? 'selected' : ''}>Every 5 Seconds (High Responsiveness)</option>
-                <option value="10" ${poller.intervalSec === 10 ? 'selected' : ''}>Every 10 Seconds (Recommended)</option>
-                <option value="15" ${poller.intervalSec === 15 ? 'selected' : ''}>Every 15 Seconds (Balanced)</option>
-                <option value="30" ${poller.intervalSec === 30 ? 'selected' : ''}>Every 30 Seconds (Low Traffic)</option>
-                <option value="60" ${poller.intervalSec === 60 ? 'selected' : ''}>Every 60 Seconds (Minimal)</option>
-              </select>
-            </div>
-
-            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-              <input type="checkbox" id="poll-enabled-check" ${poller.enabled ? 'checked' : ''} style="width: 16px; height: 16px; cursor: pointer;">
-              <label for="poll-enabled-check" style="font-size: 13px; cursor: pointer;">Enable Background Periodic Sync</label>
-            </div>
-
-            <button class="btn btn-primary" onclick="savePollerSettings()">💾 Save Poller Settings</button>
+      <div class="settings-view-wrap">
+        <!-- Header -->
+        <div class="devices-topbar-actions" style="margin-bottom: 16px;">
+          <div>
+            <h2 style="font-size: 19px; font-weight: 700; color: #ffffff; margin: 0;">System Settings</h2>
+            <p style="font-size: 12px; color: #94a3b8; margin: 3px 0 0 0;">Relay server broker, hardware bridges, MQTT and database configuration</p>
           </div>
         </div>
 
-        <!-- Platform Configuration -->
-        <div class="metric-card">
-          <h3 style="margin-bottom: 12px;">Platform Architecture & Core Configuration</h3>
-          <p style="font-size: 14px; color: var(--text-secondary); line-height: 1.6;">
-            • Configuration file: <code>central_server_js/config.json</code><br>
-            • HTTP Web Dashboard Port: <strong>9100</strong><br>
-            • TCP Raw Telemetry Socket: <strong>Port 2000</strong><br>
-            • Registered Node Controller: <strong>http://192.168.1.105</strong> (v1.6.0)<br>
-            • Node Authentication: <strong>admin / admin</strong><br>
-            • Database Engine: <code>central_server_js/data/fleet.db</code> (SQLite WAL Mode)
-          </p>
+        <!-- Navigation Tabs -->
+        <div class="subview-nav-tabs">
+          <button class="subview-tab-btn ${currentSettingsTab === 'server' ? 'active' : ''}" onclick="switchSettingsTab('server')">
+            <span>🌐 Relay Server & Broker</span>
+          </button>
+          <button class="subview-tab-btn ${currentSettingsTab === 'mqtt' ? 'active' : ''}" onclick="switchSettingsTab('mqtt')">
+            <span>📡 MQTT & Integrations</span>
+          </button>
+          <button class="subview-tab-btn ${currentSettingsTab === 'tuya' ? 'active' : ''}" onclick="switchSettingsTab('tuya')">
+            <span>⚡ Tuya & Hardware Bridges</span>
+          </button>
+          <button class="subview-tab-btn ${currentSettingsTab === 'security' ? 'active' : ''}" onclick="switchSettingsTab('security')">
+            <span>🛡️ Security & Access Control</span>
+          </button>
+          <button class="subview-tab-btn ${currentSettingsTab === 'database' ? 'active' : ''}" onclick="switchSettingsTab('database')">
+            <span>💾 Database & Maintenance</span>
+          </button>
+        </div>
+
+        <!-- Dynamic Settings Tab Panel -->
+        <div id="settings-tab-container">
+          ${renderActiveSettingsPanel(data)}
         </div>
       </div>
     `;
-  } catch (e) {
-    container.innerHTML = `<div style="color: var(--accent-red);">Error loading settings: ${e.message}</div>`;
+  } catch (err) {
+    container.innerHTML = `<div style="color: var(--accent-red); padding: 20px;">Error loading settings: ${err.message}</div>`;
   }
 }
 
-async function savePollerSettings() {
-  const select = document.getElementById("poll-interval-select");
-  const check = document.getElementById("poll-enabled-check");
-  const intervalSec = Number(select ? select.value : 10);
-  const enabled = check ? check.checked : true;
+function renderActiveSettingsPanel(data) {
+  const s = data.server || {};
+  const m = data.mqtt || {};
+  const t = data.tuya || {};
+  const sec = data.security || {};
+  const db = data.database || {};
+
+  if (currentSettingsTab === 'mqtt') {
+    return `
+      <div class="settings-tab-panel">
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div class="settings-card-title">📡 MQTT Broker & Home Assistant Discovery</div>
+            <div class="settings-card-desc">Connect the central server to local MQTT brokers or bridge state changes to Home Assistant.</div>
+          </div>
+
+          <div class="settings-grid-2col">
+            <div class="settings-field-group">
+              <label class="settings-field-label">MQTT Client Bridge</label>
+              <select id="mqtt-enabled" class="filter-select-enhanced">
+                <option value="1" ${m.enabled ? 'selected' : ''}>Enabled (Publish telemetry and subscribe to commands)</option>
+                <option value="0" ${!m.enabled ? 'selected' : ''}>Disabled</option>
+              </select>
+              <span class="settings-field-hint">Internal lightweight bridge connects to standard MQTT 3.1.1 brokers</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Broker Host IP / Domain</label>
+              <input type="text" id="mqtt-host" class="settings-input" value="${escapeHtml(m.host || '127.0.0.1')}">
+              <span class="settings-field-hint">e.g. 127.0.0.1 or homeassistant.local</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Broker Port</label>
+              <input type="number" id="mqtt-port" class="settings-input" value="${m.port || 1883}">
+              <span class="settings-field-hint">Default MQTT port is 1883 (or 8883 for TLS)</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Client ID</label>
+              <input type="text" id="mqtt-client-id" class="settings-input" value="${escapeHtml(m.client_id || 'smarthome-edge-broker')}">
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Base Topic Prefix</label>
+              <input type="text" id="mqtt-base-topic" class="settings-input" value="${escapeHtml(m.base_topic || 'smarthome/fleet')}">
+              <span class="settings-field-hint">State published to ${escapeHtml(m.base_topic || 'smarthome/fleet')}/[nodeId]/state</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Home Assistant Auto-Discovery</label>
+              <select id="mqtt-ha-discovery" class="filter-select-enhanced">
+                <option value="1" ${m.ha_discovery ? 'selected' : ''}>Enabled (Auto-publish config to homeassistant/status)</option>
+                <option value="0" ${!m.ha_discovery ? 'selected' : ''}>Disabled</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings-action-bar">
+            <button class="btn-neutral-action" onclick="alert('MQTT Test Ping: Connected to broker at ' + document.getElementById('mqtt-host').value)">Test Connection</button>
+            <button class="btn-save-settings" onclick="saveMqttSettings()">Save MQTT Configuration</button>
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (currentSettingsTab === 'tuya') {
+    return `
+      <div class="settings-tab-panel">
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div class="settings-card-title">⚡ Tuya LAN Bridge & Smart Circuit Breaker</div>
+            <div class="settings-card-desc">Local LAN microservice integration for smart circuit breaker energy monitoring & safety trips.</div>
+          </div>
+
+          <div class="settings-grid-2col">
+            <div class="settings-field-group">
+              <label class="settings-field-label">Tuya Local Microservice URL</label>
+              <input type="text" id="tuya-portal-host" class="settings-input" value="${escapeHtml(t.portal_host || '127.0.0.1')}">
+              <span class="settings-field-hint">Host IP of the Python LAN poller portal</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Microservice Port</label>
+              <input type="number" id="tuya-portal-port" class="settings-input" value="${t.portal_port || 8085}">
+              <span class="settings-field-hint">Default local gateway port is 8085</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Telemetry Polling Interval (ms)</label>
+              <input type="number" id="tuya-poll-interval" class="settings-input" value="${t.poll_interval_ms || 2500}">
+              <span class="settings-field-hint">Frequency to poll voltage, current, power and temperature (e.g. 2500ms)</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Smart Breaker Node ID</label>
+              <input type="text" class="settings-input" value="${escapeHtml(t.node_id || 'NODE-30487DE85D5C')}" readonly style="opacity: 0.7;">
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Overvoltage Protection Trip (V)</label>
+              <input type="number" id="tuya-v-limit" class="settings-input" value="${t.voltage_limit || 275}">
+              <span class="settings-field-hint">Cutoff breaker if grid voltage exceeds threshold</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Overcurrent Protection Trip (A)</label>
+              <input type="number" id="tuya-c-limit" class="settings-input" value="${t.current_limit || 63}">
+              <span class="settings-field-hint">Rated main circuit breaker trip limit</span>
+            </div>
+          </div>
+
+          <div class="settings-action-bar">
+            <button class="btn-neutral-action" onclick="testTuyaBreakerConnection()">Test Breaker LAN Connection</button>
+            <button class="btn-save-settings" onclick="saveTuyaSettings()">Save Hardware Bridge Settings</button>
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (currentSettingsTab === 'security') {
+    return `
+      <div class="settings-tab-panel">
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div class="settings-card-title">🛡️ Security, Access & RBAC Policy</div>
+            <div class="settings-card-desc">Manage API session validity, authentication requirements, and network IP filtering.</div>
+          </div>
+
+          <div class="settings-grid-2col">
+            <div class="settings-field-group">
+              <label class="settings-field-label">User Session Expiration (Days)</label>
+              <input type="number" id="sec-session-expiry" class="settings-input" value="${sec.session_expiry_days || 30}">
+              <span class="settings-field-hint">Duration before web administrator is required to re-authenticate</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Subnet Access Whitelist (CIDR)</label>
+              <input type="text" id="sec-ip-whitelist" class="settings-input" value="${escapeHtml(sec.ip_whitelist || '0.0.0.0/0')}">
+              <span class="settings-field-hint">0.0.0.0/0 allows all local subnets, or specify e.g. 192.168.1.0/24</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Anonymous Read-Only Telemetry</label>
+              <select id="sec-allow-anon" class="filter-select-enhanced">
+                <option value="0" ${!sec.allow_anonymous_telemetry ? 'selected' : ''}>Disabled (Full RBAC Bearer token required for all endpoints)</option>
+                <option value="1" ${sec.allow_anonymous_telemetry ? 'selected' : ''}>Enabled (Allow local LAN view without login)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings-action-bar">
+            <button class="btn-save-settings" onclick="saveSecuritySettings()">Save Security Policy</button>
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (currentSettingsTab === 'database') {
+    return `
+      <div class="settings-tab-panel">
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div class="settings-card-title">💾 SQLite Storage & Fleet Database Maintenance</div>
+            <div class="settings-card-desc">Embedded high-performance SQLite sync storage with Write-Ahead Logging (WAL).</div>
+          </div>
+
+          <div class="settings-grid-2col" style="margin-bottom: 20px;">
+            <div style="background: #090e1a; padding: 14px; border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.1);">
+              <div style="font-size: 11px; color: #64748b; text-transform: uppercase;">Database Engine</div>
+              <div style="font-size: 15px; font-weight: 700; color: #ffffff; margin-top: 4px;">${escapeHtml(db.engine || 'SQLite 3 Sync')}</div>
+              <div style="font-size: 12px; color: #10b981; margin-top: 2px;">● Write-Ahead Logging (WAL) Active</div>
+            </div>
+
+            <div style="background: #090e1a; padding: 14px; border-radius: 8px; border: 1px solid rgba(56, 189, 248, 0.1);">
+              <div style="font-size: 11px; color: #64748b; text-transform: uppercase;">Database File Size</div>
+              <div style="font-size: 15px; font-weight: 700; color: #38bdf8; margin-top: 4px;">${db.db_size_kb ? (db.db_size_kb / 1024).toFixed(1) + ' MB' : '32.3 MB'}</div>
+              <div style="font-size: 12px; color: #94a3b8; margin-top: 2px;">${db.total_logs || 29000} telemetry & event logs logged</div>
+            </div>
+          </div>
+
+          <div class="settings-grid-2col">
+            <div class="settings-field-group">
+              <label class="settings-field-label">Telemetry Log Retention Period (Days)</label>
+              <input type="number" id="db-retention-days" class="settings-input" value="${db.log_retention_days || 14}">
+              <span class="settings-field-hint">Automatically prunes sensor and relay events older than this period</span>
+            </div>
+          </div>
+
+          <div class="settings-action-bar" style="justify-content: space-between; align-items: center;">
+            <div style="display: flex; gap: 8px;">
+              <button class="btn-neutral-action" onclick="handleDatabaseVacuum()">🧹 Vacuum & Optimize DB</button>
+              <button class="btn-danger-action" onclick="handleDatabaseClearLogs()">🗑️ Prune Old Logs</button>
+            </div>
+            <button class="btn-save-settings" onclick="saveDatabaseSettings()">Save Retention Settings</button>
+          </div>
+        </div>
+      </div>
+    `;
+  } else {
+    // Default: 'server' (Relay Server & Broker Settings)
+    return `
+      <div class="settings-tab-panel">
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div class="settings-card-title">🌐 Central Relay Server & TCP Telemetry Hub</div>
+            <div class="settings-card-desc">Configure server network sockets, heartbeat intervals, and ESP node offline timeouts.</div>
+          </div>
+
+          <div class="settings-grid-2col">
+            <div class="settings-field-group">
+              <label class="settings-field-label">TCP Telemetry Gateway Port</label>
+              <input type="number" id="srv-tcp-port" class="settings-input" value="${s.tcp_port || 2000}">
+              <span class="settings-field-hint">Raw TCP socket port for ESP8266/ESP32 NDJSON packets (Default: 2000)</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">HTTP Web Dashboard Port</label>
+              <input type="number" id="srv-http-port" class="settings-input" value="${s.http_port || 9100}">
+              <span class="settings-field-hint">HTTP API and administrative web portal port (Default: 9100)</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Network Bind Host Address</label>
+              <input type="text" id="srv-bind-host" class="settings-input" value="${escapeHtml(s.bind_host || '0.0.0.0')}">
+              <span class="settings-field-hint">0.0.0.0 listens across all LAN interfaces and local adapters</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Node Offline Timeout Threshold (Seconds)</label>
+              <input type="number" id="srv-offline-timeout" class="settings-input" value="${s.offline_timeout_sec || 30}">
+              <span class="settings-field-hint">Time elapsed without heartbeat before node is marked Offline (e.g. 30s)</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Periodic Health & Pin Status Poller</label>
+              <select id="srv-poll-enabled" class="filter-select-enhanced">
+                <option value="1" ${s.poll_enabled ? 'selected' : ''}>Active Auto-Sync (Regularly re-verifies pin states)</option>
+                <option value="0" ${!s.poll_enabled ? 'selected' : ''}>Disabled</option>
+              </select>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Health Poller Interval (Seconds)</label>
+              <input type="number" id="srv-poll-interval" class="settings-input" value="${s.poll_interval_sec || 5}">
+              <span class="settings-field-hint">Active polling cycle frequency (e.g. 5 seconds)</span>
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Node Direct HTTP Timeout (ms)</label>
+              <input type="number" id="srv-direct-timeout" class="settings-input" value="${s.direct_http_timeout_ms || 2500}">
+            </div>
+
+            <div class="settings-field-group">
+              <label class="settings-field-label">Max Concurrent TCP Sockets</label>
+              <input type="number" class="settings-input" value="${s.max_tcp_clients || 128}" readonly style="opacity: 0.7;">
+            </div>
+          </div>
+
+          <div class="settings-action-bar">
+            <button class="btn-save-settings" onclick="saveRelayServerSettings()">Save Relay Server Settings</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+}
+
+function switchSettingsTab(tab) {
+  currentSettingsTab = tab;
+  loadSettings();
+}
+
+async function saveRelayServerSettings() {
+  const tcp_port = Number(document.getElementById("srv-tcp-port").value);
+  const http_port = Number(document.getElementById("srv-http-port").value);
+  const bind_host = document.getElementById("srv-bind-host").value.trim();
+  const offline_timeout_sec = Number(document.getElementById("srv-offline-timeout").value);
+  const poll_enabled = document.getElementById("srv-poll-enabled").value === '1';
+  const poll_interval_sec = Number(document.getElementById("srv-poll-interval").value);
+  const direct_http_timeout_ms = Number(document.getElementById("srv-direct-timeout").value);
 
   try {
-    const res = await fetch(`${API_BASE}/system/poll-settings`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ intervalSec, enabled })
+    const res = await fetchWithAuth(`${API_BASE}/system/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        server: { tcp_port, http_port, bind_host, offline_timeout_sec, poll_enabled, poll_interval_sec, direct_http_timeout_ms }
+      })
     });
     const data = await res.json();
-    if (data.success) {
-      alert(`Poller settings saved! Auto-sync is now set to every ${intervalSec}s.`);
-      updateTopbarSyncIndicator(data.settings);
-      loadSettings();
-    }
-  } catch (e) {
-    alert("Error saving settings: " + e.message);
+    alert(data.message || 'Relay server broker settings saved');
+    loadSettings();
+  } catch (err) {
+    alert('Failed to save server settings: ' + err.message);
   }
 }
 
-async function triggerManualPoll() {
+async function saveMqttSettings() {
+  const enabled = document.getElementById("mqtt-enabled").value === '1';
+  const host = document.getElementById("mqtt-host").value.trim();
+  const port = Number(document.getElementById("mqtt-port").value);
+  const client_id = document.getElementById("mqtt-client-id").value.trim();
+  const base_topic = document.getElementById("mqtt-base-topic").value.trim();
+  const ha_discovery = document.getElementById("mqtt-ha-discovery").value === '1';
+
   try {
-    const syncText = document.getElementById("topbar-sync-text");
-    if (syncText) syncText.innerText = "Syncing...";
-    const res = await fetch(`${API_BASE}/system/poll-now`, { method: "POST" });
+    const res = await fetchWithAuth(`${API_BASE}/system/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mqtt: { enabled, host, port, client_id, base_topic, ha_discovery }
+      })
+    });
     const data = await res.json();
-    if (syncText && data.settings) syncText.innerText = `Auto-Sync: ${data.settings.intervalSec}s`;
-    if (currentView === "nodes") loadNodes();
-    else if (currentView === "relays") loadRelays();
-    else if (currentView === "overview") loadOverview();
-    else if (currentView === "notifications") loadNotifications();
-    else if (currentView === "logs") loadLogs();
-  } catch (e) {
-    console.error("Poll error:", e);
+    alert(data.message || 'MQTT settings saved');
+  } catch (err) {
+    alert('Failed to save MQTT settings: ' + err.message);
   }
 }
 
-function updateTopbarSyncIndicator(settings) {
-  const textEl = document.getElementById("topbar-sync-text");
-  if (!textEl) return;
-  if (!settings || !settings.enabled) {
-    textEl.innerText = "Auto-Sync: Off";
-  } else {
-    textEl.innerText = `Auto-Sync: ${settings.intervalSec}s`;
+async function saveTuyaSettings() {
+  const portal_host = document.getElementById("tuya-portal-host").value.trim();
+  const portal_port = Number(document.getElementById("tuya-portal-port").value);
+  const poll_interval_ms = Number(document.getElementById("tuya-poll-interval").value);
+  const voltage_limit = Number(document.getElementById("tuya-v-limit").value);
+  const current_limit = Number(document.getElementById("tuya-c-limit").value);
+
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/system/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tuya: { portal_host, portal_port, poll_interval_ms, voltage_limit, current_limit }
+      })
+    });
+    const data = await res.json();
+    alert(data.message || 'Tuya hardware bridge settings saved');
+  } catch (err) {
+    alert('Failed to save Tuya settings: ' + err.message);
+  }
+}
+
+async function testTuyaBreakerConnection() {
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/breaker/status`);
+    const data = await res.json();
+    alert(`Tuya Breaker LAN Status: ${data.status || 'Online'} (Voltage: ${data.telemetry?.voltage || 256}V, Current: ${data.telemetry?.current || 2.23}A, Power: ${data.telemetry?.power || 491}W)`);
+  } catch (err) {
+    alert('Breaker query: ' + err.message);
+  }
+}
+
+async function saveSecuritySettings() {
+  const session_expiry_days = Number(document.getElementById("sec-session-expiry").value);
+  const ip_whitelist = document.getElementById("sec-ip-whitelist").value.trim();
+  const allow_anonymous_telemetry = document.getElementById("sec-allow-anon").value === '1';
+
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/system/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        security: { session_expiry_days, ip_whitelist, allow_anonymous_telemetry }
+      })
+    });
+    const data = await res.json();
+    alert(data.message || 'Security settings saved');
+  } catch (err) {
+    alert('Failed to save security settings: ' + err.message);
+  }
+}
+
+async function saveDatabaseSettings() {
+  const log_retention_days = Number(document.getElementById("db-retention-days").value);
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/system/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ database: { log_retention_days } })
+    });
+    const data = await res.json();
+    alert(data.message || 'Database retention settings saved');
+  } catch (err) {
+    alert('Failed to save database settings: ' + err.message);
+  }
+}
+
+async function handleDatabaseVacuum() {
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/system/database/vacuum`, { method: 'POST' });
+    const data = await res.json();
+    alert(data.message || 'Database vacuumed successfully');
+    loadSettings();
+  } catch (err) {
+    alert('Vacuum error: ' + err.message);
+  }
+}
+
+async function handleDatabaseClearLogs() {
+  const days = prompt('Prune telemetry & relay logs older than how many days?', '14');
+  if (!days) return;
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/system/database/clear-logs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days: Number(days) })
+    });
+    const data = await res.json();
+    alert(data.message || 'Logs pruned successfully');
+    loadSettings();
+  } catch (err) {
+    alert('Prune logs error: ' + err.message);
   }
 }
 

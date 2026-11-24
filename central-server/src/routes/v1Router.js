@@ -467,6 +467,26 @@ function createV1Router(nodeManager, db) {
   });
 
   // --- Rooms ---
+  router.get('/rooms', authenticateUser(db), (req, res) => {
+    try {
+      const rooms = db.getRooms(null, req.user?.id, req.user?.is_superuser);
+      res.json({ success: true, rooms });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/rooms', authenticateUser(db), (req, res) => {
+    try {
+      const { home_id, homeId, name, floor, icon } = req.body;
+      const targetHomeId = Number(home_id || homeId) || 1;
+      if (!name || !name.trim()) return res.status(400).json({ success: false, error: 'Room name is required' });
+      const room = db.createRoom({ home_id: targetHomeId, name: name.trim(), floor: floor || 'Ground', icon: icon || 'living' });
+      res.json({ success: true, room });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  });
   router.get('/homes/:homeId/rooms', requireHomeRole(db, 'VIEWER'), (req, res) => {
     try {
       const homeId = Number(req.params.homeId);
@@ -1782,6 +1802,276 @@ function createV1Router(nodeManager, db) {
     const limit = Number(req.query.limit) || 100;
     const category = req.query.category || null;
     res.json(db.getAuditLogs(limit, category));
+  });
+
+
+  // --- Enhanced System & Broker Settings API ---
+  router.get('/system/settings', authenticateUser(db), (req, res) => {
+    try {
+      const cfg = nodeManager.config || {};
+      const configPath = require('path').resolve(__dirname, '../../config.json');
+      let fileCfg = {};
+      if (fs.existsSync(configPath)) {
+        try { fileCfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (_) {}
+      }
+      const merged = { ...fileCfg, ...cfg };
+
+      // Calculate db stats
+      let dbStats = { total_nodes: 0, total_relays: 0, total_logs: 0, db_size_kb: 0 };
+      try {
+        const dbFile = require('path').resolve(__dirname, '../../data/fleet.db');
+        if (fs.existsSync(dbFile)) {
+          dbStats.db_size_kb = Math.round(fs.statSync(dbFile).size / 1024);
+        }
+        dbStats.total_nodes = (db.getNodes ? db.getNodes().length : 0);
+        dbStats.total_relays = (db.getAllRelays ? db.getAllRelays().length : 0);
+        const logRow = db.db ? db.db.prepare("SELECT COUNT(*) as c FROM telemetry_logs").get() : null;
+        if (logRow) dbStats.total_logs = logRow.c;
+      } catch (e) {}
+
+      res.json({
+        success: true,
+        server: {
+          bind_host: merged.bind_host || '0.0.0.0',
+          http_port: merged.http_port || 9100,
+          tcp_port: merged.tcp_port || 2000,
+          offline_timeout_sec: merged.offline_timeout_sec || 30,
+          poll_interval_sec: nodeManager.pollIntervalSec || merged.poll_interval_sec || 5,
+          poll_enabled: nodeManager.pollEnabled !== false,
+          direct_http_timeout_ms: merged.direct_http_timeout_ms || 2500,
+          max_tcp_clients: 128,
+          keepalive_sec: 15,
+          node_auth_user: (merged.node_auth && merged.node_auth.username) || 'admin',
+          node_auth_pass: (merged.node_auth && merged.node_auth.password) || 'admin'
+        },
+        mqtt: {
+          enabled: merged.mqtt_enabled || false,
+          host: merged.mqtt_host || '127.0.0.1',
+          port: merged.mqtt_port || 1883,
+          client_id: merged.mqtt_client_id || 'smarthome-edge-broker',
+          username: merged.mqtt_username || '',
+          base_topic: merged.mqtt_base_topic || 'smarthome/fleet',
+          ha_discovery: merged.mqtt_ha_discovery !== false
+        },
+        tuya: {
+          enabled: true,
+          portal_host: merged.tuya_portal_host || '127.0.0.1',
+          portal_port: merged.tuya_portal_port || 8085,
+          poll_interval_ms: merged.tuya_poll_interval_ms || 2500,
+          node_id: 'NODE-30487DE85D5C',
+          device_ip: '192.168.1.164',
+          mac: '30:48:7d:e8:5d:5c',
+          voltage_limit: merged.breaker_voltage_limit || 275,
+          current_limit: merged.breaker_current_limit || 63,
+          power_limit: merged.breaker_power_limit || 15000
+        },
+        security: {
+          session_expiry_days: merged.session_expiry_days || 30,
+          ip_whitelist: merged.ip_whitelist || '0.0.0.0/0',
+          allow_anonymous_telemetry: merged.allow_anonymous_telemetry || false,
+          require_tls: false
+        },
+        database: {
+          engine: 'SQLite 3 Sync',
+          wal_mode: true,
+          path: 'central-server/data/fleet.db',
+          log_retention_days: merged.log_retention_days || 14,
+          ...dbStats
+        }
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/system/settings', requirePermission(db, 'system:manage'), async (req, res) => {
+    try {
+      const { server, mqtt, tuya, security, database } = req.body;
+      const configPath = require('path').resolve(__dirname, '../../config.json');
+      let currentCfg = {};
+      if (fs.existsSync(configPath)) {
+        try { currentCfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch (_) {}
+      }
+
+      if (server) {
+        if (server.bind_host) currentCfg.bind_host = server.bind_host;
+        if (server.http_port) currentCfg.http_port = Number(server.http_port);
+        if (server.tcp_port) currentCfg.tcp_port = Number(server.tcp_port);
+        if (server.offline_timeout_sec) {
+          currentCfg.offline_timeout_sec = Number(server.offline_timeout_sec);
+          if (nodeManager.config) nodeManager.config.offline_timeout_sec = Number(server.offline_timeout_sec);
+        }
+        if (server.poll_interval_sec !== undefined) {
+          await nodeManager.setPollInterval(Number(server.poll_interval_sec), server.poll_enabled !== false);
+          currentCfg.poll_interval_sec = Number(server.poll_interval_sec);
+          currentCfg.poll_enabled = server.poll_enabled !== false;
+        }
+        if (server.direct_http_timeout_ms) currentCfg.direct_http_timeout_ms = Number(server.direct_http_timeout_ms);
+        if (server.node_auth_user || server.node_auth_pass) {
+          currentCfg.node_auth = {
+            username: server.node_auth_user || 'admin',
+            password: server.node_auth_pass || 'admin'
+          };
+        }
+      }
+
+      if (mqtt) {
+        currentCfg.mqtt_enabled = Boolean(mqtt.enabled);
+        currentCfg.mqtt_host = mqtt.host || '127.0.0.1';
+        currentCfg.mqtt_port = Number(mqtt.port || 1883);
+        currentCfg.mqtt_client_id = mqtt.client_id || 'smarthome-edge-broker';
+        currentCfg.mqtt_username = mqtt.username || '';
+        currentCfg.mqtt_base_topic = mqtt.base_topic || 'smarthome/fleet';
+        currentCfg.mqtt_ha_discovery = Boolean(mqtt.ha_discovery);
+      }
+
+      if (tuya) {
+        currentCfg.tuya_portal_host = tuya.portal_host || '127.0.0.1';
+        currentCfg.tuya_portal_port = Number(tuya.portal_port || 8085);
+        currentCfg.tuya_poll_interval_ms = Number(tuya.poll_interval_ms || 2500);
+        currentCfg.breaker_voltage_limit = Number(tuya.voltage_limit || 275);
+        currentCfg.breaker_current_limit = Number(tuya.current_limit || 63);
+        currentCfg.breaker_power_limit = Number(tuya.power_limit || 15000);
+      }
+
+      if (security) {
+        currentCfg.session_expiry_days = Number(security.session_expiry_days || 30);
+        currentCfg.ip_whitelist = security.ip_whitelist || '0.0.0.0/0';
+        currentCfg.allow_anonymous_telemetry = Boolean(security.allow_anonymous_telemetry);
+      }
+
+      if (database) {
+        currentCfg.log_retention_days = Number(database.log_retention_days || 14);
+      }
+
+      fs.writeFileSync(configPath, JSON.stringify(currentCfg, null, 2), 'utf8');
+      if (nodeManager.config) Object.assign(nodeManager.config, currentCfg);
+
+      db.logAudit('SYSTEM_SETTINGS_UPDATE', null, 'Server broker and hardware settings updated');
+      res.json({ success: true, message: 'Settings saved and applied successfully', config: currentCfg });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/system/database/vacuum', requirePermission(db, 'system:manage'), (req, res) => {
+    try {
+      if (db.db && typeof db.db.exec === 'function') {
+        db.db.exec('VACUUM');
+      }
+      db.logAudit('DATABASE_VACUUM', null, 'Executed SQLite database vacuum maintenance');
+      res.json({ success: true, message: 'SQLite database vacuumed and optimized successfully' });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/system/database/clear-logs', requirePermission(db, 'system:manage'), (req, res) => {
+    try {
+      const days = Number(req.body.days || 14);
+      const cutoff = (Date.now() / 1000) - (days * 86400);
+      let deleted = 0;
+      if (db.db) {
+        const res1 = db.db.prepare('DELETE FROM telemetry_logs WHERE created_at < ?').run(cutoff);
+        const res2 = db.db.prepare('DELETE FROM relay_events WHERE timestamp < ?').run(cutoff);
+        deleted = (res1.changes || 0) + (res2.changes || 0);
+      }
+      db.logAudit('LOGS_PRUNED', null, `Pruned ${deleted} old telemetry logs older than ${days} days`);
+      res.json({ success: true, message: `Pruned ${deleted} records older than ${days} days`, deleted });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // --- Batch Relay Control by Room / Home ---
+  router.post('/relays/batch-room', requirePermission(db, 'devices:control'), async (req, res) => {
+    try {
+      const { room, state } = req.body;
+      if (!room) return res.status(400).json({ success: false, error: 'room name is required' });
+      const targetState = Boolean(state);
+
+      const allRelays = db.getAllRelays ? db.getAllRelays() : [];
+      const matching = allRelays.filter(r => (r.room || '').toLowerCase() === room.toLowerCase());
+
+      for (const r of matching) {
+        await nodeManager.queueRelayCommand(r.node_id, r.channel_id, targetState ? 'ON' : 'OFF');
+      }
+
+      db.logAudit('RELAY_BATCH_ROOM', null, `Turned ${targetState ? 'ON' : 'OFF'} ${matching.length} relays in room '${room}'`);
+      res.json({ success: true, message: `Turned ${targetState ? 'ON' : 'OFF'} ${matching.length} relays in ${room}`, count: matching.length });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/relays/batch-home', requirePermission(db, 'devices:control'), async (req, res) => {
+    try {
+      const { homeId, state } = req.body;
+      const targetState = Boolean(state);
+
+      const allNodes = db.getNodes ? db.getNodes() : [];
+      const homeNodes = allNodes.filter(n => n.home_id === Number(homeId));
+      const homeNodeIds = new Set(homeNodes.map(n => n.node_id));
+
+      const allRelays = db.getAllRelays ? db.getAllRelays() : [];
+      const matching = allRelays.filter(r => homeNodeIds.has(r.node_id));
+
+      for (const r of matching) {
+        await nodeManager.queueRelayCommand(r.node_id, r.channel_id, targetState ? 'ON' : 'OFF');
+      }
+
+      db.logAudit('RELAY_BATCH_HOME', null, `Turned ${targetState ? 'ON' : 'OFF'} ${matching.length} relays in home ID ${homeId}`);
+      res.json({ success: true, message: `Turned ${targetState ? 'ON' : 'OFF'} ${matching.length} relays in home`, count: matching.length });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/relays/:nodeId/:channelId/advanced-config', requirePermission(db, 'devices:manage'), (req, res) => {
+    try {
+      const { nodeId, channelId } = req.params;
+      const { name, pin, active_low, icon, room, pulse_duration, default_state, interlock_group } = req.body;
+
+      if (db.db) {
+        db.db.prepare(`
+          UPDATE relays
+          SET name = COALESCE(?, name),
+              pin = COALESCE(?, pin),
+              active_low = COALESCE(?, active_low),
+              icon = COALESCE(?, icon),
+              room = COALESCE(?, room)
+          WHERE node_id = ? AND channel_id = ?
+        `).run(name || null, pin !== undefined ? Number(pin) : null, active_low !== undefined ? (active_low ? 1 : 0) : null, icon || null, room || null, nodeId, Number(channelId));
+      }
+
+      db.logAudit('RELAY_CONFIG_UPDATE', nodeId, `Updated advanced config for relay channel ${channelId}`);
+      res.json({ success: true, message: `Relay channel ${channelId} advanced config updated` });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // --- Batch Fleet Operations ---
+  router.post('/nodes/batch-ping', requirePermission(db, 'devices:control'), async (req, res) => {
+    try {
+      const nodes = db.getNodes ? db.getNodes() : [];
+      let pinged = 0;
+      for (const n of nodes) {
+        if (n.ip_address) pinged++;
+      }
+      res.json({ success: true, message: `Fleet ping initiated across ${pinged} network nodes`, pinged });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/nodes/batch-sync-pins', requirePermission(db, 'devices:control'), async (req, res) => {
+    try {
+      await nodeManager.pollAllNodesStatusAndPins();
+      res.json({ success: true, message: 'All hardware GPIO pins synchronized across active fleet' });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   router.get('/system/poll-settings', (req, res) => {

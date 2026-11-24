@@ -119,20 +119,146 @@ type BreakerData struct {
 	Reading BreakerReading    `json:"reading"`
 }
 
+type RelayHistoryEntry struct {
+	Timestamp string `json:"timestamp"`
+	State     bool   `json:"state"`
+	Source    string `json:"source"`
+}
+
+type Notification struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Message   string `json:"message"`
+	Type      string `json:"type"` // "info", "warning", "error", "success"
+	Read      bool   `json:"read"`
+	CreatedAt string `json:"created_at"`
+}
+
+type SystemLogEntry struct {
+	Timestamp string `json:"timestamp"`
+	Level     string `json:"level"` // "INFO", "WARN", "ERROR"
+	Message   string `json:"message"`
+	Source    string `json:"source"`
+}
+
+type AutomationRule struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Trigger   string `json:"trigger"`
+	Condition string `json:"condition"`
+	Action    string `json:"action"`
+	Enabled   bool   `json:"enabled"`
+	CreatedAt string `json:"created_at"`
+}
+
+type Home struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Address   string `json:"address,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
+type Room struct {
+	ID        string `json:"id"`
+	HomeID    string `json:"home_id"`
+	Name      string `json:"name"`
+	Icon      string `json:"icon,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
 type EventListener func(eventType string, data interface{})
 
 type StateManager struct {
-	mu           sync.RWMutex
-	nodes        map[string]*Node
-	commandQueue map[string][]*Command
-	breaker      BreakerData
-	listeners    []EventListener
+	mu             sync.RWMutex
+	startTime      time.Time
+	nodes          map[string]*Node
+	commandQueue   map[string][]*Command
+	recentCommands []*Command
+	relayHistory   map[string][]RelayHistoryEntry
+	breaker        BreakerData
+	notifications  []Notification
+	logs           []SystemLogEntry
+	automations    []AutomationRule
+	homes          []Home
+	rooms          []Room
+	listeners      []EventListener
 }
 
 func NewStateManager() *StateManager {
+	nowStr := time.Now().Format("2006-01-02 15:04:05")
 	sm := &StateManager{
-		nodes:        make(map[string]*Node),
-		commandQueue: make(map[string][]*Command),
+		startTime:      time.Now(),
+		nodes:          make(map[string]*Node),
+		commandQueue:   make(map[string][]*Command),
+		recentCommands: make([]*Command, 0),
+		relayHistory:   make(map[string][]RelayHistoryEntry),
+		notifications: []Notification{
+			{
+				ID:        "notif-1",
+				Title:     "Edge Broker Online",
+				Message:   "SmartHome Go Edge Relay Server initialized on local gateway.",
+				Type:      "success",
+				Read:      false,
+				CreatedAt: nowStr,
+			},
+		},
+		logs: []SystemLogEntry{
+			{
+				Timestamp: nowStr,
+				Level:     "INFO",
+				Message:   "Go Edge Broker runtime started (ARM64/AMD64). Listening on TCP :2000, HTTP :9200.",
+				Source:    "edge-core",
+			},
+		},
+		automations: []AutomationRule{
+			{
+				ID:        "auto-breaker-overload",
+				Name:      "Circuit Breaker High Load Safety Trip",
+				Trigger:   "breaker.power_w > 8000",
+				Condition: "breaker.switch_state == true",
+				Action:    "notify('High load warning on main circuit breaker')",
+				Enabled:   true,
+				CreatedAt: nowStr,
+			},
+		},
+		homes: []Home{
+			{
+				ID:        "home-primary",
+				Name:      "Primary Residence",
+				Address:   "Main Local Network",
+				CreatedAt: nowStr,
+			},
+		},
+		rooms: []Room{
+			{
+				ID:        "room-living",
+				HomeID:    "home-primary",
+				Name:      "Living Room",
+				Icon:      "couch",
+				CreatedAt: nowStr,
+			},
+			{
+				ID:        "room-kitchen",
+				HomeID:    "home-primary",
+				Name:      "Kitchen",
+				Icon:      "utensils",
+				CreatedAt: nowStr,
+			},
+			{
+				ID:        "room-bedroom",
+				HomeID:    "home-primary",
+				Name:      "Bedroom",
+				Icon:      "bed",
+				CreatedAt: nowStr,
+			},
+			{
+				ID:        "room-hallway",
+				HomeID:    "home-primary",
+				Name:      "Hallway",
+				Icon:      "door-open",
+				CreatedAt: nowStr,
+			},
+		},
 	}
 	// Initial default breaker reading
 	sm.breaker.Config = BreakerConfigInfo{
@@ -146,7 +272,7 @@ func NewStateManager() *StateManager {
 	}
 	sm.breaker.Reading.Online = false
 	sm.breaker.Reading.Source = "edge_broker"
-	sm.breaker.Reading.Timestamp = time.Now().Format("2006-01-02 15:04:05")
+	sm.breaker.Reading.Timestamp = nowStr
 	sm.breaker.Reading.DPS = make(map[string]interface{})
 	sm.breaker.Reading.Decoded.VoltageV = 230.0
 	sm.breaker.Reading.Decoded.FrequencyHz = 50.0
@@ -488,7 +614,471 @@ func (sm *StateManager) SetChannelState(nodeID string, channelID int, state bool
 		"state":     state,
 	})
 
+	// Record history & command tracking
+	relKey := fmt.Sprintf("%s:%d", nodeID, channelID)
+	sm.relayHistory[relKey] = append(sm.relayHistory[relKey], RelayHistoryEntry{
+		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+		State:     state,
+		Source:    "api_command",
+	})
+	if len(sm.relayHistory[relKey]) > 50 {
+		sm.relayHistory[relKey] = sm.relayHistory[relKey][1:]
+	}
+
+	sm.recentCommands = append(sm.recentCommands, cmd)
+	if len(sm.recentCommands) > 100 {
+		sm.recentCommands = sm.recentCommands[1:]
+	}
+
 	return cmd, nil
+}
+
+func (sm *StateManager) GetOverview(centralOnline bool) map[string]interface{} {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	totalNodes := len(sm.nodes)
+	onlineNodes := 0
+	totalRelays := 0
+	activeRelays := 0
+
+	for _, n := range sm.nodes {
+		if n.IsOnline {
+			onlineNodes++
+		}
+		for _, ch := range n.Channels {
+			totalRelays++
+			if ch.State {
+				activeRelays++
+			}
+		}
+	}
+
+	unreadNotifs := 0
+	for _, n := range sm.notifications {
+		if !n.Read {
+			unreadNotifs++
+		}
+	}
+
+	uptimeSec := int64(time.Since(sm.startTime).Seconds())
+
+	return map[string]interface{}{
+		"nodes": map[string]interface{}{
+			"total":   totalNodes,
+			"online":  onlineNodes,
+			"offline": totalNodes - onlineNodes,
+		},
+		"relays": map[string]interface{}{
+			"total": totalRelays,
+			"on":    activeRelays,
+			"off":   totalRelays - activeRelays,
+		},
+		"sensors": map[string]interface{}{
+			"total": sm.countSensorsLocked(),
+		},
+		"alerts": map[string]interface{}{
+			"unread": unreadNotifs,
+		},
+		"protocols": map[string]interface{}{
+			"tcp_server": map[string]interface{}{
+				"running": true,
+				"port":    2000,
+			},
+			"http_server": map[string]interface{}{
+				"running": true,
+				"port":    9200,
+			},
+		},
+		"server": map[string]interface{}{
+			"version":        "1.0.0-edge",
+			"uptime_sec":     uptimeSec,
+			"platform":       "SmartHome Edge Relay Server (Go Native ARM64/AMD64)",
+			"central_online": centralOnline,
+		},
+	}
+}
+
+func (sm *StateManager) countSensorsLocked() int {
+	cnt := 0
+	for _, n := range sm.nodes {
+		cnt += len(n.Sensors)
+	}
+	return cnt
+}
+
+func (sm *StateManager) GetAllRelays(roomFilter string, nodeFilter string, stateFilter *bool) []map[string]interface{} {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	relays := make([]map[string]interface{}, 0)
+	for nodeID, node := range sm.nodes {
+		if nodeFilter != "" && nodeID != nodeFilter {
+			continue
+		}
+		for _, ch := range node.Channels {
+			if roomFilter != "" && ch.Room != roomFilter {
+				continue
+			}
+			if stateFilter != nil && ch.State != *stateFilter {
+				continue
+			}
+
+			chID := ch.ChannelID
+			if chID == 0 {
+				chID = ch.ID
+			}
+
+			stVal := 0
+			if ch.State {
+				stVal = 1
+			}
+
+			relayID := fmt.Sprintf("%s_ch%d", nodeID, chID)
+			item := map[string]interface{}{
+				"id":            relayID,
+				"node_id":       nodeID,
+				"nodeId":        nodeID,
+				"node_name":     node.NodeName,
+				"channel_id":    chID,
+				"channelId":     chID,
+				"pin":           ch.Pin,
+				"name":          ch.Name,
+				"room":          ch.Room,
+				"function":      ch.Function,
+				"state":         ch.State,
+				"current_state": stVal,
+				"node_online":   node.IsOnline,
+				"node_ip":       node.IP,
+			}
+			relays = append(relays, item)
+		}
+	}
+	return relays
+}
+
+func (sm *StateManager) GetAllSensors() []map[string]interface{} {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	sensors := make([]map[string]interface{}, 0)
+	for nodeID, node := range sm.nodes {
+		for i, s := range node.Sensors {
+			sensors = append(sensors, map[string]interface{}{
+				"id":         fmt.Sprintf("%s_sensor_%d", nodeID, i+1),
+				"node_id":    nodeID,
+				"nodeId":     nodeID,
+				"node_name":  node.NodeName,
+				"type":       s.Type,
+				"name":       s.Name,
+				"value":      s.Value,
+				"unit":       s.Unit,
+				"updated_at": time.Now().Format("2006-01-02 15:04:05"),
+			})
+		}
+	}
+	return sensors
+}
+
+func (sm *StateManager) BroadcastRelays(targetState bool, room string) []*Command {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	var commands []*Command
+	for nodeID, node := range sm.nodes {
+		for i := range node.Channels {
+			if room != "" && node.Channels[i].Room != room {
+				continue
+			}
+			node.Channels[i].State = targetState
+			chID := node.Channels[i].ID
+			pin := node.Channels[i].Pin
+
+			cmdUUID := fmt.Sprintf("cmd-%d", time.Now().UnixNano())
+			val := 0
+			if targetState {
+				val = 1
+			}
+			cmd := &Command{
+				CommandUUID: cmdUUID,
+				UUID:        cmdUUID,
+				Action:      "setState",
+				Type:        "SET_PIN",
+				ID:          chID,
+				ChannelID:   chID,
+				Channel_ID:  chID,
+				Channel:     chID,
+				Pin:         pin,
+				State:       targetState,
+				Value:       val,
+				ExpiresAt:   time.Now().Unix() + 30,
+			}
+			sm.commandQueue[nodeID] = append(sm.commandQueue[nodeID], cmd)
+			commands = append(commands, cmd)
+
+			// Record history
+			relKey := fmt.Sprintf("%s:%d", nodeID, chID)
+			sm.relayHistory[relKey] = append(sm.relayHistory[relKey], RelayHistoryEntry{
+				Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+				State:     targetState,
+				Source:    "broadcast",
+			})
+
+			// Fast LAN HTTP push
+			if node.IP != "" && node.IP != "127.0.0.1" && node.IP != "0.0.0.0" {
+				go func(ip string, ch int, st bool) {
+					payload, _ := json.Marshal(map[string]interface{}{
+						"id":     ch,
+						"state":  st,
+						"action": "setState",
+					})
+					client := &http.Client{Timeout: 1 * time.Second}
+					resp, err := client.Post(fmt.Sprintf("http://%s/api/gpio/state", ip), "application/json", bytes.NewReader(payload))
+					if err == nil && resp != nil {
+						_ = resp.Body.Close()
+					}
+				}(node.IP, chID, targetState)
+			}
+		}
+	}
+	return commands
+}
+
+func (sm *StateManager) GetRelayHistory(nodeID string, channelID int) []RelayHistoryEntry {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	key := fmt.Sprintf("%s:%d", nodeID, channelID)
+	if hist, ok := sm.relayHistory[key]; ok {
+		cp := make([]RelayHistoryEntry, len(hist))
+		copy(cp, hist)
+		return cp
+	}
+	return []RelayHistoryEntry{}
+}
+
+func (sm *StateManager) GetRecentCommands() []*Command {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	cp := make([]*Command, len(sm.recentCommands))
+	copy(cp, sm.recentCommands)
+	return cp
+}
+
+func (sm *StateManager) GetNotifications() []Notification {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	cp := make([]Notification, len(sm.notifications))
+	copy(cp, sm.notifications)
+	return cp
+}
+
+func (sm *StateManager) GetUnreadNotifCount() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	cnt := 0
+	for _, n := range sm.notifications {
+		if !n.Read {
+			cnt++
+		}
+	}
+	return cnt
+}
+
+func (sm *StateManager) MarkNotificationsRead() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	for i := range sm.notifications {
+		sm.notifications[i].Read = true
+	}
+}
+
+func (sm *StateManager) DeleteNotification(id string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	filtered := make([]Notification, 0, len(sm.notifications))
+	for _, n := range sm.notifications {
+		if n.ID != id {
+			filtered = append(filtered, n)
+		}
+	}
+	sm.notifications = filtered
+}
+
+func (sm *StateManager) ClearAllNotifications() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.notifications = make([]Notification, 0)
+}
+
+func (sm *StateManager) GetSystemLogs() []SystemLogEntry {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	cp := make([]SystemLogEntry, len(sm.logs))
+	copy(cp, sm.logs)
+	return cp
+}
+
+func (sm *StateManager) AddSystemLog(level, message, source string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.logs = append(sm.logs, SystemLogEntry{
+		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+		Level:     level,
+		Message:   message,
+		Source:    source,
+	})
+	if len(sm.logs) > 200 {
+		sm.logs = sm.logs[1:]
+	}
+}
+
+func (sm *StateManager) GetAutomations() []AutomationRule {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	cp := make([]AutomationRule, len(sm.automations))
+	copy(cp, sm.automations)
+	return cp
+}
+
+func (sm *StateManager) AddAutomation(rule AutomationRule) AutomationRule {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if rule.ID == "" {
+		rule.ID = fmt.Sprintf("auto-%d", time.Now().Unix())
+	}
+	rule.CreatedAt = time.Now().Format("2006-01-02 15:04:05")
+	sm.automations = append(sm.automations, rule)
+	return rule
+}
+
+func (sm *StateManager) ToggleAutomation(id string) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	for i := range sm.automations {
+		if sm.automations[i].ID == id {
+			sm.automations[i].Enabled = !sm.automations[i].Enabled
+			return sm.automations[i].Enabled
+		}
+	}
+	return false
+}
+
+func (sm *StateManager) DeleteAutomation(id string) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	filtered := make([]AutomationRule, 0, len(sm.automations))
+	found := false
+	for _, a := range sm.automations {
+		if a.ID != id {
+			filtered = append(filtered, a)
+		} else {
+			found = true
+		}
+	}
+	sm.automations = filtered
+	return found
+}
+
+func (sm *StateManager) GetHomes() []Home {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	cp := make([]Home, len(sm.homes))
+	copy(cp, sm.homes)
+	return cp
+}
+
+func (sm *StateManager) GetRooms(homeID string) []Room {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	res := make([]Room, 0)
+	for _, r := range sm.rooms {
+		if homeID == "" || r.HomeID == homeID {
+			res = append(res, r)
+		}
+	}
+	return res
+}
+
+func (sm *StateManager) GetRoom(roomID string) (*Room, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	for _, r := range sm.rooms {
+		if r.ID == roomID {
+			cp := r
+			return &cp, true
+		}
+	}
+	return nil, false
+}
+
+func (sm *StateManager) CreateHome(name, address string) Home {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	h := Home{
+		ID:        fmt.Sprintf("home-%d", time.Now().Unix()),
+		Name:      name,
+		Address:   address,
+		CreatedAt: time.Now().Format("2006-01-02 15:04:05"),
+	}
+	sm.homes = append(sm.homes, h)
+	return h
+}
+
+func (sm *StateManager) CreateRoom(homeID, name, icon string) Room {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if homeID == "" {
+		homeID = "home-primary"
+	}
+	r := Room{
+		ID:        fmt.Sprintf("room-%d", time.Now().Unix()),
+		HomeID:    homeID,
+		Name:      name,
+		Icon:      icon,
+		CreatedAt: time.Now().Format("2006-01-02 15:04:05"),
+	}
+	sm.rooms = append(sm.rooms, r)
+	return r
+}
+
+func (sm *StateManager) DeleteRoom(roomID string) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	filtered := make([]Room, 0, len(sm.rooms))
+	found := false
+	for _, r := range sm.rooms {
+		if r.ID != roomID {
+			filtered = append(filtered, r)
+		} else {
+			found = true
+		}
+	}
+	sm.rooms = filtered
+	return found
+}
+
+func (sm *StateManager) DeleteNode(nodeID string) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if _, ok := sm.nodes[nodeID]; ok {
+		delete(sm.nodes, nodeID)
+		delete(sm.commandQueue, nodeID)
+		sm.emit("node_deleted", map[string]string{"nodeId": nodeID})
+		return true
+	}
+	return false
+}
+
+func (sm *StateManager) UpdateNodeSettings(nodeID string, name string) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if n, ok := sm.nodes[nodeID]; ok {
+		if name != "" {
+			n.NodeName = name
+		}
+		return true
+	}
+	return false
 }
 
 func (sm *StateManager) UpdateBreaker(b BreakerData) {

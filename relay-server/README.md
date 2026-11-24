@@ -26,12 +26,14 @@ Ultra-lightweight, high-performance edge control plane engineered specifically i
 ```
 
 ### Key Highlights
-1. **Always-On Local Authority:** ESP nodes and Android mobile app connect directly to the router. The central PC is never a dependency for toggling relays, reading sensors, or monitoring circuit breakers.
-2. **Pure Static Binary:** Zero runtime dependencies on OpenWrt (no Node.js, no Python, no shared libraries).
-3. **Low Resource Footprint:** Consumes only ~15 MB to 25 MB RAM and <1% idle CPU.
-4. **Framing & Protocol:** Uses standard NDJSON (newline-delimited JSON) on TCP port `2000`, matching your existing ESP `app2` firmware.
-5. **Circuit Breaker:** Complete live telemetry (V, A, W, kWh, Hz, °C, mA) and contact switch control (DP 108).
-6. **Persistent Spool:** Bounded disk queue on `/overlay/smarthome-edge/events` for critical state changes.
+1. **Full Feature & Dashboard Parity with Central Server:** Houses the complete 17-module Single-Page Application (Overview, Nodes, Relays, Sensors, Smart Breaker, Automation, LittleFS, Config Sync, Command Center, Logs, RBAC).
+2. **Always-On Local Authority:** ESP nodes and Android mobile app connect directly to the router. The central PC is never a dependency for toggling relays, reading sensors, running local automations, or monitoring circuit breakers.
+3. **Pure Static Binary:** Zero runtime dependencies on OpenWrt (no Node.js, no Python, no shared libraries).
+4. **Low Resource Footprint:** Consumes only ~25 MB to 35 MB RAM and <1% idle CPU on the Jio AX6000 (MediaTek MT7986A Filogic 830).
+5. **Continuous Upstream Sync:** Automatically streams node telemetry, relay actuations, breaker changes, and events to Central Server (`http://<central_ip>:9100/api/telemetry`) when PC is online.
+6. **Framing & Protocol:** Standard NDJSON on TCP port `2000` + REST & WebSocket on port `9200`.
+7. **Circuit Breaker:** Complete live telemetry (V, A, W, kWh, Hz, °C, mA) and contact switch control (DP 108).
+8. **Persistent Spool:** Bounded circular disk queue on `/overlay/smarthome-edge/events` for offline state protection.
 
 ---
 

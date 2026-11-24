@@ -96,7 +96,24 @@ func (a *Authenticator) sign(message string) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// GenerateTestToken creates a signed test token for mobile app testing
+// GenerateUserToken generates a full session JWT token for the web dashboard & API
+func (a *Authenticator) GenerateUserToken(username, role string) (string, error) {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	claims := map[string]interface{}{
+		"iss":         "smarthome-edge",
+		"sub":         username,
+		"username":    username,
+		"role":        role,
+		"roles":       []string{role},
+		"permissions": []string{"*"},
+		"node_ids":    []string{"*"},
+		"exp":         time.Now().Add(7 * 24 * time.Hour).Unix(),
+	}
+	claimBytes, _ := json.Marshal(claims)
+	payload := base64.RawURLEncoding.EncodeToString(claimBytes)
+	sig := a.sign(header + "." + payload)
+	return header + "." + payload + "." + sig, nil
+}
 func (a *Authenticator) GenerateTestToken(sub string, nodes []string, expHours int) (string, error) {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 	claims := TokenClaims{

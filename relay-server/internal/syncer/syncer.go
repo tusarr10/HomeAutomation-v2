@@ -159,6 +159,52 @@ func (s *CentralSyncer) ForwardTelemetry(raw []byte) {
 	}
 }
 
+// ForwardRelayCommand notifies Central Server when a relay command is triggered on the edge
+func (s *CentralSyncer) ForwardRelayCommand(nodeID string, channelID int, action string, targetState bool) {
+	if !s.cfg.Central.Enabled || !s.IsCentralOnline() {
+		return
+	}
+	go func() {
+		endpoint := fmt.Sprintf("%s/api/v1/relays/%s/%d/command", s.cfg.Central.URL, nodeID, channelID)
+		payload, _ := json.Marshal(map[string]interface{}{
+			"action": action,
+			"state":  targetState,
+			"source": "edge_broker",
+		})
+		req, err := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			resp, postErr := s.httpClient.Do(req)
+			if postErr == nil && resp != nil {
+				_ = resp.Body.Close()
+			}
+		}
+	}()
+}
+
+// ForwardBreakerAction notifies Central Server when a circuit breaker switch event occurs
+func (s *CentralSyncer) ForwardBreakerAction(action string, state bool) {
+	if !s.cfg.Central.Enabled || !s.IsCentralOnline() {
+		return
+	}
+	go func() {
+		endpoint := fmt.Sprintf("%s/api/v1/breaker/toggle", s.cfg.Central.URL)
+		payload, _ := json.Marshal(map[string]interface{}{
+			"action": action,
+			"state":  state,
+			"source": "edge_broker",
+		})
+		req, err := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			resp, postErr := s.httpClient.Do(req)
+			if postErr == nil && resp != nil {
+				_ = resp.Body.Close()
+			}
+		}
+	}()
+}
+
 // Breaker Poller
 func (s *CentralSyncer) breakerPollLoop() {
 	interval := time.Duration(s.cfg.Breaker.PollIntervalSeconds) * time.Second
