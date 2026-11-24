@@ -633,6 +633,7 @@ bool GpioManager::isPinSafe(uint8_t pin, String& note, bool& bootSensitive) {
         if (PIN_SAFETY_MAP[i].gpio == pin) {
             note = PIN_SAFETY_MAP[i].bootNote;
             bootSensitive = PIN_SAFETY_MAP[i].isBootSensitive;
+            if (pin == 17) return true; // Analog A0 voltage input is always allowed
             return PIN_SAFETY_MAP[i].isSafeRelay;
         }
     }

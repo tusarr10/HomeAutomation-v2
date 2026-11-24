@@ -114,6 +114,10 @@ void IrManager::startTraining(unsigned long timeoutSec) {
     if (timeoutSec == 0 || timeoutSec > 60) timeoutSec = 25;
     _isTraining = true;
     _trainingSuccess = false;
+    _hasCaptured = false;
+    _lastProtocol = "";
+    _lastHexCode = "";
+    _lastBits = 0;
     _trainingDeadline = millis() + (timeoutSec * 1000);
     Serial.printf("[IR] Started training mode for %lu seconds...\n", timeoutSec);
 }
@@ -283,6 +287,7 @@ bool IrManager::saveButton(const String& remoteName, const String& buttonName,
     _buttons.push_back(newBtn);
 
     saveCodesToStorage();
+    _trainingSuccess = false;
     return true;
 }
 
