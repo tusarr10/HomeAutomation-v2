@@ -1938,6 +1938,7 @@ function renderDevicesRows(nodes) {
             <button class="btn-action-icon" title="Assign to Room" onclick="showAssignNodeModal('${n.node_id}')">🚪</button>
             <button class="btn-action-icon" title="Edit Device Settings" onclick="showNodeSettingsModal('${n.node_id}')">✏️</button>
             <button class="btn-action-icon" title="Device Details & Diagnostics" onclick="showNodeInfoModal('${n.node_id}')">ℹ️</button>
+            <button class="btn-action-icon" title="Browse LittleFS Files" onclick="selectedFsNodeId = '${n.node_id}'; switchView('littlefs');">📁</button>
             <button class="btn-action-icon" title="Ping Device" onclick="pingNode('${n.node_id}')">⚡</button>
           </div>
         </td>
@@ -2295,6 +2296,7 @@ function showNodeInfoModal(nodeId) {
           <button class="btn-neutral-action" onclick="closeModal(); showAssignNodeModal('${node.node_id}')">🚪 Assign Room</button>
           <button class="btn-neutral-action" onclick="pingNode('${node.node_id}')">⚡ Ping</button>
           <button class="btn-neutral-action" onclick="syncPinsWithHardware('${node.node_id}')">🔄 Sync Pins</button>
+          <button class="btn-neutral-action" onclick="closeModal(); selectedFsNodeId = '${node.node_id}'; switchView('littlefs');">📁 LittleFS Files</button>
         </div>
         <button class="btn btn-primary" onclick="closeModal()">Close</button>
       </div>
