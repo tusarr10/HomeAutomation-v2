@@ -915,7 +915,7 @@ class FleetDatabase {
     return { success: true, stateChanges, nodeId: targetNodeId };
   }
 
-    syncNodeRelays(nodeId, channels) {
+  syncNodeRelays(nodeId, channels, purgeStale = true) {
     if (!Array.isArray(channels)) return 0;
     const activeChannelIds = [];
     for (const ch of channels) {
@@ -926,7 +926,12 @@ class FleetDatabase {
       }
     }
 
-    // Do not purge channels not in activeChannelIds to keep user-assigned custom and sensor pins safe
+    // Purge stale channels if requested (for ESP nodes when authoritative /api/gpio is retrieved)
+    if (purgeStale && activeChannelIds.length > 0 && !nodeId.includes('30487D') && !nodeId.toUpperCase().includes('BREAKER')) {
+      const placeholders = activeChannelIds.map(() => '?').join(',');
+      this.db.prepare(`DELETE FROM relays WHERE node_id = ? AND channel_id NOT IN (${placeholders})`).run(nodeId, ...activeChannelIds);
+    }
+
     return activeChannelIds.length;
   }
 
@@ -978,7 +983,21 @@ class FleetDatabase {
     const state = ch.state ? 1 : 0;
     const nowStr = new Date().toISOString();
 
-    const existingRelay = this.db.prepare('SELECT current_state, name, room, pin, function, icon, pin_mode FROM relays WHERE node_id = ? AND channel_id = ?').get(nodeId, chId);
+    const isSensor = Boolean(
+      ch.isSensor ||
+      ch.direction === 'INPUT' ||
+      (ch.type && (ch.type.includes('SENSOR') || ch.type.includes('ADC') || ch.type.includes('RECEIVER'))) ||
+      func.toLowerCase().includes('sensor') ||
+      func.toLowerCase().includes('receiver') ||
+      func.toLowerCase().includes('voltage')
+    );
+    const pinMode = isSensor ? 'SENSOR_INPUT' : (ch.pin_mode || 'RELAY_OUTPUT');
+    const sensorType = isSensor ? (ch.type || ch.sensor_type || ch.function || 'Sensor') : null;
+    const sensorUnit = isSensor ? (ch.unit || ch.sensor_unit || '') : null;
+    const sensorVal = (isSensor && ch.value !== undefined) ? Number(ch.value) : null;
+    const sensorStr = (isSensor && ch.value !== undefined) ? String(ch.value) : null;
+
+    const existingRelay = this.db.prepare('SELECT current_state, name, room, pin, function, icon, pin_mode, active_low, enabled FROM relays WHERE node_id = ? AND channel_id = ?').get(nodeId, chId);
 
     let changed = false;
     let oldState = 0;
@@ -989,33 +1008,53 @@ class FleetDatabase {
         changed = true;
         this.logRelayEvent(nodeId, chId, existingRelay.current_state, state, 'TELEMETRY_SYNC');
       }
-      const finalName = existingRelay.name || name;
-      const finalRoom = (existingRelay.room && existingRelay.room !== 'General') ? existingRelay.room : (room || 'General');
-      const finalFunc = existingRelay.function || func;
-      const finalPin = (existingRelay.pin != null && existingRelay.pin > 0) ? existingRelay.pin : pin;
+
+      // Hardware is authoritative for pin, name and capabilities
+      const finalPin = (pin != null && pin > 0) ? pin : existingRelay.pin;
+      const finalName = name || existingRelay.name;
+      const finalRoom = (room && room !== 'General') ? room : (existingRelay.room || room);
+      const finalFunc = func || existingRelay.function;
+      const finalIcon = existingRelay.icon || (isSensor ? (sensorType?.includes('ADC') ? 'voltage' : 'sensor') : 'light');
 
       const updateStmt = this.db.prepare(`
         UPDATE relays SET
-          pin = ?, name = ?, room = ?, function = ?,
-          current_state = ?, requested_state = ?, is_syncing = 0, last_changed_at = ?
+          pin = ?, name = ?, room = ?, function = ?, icon = ?,
+          active_low = ?, initial_mode = ?, enabled = ?,
+          current_state = ?, requested_state = ?, is_syncing = 0, last_changed_at = ?,
+          pin_mode = ?, sensor_type = ?, sensor_unit = ?,
+          last_sensor_value = COALESCE(?, last_sensor_value),
+          last_sensor_str = COALESCE(?, last_sensor_str)
         WHERE node_id = ? AND channel_id = ?
       `);
-      updateStmt.run(finalPin, finalName, finalRoom, finalFunc, state, state, nowStr, nodeId, chId);
+      updateStmt.run(
+        finalPin, finalName, finalRoom, finalFunc, finalIcon,
+        activeLow, initialMode, enabled,
+        state, state, nowStr,
+        pinMode, sensorType, sensorUnit,
+        sensorVal, sensorStr,
+        nodeId, chId
+      );
     } else {
+      const finalIcon = isSensor ? (sensorType?.includes('ADC') ? 'voltage' : 'sensor') : 'light';
       const insertStmt = this.db.prepare(`
         INSERT INTO relays (
-          node_id, channel_id, pin, name, room, function, active_low, initial_mode,
-          enabled, current_state, requested_state, is_syncing, last_changed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+          node_id, channel_id, pin, name, room, function, icon, active_low, initial_mode,
+          enabled, current_state, requested_state, is_syncing, last_changed_at,
+          pin_mode, sensor_type, sensor_unit, last_sensor_value, last_sensor_str
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
       `);
-      insertStmt.run(nodeId, chId, pin, name, room, func, activeLow, initialMode, enabled, state, state, nowStr);
+      insertStmt.run(
+        nodeId, chId, pin, name, room, func, finalIcon, activeLow, initialMode,
+        enabled, state, state, nowStr,
+        pinMode, sensorType, sensorUnit, sensorVal, sensorStr
+      );
     }
 
     return {
       changed,
       channelId: chId,
-      pin,
-      name,
+      pin: pin || (existingRelay && existingRelay.pin),
+      name: name || (existingRelay && existingRelay.name),
       oldState,
       newState: state
     };

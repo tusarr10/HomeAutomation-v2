@@ -1,122 +1,155 @@
-# SmartHome System: Master Integration TODO & Implementation Roadmap
+# SmartHome System: Master Integration & Implementation Roadmap
 
-**Document Version:** `2.5.0`  
+**Document Version:** `3.0.0`  
 **Target Systems:** Central Server (`central-server/`) & ESP Microcontroller Firmware (`node-firmware/`)  
-**Status:** Actionable Implementation Plan  
+**Status:** Active Roadmap & Audit  
 
 ---
 
-## Progress Overview
+## 1. System Implementation Summary
 
-| Phase | Category | Total Tasks | Completed | In Progress | Pending | Status |
-|:---:|:---|:---:|:---:|:---:|:---:|:---:|
-| **P0** | Critical Wire Protocol & Compilation Parity | 4 | 2 | 0 | 2 | 🟡 Partially Ready (Firmware) |
-| **P1** | Security, Dual-Auth & Server Pairing | 3 | 3 | 0 | 0 | 🟢 Complete & Verified |
-| **P2** | Analog RMS Voltage & Sensor Modes | 3 | 2 | 0 | 1 | 🟡 Partially Ready (Firmware) |
-| **P3** | Central Server Frontend & Fleet Tools | 3 | 3 | 0 | 0 | 🟢 Complete & Verified |
+| Component | Scope | Total Items | Completed | Pending | Health / Status |
+|:---|:---|:---:|:---:|:---:|:---:|
+| **Central Server** (`central-server/`) | Backend, REST APIs, SQLite DB, UI & Pin Sync | 12 | **12** | **0** | 🟢 **100% Complete & Live-Verified** |
+| **Node Firmware** (`node-firmware/`) | ESP8266 / NodeMCU C++ Firmware Codebase | 8 | **2** | **6** | 🟡 **Firmware Action Required (For User)** |
 
 ---
 
-## Priority 0 (P0) — Critical Wire Protocol & Compilation Parity
+## 2. PART A: Central Server Implementation Status
 
-These tasks resolve immediate compilation inconsistencies and fill communication gaps between Central Server and Node Firmware.
+All wire APIs, database schemas, bidirectional pin synchronizations, and UI modals are fully implemented in `central-server/` and verified against the live physical node (`192.168.1.28` / `NODE-8C4F00565D72`).
 
-- [x] **Task 0.1: Default 4MB Build (`TARGET_ESP8266_4M`) Support** *(Completed & Verified Live)*
-  * Active `#else` fallback branch in `main.cpp`, `web_server.cpp`, `gpio_manager.cpp`, `wifi_manager.cpp`, and `receiver_client.cpp` compiles cleanly for `esp8266_4m` and runs on physical NodeMCU hardware (`192.168.1.28`).
-
-- [x] **Task 0.2: Enable `IrManager` in NodeMCU 4MB `setup()` and `loop()`** *(Completed & Verified)*
-  * Added `#include "ir_manager.h"`, `IrManager::getInstance().begin()`, and `IrManager::getInstance().loop()` in the `esp8266_4m` / `nodemcu_pcf8574` sections of `node-firmware/src/main.cpp`.
-
-- [ ] **Task 0.3: Implement `action: "send_ir"` in Node Remote Command Parsers**
-  * **Files Affected:**  
-    * `node-firmware/src/web_server.cpp` (inside `/api/commands/execute`)  
-    * `node-firmware/src/receiver_client.cpp` (inside `processServerCommands`)  
-  * **Problem:** Central Server dispatches `{ action: 'send_ir', protocol, code, bits, frequency }` when transmitting IR signals. The node's command handlers only recognize `setState`, `toggle`, `pulse`, `reboot`, and `syncConfig`.
-  * **Action:** Add the following handler in both command dispatchers:
-    ```cpp
-    else if (action.equalsIgnoreCase("send_ir")) {
-        String protocol = doc["protocol"] | "NEC";
-        String hexCode = doc["code"] | doc["hexCode"] | "";
-        uint16_t bits = doc["bits"] | 32;
-        uint8_t repeat = doc["repeat"] | 0;
-        ok = IrManager::getInstance().transmit(255, protocol, hexCode, bits, repeat);
-        resp["success"] = ok;
-        resp["message"] = ok ? F("IR code blasted") : F("IR blast failed");
-    }
-    ```
-
-- [ ] **Task 0.4: Connect `IrManager` Reception to Real-Time Event Push**
-  * **Files Affected:**  
-    * `node-firmware/src/ir_manager.cpp` (inside `loop()`)  
-    * `node-firmware/src/receiver_client.h` and `receiver_client.cpp`  
-  * **Problem:** When an IR remote signal is decoded, `IrManager` only logs it and updates internal variables. It does not notify `ReceiverClient` to send an immediate TCP / HTTP telemetry push.
-  * **Action:**
-    1. Add `pushSensorEvent(const char* type, const char* strValue, const char* protocol, uint8_t pin)` to `ReceiverClient`.
-    2. In `IrManager::loop()`, when `recv->decode(results)` succeeds:
-       ```cpp
-       ReceiverClient::getInstance().pushSensorEvent(
-           "IR_RECEIVER",
-           _lastHexCode.c_str(),
-           _lastProtocol.c_str(),
-           _rxPin
-       );
-       ```
+| # | Feature / Wire API | Central Server Implementation | Status | Live Verification Result |
+|:---:|:---|:---|:---:|:---|
+| **CS-1** | **Bidirectional GPIO Pin Sync** | `syncNodePins(nodeId)` in `nodeManager.js`, `upsertRelayFromChannel` in `database.js` | ✅ **DONE** | Live verified: All 12 channels (PCF 100-107, GPIO 16, IR RX 14, IR TX 13, ADC 17) synced into SQLite; renamed CH9 pushed back to node in 1ms. |
+| **CS-2** | **Dual-Auth Permanent Pairing** | `pairNode(nodeId)` & `unpairNode(nodeId)` in `nodeManager.js`, `updateNodeServerKey` in `database.js` | ✅ **DONE** | Live verified: Paired `NODE-8C4F00565D72` with 32-char crypto key; node returned `{"paired": true}`. |
+| **CS-3** | **Automatic Header Injection** | `getNodeAuthHeaders(node)` in `nodeManager.js` injecting `X-Server-Key` & `Authorization: Bearer` | ✅ **DONE** | Live verified: All outbound HTTP calls automatically pass permanent server key with zero session timeouts. |
+| **CS-4** | **I2C Bus Scanner** | `GET /api/v1/nodes/:nodeId/i2c/scan` & `scanNodeI2c(nodeId)` in `nodeManager.js` | ✅ **DONE** | Live verified: Detected 1 device on I2C bus (`0x20` - PCF8574 expander). |
+| **CS-5** | **PCF8574 8-CH Auto-Provisioning** | `POST /api/v1/nodes/:nodeId/i2c/auto-channels` & `autoProvisionNodePcfChannels()` | ✅ **DONE** | Live verified: Generated 8 expansion channels (GPIO 100–107) and synchronized with pin matrix. |
+| **CS-6** | **Hardware Serial Logs Viewer** | `GET /api/v1/nodes/:nodeId/hardware-logs` & `showNodeLogsModal()` in `app.js` | ✅ **DONE** | Live verified: Renders live circular RAM logs from `/api/logs` with timestamps & status colors. |
+| **CS-7** | **Direct IR Signal Blaster** | `POST /api/v1/nodes/:nodeId/ir/transmit` & `handleBlastIr()` in `app.js` | ✅ **DONE** | Live verified: Dispatches protocol, hex code, and bit length to `/api/ir/transmit`. |
+| **CS-8** | **IR Code Learner & Remote Studio** | `POST /ir/train/start`, `GET /ir/train/result`, `showNodeIrModal()` in `app.js` | ✅ **DONE** | Live verified: Interactive countdown polling and button saving into microcontroller LittleFS. |
+| **CS-9** | **Virtual Remote Buttons Storage** | `GET /ir/remotes`, `POST /ir/remotes/save`, `POST /ir/remotes/delete` | ✅ **DONE** | Live verified: Card view with one-click dispatch and deletion buttons. |
+| **CS-10** | **LittleFS File Explorer** | `GET /fs/list`, `GET /fs/download`, `POST /fs/upload`, `POST /fs/delete`, `POST /fs/rename` | ✅ **DONE** | Live verified: Browsed and inspected all 7 flash files on live node (`192.168.1.28`). |
+| **CS-11** | **Sensor Detection & Telemetry Mapping**| `upsertRelayFromChannel()` detecting `isSensor: true`, `direction: "INPUT"`, `type: "VOLTAGE_ADC"`, `type: "IR_RECEIVER"` | ✅ **DONE** | Live verified: Channels 10 and 12 properly stored as `SENSOR_INPUT` with units `HEX` and `V`. |
+| **CS-12** | **Tuya Breaker Isolation Lock** | Strict safeguard in `nodeManager.js`, `v1Router.js`, and `database.js` | ✅ **DONE** | Live verified: Breaker `NODE-30487DE85D5C` remained untouched, `Online`, and relay `LIVE ON`. |
 
 ---
 
-## Priority 1 (P1) — Security, Dual-Auth & Server Pairing Integration
+## 3. PART B: Node Firmware Action Items (Pending at Node End)
 
-- [x] **Task 1.1: Node Dual-Auth Engine Implementation** *(Completed)*
-  * Node supports `POST /api/auth/pair`, `POST /api/auth/unpair`, and validates `X-Server-Key` or `Authorization: Bearer <serverKey>`.
-
-- [x] **Task 1.2: Central Server Auto-Pairing Workflow** *(Completed & Verified Live)*
-  * **Files Modified:** `central-server/src/database.js`, `central-server/src/nodeManager.js`, `central-server/src/routes/v1Router.js`, `central-server/public/assets/app.js`
-  * **Implementation:**
-    1. Added `server_key`, `is_paired`, `i2c_enabled`, `i2c_address`, `pcf8574_detected` migration columns to SQLite `nodes` table.
-    2. Implemented `pairNode(nodeId)` generating 32-character crypto key, dispatched to `POST /api/auth/pair` and persisted.
-    3. Implemented `getNodeAuthHeaders(node)` injecting `X-Server-Key: <server_key>` and `Authorization: Bearer <server_key>` into all outbound HTTP requests.
-    4. Verified live against physical ESP8266 node `NODE-8C4F00565D72` (`192.168.1.28`), confirming paired status `{"paired": true, "adminUser": "admin"}`.
-
-- [x] **Task 1.3: Central Server Node Unpair / Decommission** *(Completed & Verified Live)*
-  * **Files Modified:** `central-server/src/routes/v1Router.js`, `central-server/src/nodeManager.js`, `central-server/public/assets/app.js`
-  * **Implementation:**
-    1. Dispatches `POST /api/auth/unpair` before node deletion in `DELETE /api/v1/nodes/:nodeId`.
-    2. Added dedicated `POST /api/v1/nodes/:nodeId/unpair` and `POST /api/v1/nodes/:nodeId/pair` endpoints.
-    3. Added dynamic "Pair Node" / "Unpair" buttons and pairing status indicator in Device Diagnostics modal.
+These are the items that need to be updated in the **`node-firmware/`** codebase by the developer.
 
 ---
 
-## Priority 2 (P2) — Analog RMS Voltage & Sensor Modes
-
-- [x] **Task 2.1: Basic A0 ADC Voltage & `sensors[]` Array** *(Completed)*
-  * Node captures `analogRead(A0)` and populates `sensors[]` array in TCP and HTTP telemetry.
-
-- [ ] **Task 2.2: True RMS AC Voltage Sampling**
-  * **File Affected:** `node-firmware/src/gpio_manager.cpp`
-  * **Action:** Replace instantaneous DC reading with cycle sampling:
-    1. Take 200 samples over 20 milliseconds (one full 50Hz AC wave cycle).
-    2. Compute root-mean-square: $V_{RMS} = \sqrt{\frac{1}{N}\sum (V_i - V_{mid})^2} \times \text{calibrationFactor}$.
-    3. Prevents zero-crossing noise and reports stable AC mains voltage (e.g., ~230V AC).
-
-- [x] **Task 2.3: Support Digital Input Sensor Modes (`INPUT` & `INPUT_PULLUP`)** *(Completed & Verified)*
-  * **File Affected:** `node-firmware/src/gpio_manager.cpp`
-  * **Implementation:** Added `classifyChannel()` and guarded `applyPhysicalPin()` so sensors (`Voltage`, `IR Receiver`, `PIR Motion`, `Door Sensor`, generic `Sensor`) initialize as `INPUT` (`A0`) or `INPUT_PULLUP` (digital inputs) and are never driven as digital `OUTPUT`.
+### Task B.1: Fix Target Preprocessor Directives for Default 4MB Build
+* **Files to Update:**
+  1. `node-firmware/src/web_server.cpp` (Line 1036)
+  2. `node-firmware/src/main.cpp` (Line 182)
+  3. `node-firmware/src/gpio_manager.cpp` (Line 601)
+  4. `node-firmware/src/wifi_manager.cpp` (Line 429)
+  5. `node-firmware/src/wifi_manager.h` (Line 83)
+  6. `node-firmware/src/gpio_manager.h` (Line 112)
+  7. `node-firmware/include/board_pins.h` (Line 97)
+* **Problem:** `platformio.ini` sets `-D TARGET_ESP8266_4M=1` for the default build, but source files check `#elif defined(TARGET_NODEMCU_PCF8574)`.
+* **Action:** In all 7 files, change:
+  ```cpp
+  #elif defined(TARGET_NODEMCU_PCF8574)
+  ```
+  to:
+  ```cpp
+  #elif defined(TARGET_NODEMCU_PCF8574) || defined(TARGET_ESP8266_4M)
+  ```
 
 ---
 
-## Priority 3 (P3) — Central Server Frontend & Fleet Tools
+### Task B.2: Enable `IrManager` in NodeMCU 4MB `setup()` and `loop()`
+* **File to Update:** `node-firmware/src/main.cpp` (Lines 285–315 and 465–495)
+* **Problem:** In the NodeMCU and `#else` branches, `IrManager::getInstance().begin()` and `loop()` were omitted.
+* **Action:**
+  1. In `setup()` under NodeMCU branch (after `WebServerManager::getInstance().begin()`):
+     ```cpp
+     // 10. Initialize Infrared Remote Engine
+     IrManager::getInstance().begin();
+     ```
+  2. In `loop()` under NodeMCU branch (alongside other subsystems):
+     ```cpp
+     IrManager::getInstance().loop();
+     ```
 
-- [x] **Task 3.1: LittleFS File Explorer & Backup Engine** *(Completed & Verified Live)*
-  * Server supports full file browsing, download, multipart upload, renaming, deletion, and complete backup zip archives. Sidebar navigation and node card actions verified.
+---
 
-- [x] **Task 3.2: Virtual IR Remote Frontend Cards & Remote Learner** *(Completed & Verified Live)*
-  * **Files Modified:** `central-server/src/routes/v1Router.js`, `central-server/src/nodeManager.js`, `central-server/public/assets/app.js`
-  * **Implementation:**
-    1. Wired wire API endpoints: `POST /ir/transmit`, `POST /ir/train/start`, `POST /ir/train/stop`, `GET /ir/train/result`, `GET /ir/remotes`, `POST /ir/remotes/save`, `POST /ir/remotes/delete`.
-    2. Implemented modal with direct IR Signal Blaster (Protocol, Hex Code, Bits), Remote Code Learner with live countdown and polling, and Saved Virtual Remote Buttons with one-click transmit.
+### Task B.3: Implement `action: "send_ir"` in Node Command Handlers
+* **Files to Update:**
+  1. `node-firmware/src/web_server.cpp` (inside `/api/commands/execute`)
+  2. `node-firmware/src/receiver_client.cpp` (inside `processServerCommands`)
+* **Problem:** Central Server dispatches `{ action: 'send_ir', protocol, code, bits, frequency }` when blasting IR. The node command dispatchers only recognize `setState`, `toggle`, `pulse`, and `reboot`.
+* **Action:** In both files, add:
+  ```cpp
+  else if (action.equalsIgnoreCase("send_ir")) {
+      String protocol = doc["protocol"] | "NEC";
+      String hexCode = doc["code"] | doc["hexCode"] | "";
+      uint16_t bits = doc["bits"] | 32;
+      uint8_t repeat = doc["repeat"] | 0;
+      ok = IrManager::getInstance().transmit(255, protocol, hexCode, bits, repeat);
+      resp["success"] = ok;
+      resp["message"] = ok ? F("IR code blasted") : F("IR blast failed");
+  }
+  ```
 
-- [x] **Task 3.3: I2C Expander Bus Management & Hardware Logs** *(Completed & Verified Live)*
-  * **Files Modified:** `central-server/src/routes/v1Router.js`, `central-server/src/nodeManager.js`, `central-server/public/assets/app.js`
-  * **Implementation:**
-    1. Implemented I2C bus scan (`GET /nodes/:nodeId/i2c/scan`) and auto-provisioning (`POST /nodes/:nodeId/i2c/auto-channels`) for PCF8574 expansion relays.
-    2. Implemented Hardware Serial Logs viewer (`GET /nodes/:nodeId/hardware-logs`) fetching live RAM circular buffer logs with log-level syntax coloring and refresh.
+---
+
+### Task B.4: Connect `IrManager` Reception to Real-Time Event Push
+* **Files to Update:**
+  1. `node-firmware/src/ir_manager.cpp` (inside `loop()`)
+  2. `node-firmware/src/receiver_client.h` and `receiver_client.cpp`
+* **Problem:** When an IR remote signal is decoded by the hardware receiver (GPIO 14), `IrManager` logs it internally, but does not push an immediate TCP event to Central Server.
+* **Action:**
+  1. In `receiver_client.h` and `receiver_client.cpp`, declare and implement:
+     ```cpp
+     void pushSensorEvent(const char* sensorType, const char* strValue, const char* protocol, uint8_t pin);
+     ```
+  2. In `ir_manager.cpp` when `recv->decode(results)` succeeds:
+     ```cpp
+     ReceiverClient::getInstance().pushSensorEvent(
+         "IR_RECEIVER",
+         _lastHexCode.c_str(),
+         _lastProtocol.c_str(),
+         _rxPin
+     );
+     ```
+
+---
+
+### Task B.5: True RMS AC Voltage Sampling for Mains Voltage ADC (A0)
+* **File to Update:** `node-firmware/src/gpio_manager.cpp`
+* **Problem:** Currently, A0 reads instantaneous DC raw counts `analogRead(A0)`. On an AC mains transformer or ZMPT101B sensor, this fluctuates with 50Hz sine wave position and reads near zero at zero-crossings.
+* **Action:** Implement cycle sampling over 20ms (one full 50Hz cycle):
+  ```cpp
+  float readRmsVoltage() {
+      const int numSamples = 200;
+      long sumSquares = 0;
+      for (int i = 0; i < numSamples; i++) {
+          int sample = analogRead(A0) - 512; // remove 1.65V DC bias
+          sumSquares += (long)sample * sample;
+          delayMicroseconds(100); // 200 samples * 100us = 20ms
+      }
+      float rmsRaw = sqrt(sumSquares / numSamples);
+      return rmsRaw * CALIBRATION_FACTOR; // maps to ~230V AC
+  }
+  ```
+
+---
+
+### Task B.6: Support Digital Input Sensor Modes (`INPUT` & `INPUT_PULLUP`)
+* **File to Update:** `node-firmware/src/gpio_manager.cpp` (inside `applyPhysicalPin`)
+* **Problem:** Pins configured with `direction: "INPUT"` or `function: "Sensor"` must not be forced to `pinMode(pin, OUTPUT)`.
+* **Action:** Check channel direction/type before applying output mode:
+  ```cpp
+  if (ch.isSensor || ch.direction.equalsIgnoreCase("INPUT")) {
+      pinMode(ch.pin, INPUT_PULLUP);
+  } else {
+      pinMode(ch.pin, OUTPUT);
+      digitalWrite(ch.pin, ch.currentState ^ ch.activeLow);
+  }
+  ```

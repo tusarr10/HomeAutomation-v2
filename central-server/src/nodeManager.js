@@ -227,30 +227,12 @@ class NodeManager {
       return { success: true };
     }
 
-    const user = node.auth_username || this.config.node_auth?.username || 'admin';
-    const pass = node.auth_password || this.config.node_auth?.password || 'admin';
-    const headers = { 'Accept': 'application/json' };
-    if (user && pass) {
-      headers['Authorization'] = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
-    }
-    if (this.nodeAuthTokens.has(ip)) {
-      headers['X-Session-Token'] = this.nodeAuthTokens.get(ip);
-    }
+    const headers = this.getNodeAuthHeaders(node);
+    headers['Accept'] = 'application/json';
 
     const fetchWithFallback = async (endpoint) => {
       const r = await fetch(`http://${ip}${endpoint}`, { headers, signal: AbortSignal.timeout(2500) });
-      if (r.status === 401 && headers['Authorization']) {
-        // Retry without stale Basic header (esp-01 /api/status allows discovery / receiverHost without wrong auth)
-        this.nodeAuthMismatch.set(nodeId, true);
-        const rOpen = await fetch(`http://${ip}${endpoint}`, {
-          headers: { 'Accept': 'application/json' },
-          signal: AbortSignal.timeout(2500)
-        });
-        if (!rOpen.ok) throw new Error(`HTTP ${rOpen.status}`);
-        return rOpen.json();
-      }
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      if (endpoint === '/api/status') this.nodeAuthMismatch.delete(nodeId);
       return r.json();
     };
 
@@ -897,66 +879,35 @@ class NodeManager {
     }
 
     const ip = node.ip || node.ip_address;
-    const user = node.auth_username || this.config.node_auth?.username || 'admin';
-    const pass = node.auth_password || this.config.node_auth?.password || 'admin';
+    const headers = this.getNodeAuthHeaders(node);
+    headers['Accept'] = 'application/json';
 
-    let token = this.nodeAuthTokens.get(ip);
-    if (!token && user && pass) {
-      try {
-        token = await this.authenticateNode(ip, user, pass);
-      } catch {}
-    }
-
-    const headers = { 'Accept': 'application/json' };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    } else if (user && pass) {
-      headers['Authorization'] = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
-    }
-
-    return new Promise((resolve, reject) => {
-      const req = http.request({
-        hostname: ip,
-        port: 80,
-        path: '/api/gpio',
-        method: 'GET',
+    try {
+      const res = await fetch(`http://${ip}/api/gpio`, {
         headers,
-        timeout: 3500
-      }, (res) => {
-        let body = '';
-        res.on('data', chunk => body += chunk);
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              const parsed = JSON.parse(body);
-              const channels = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.channels) ? parsed.channels : null);
-              if (Array.isArray(channels)) {
-                const count = this.db.syncNodeRelays(nodeId, channels);
-                this.db.touchNode(nodeId);
-                // Also pull /api/status silently to refresh hardware_type & PCF8574 expander metadata
-                this.pollSingleNode(node).catch(() => {});
-                this.db.logAudit('PINS_SYNCED', nodeId, `Synchronized ${count} GPIO pins directly from node '${node.name}' (${ip})`);
-                this.broadcast('relay_sync', { nodeId, count, channels });
-                resolve({ success: true, count, channels });
-              } else {
-                resolve({ success: false, message: 'Node returned invalid channels payload' });
-              }
-            } catch (e) {
-              reject(new Error(`Failed to parse channels JSON from node: ${e.message}`));
-            }
-          } else {
-            reject(new Error(`Node returned HTTP ${res.statusCode} from /api/gpio`));
-          }
-        });
+        signal: AbortSignal.timeout(4000)
       });
 
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error('Connection timed out while querying node /api/gpio'));
-      });
-      req.on('error', (err) => reject(err));
-      req.end();
-    });
+      if (!res.ok) {
+        throw new Error(`Node returned HTTP ${res.status} from /api/gpio`);
+      }
+
+      const parsed = await res.json();
+      const channels = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.channels) ? parsed.channels : null);
+      if (Array.isArray(channels)) {
+        const count = this.db.syncNodeRelays(nodeId, channels, true);
+        this.db.touchNode(nodeId);
+        // Also poll status silently to refresh hardware metadata
+        this.pollSingleNode(node).catch(() => {});
+        this.db.logAudit('PINS_SYNCED', nodeId, `Synchronized ${count} GPIO pins directly from node '${node.name}' (${ip})`);
+        this.broadcast('relay_sync', { nodeId, count, channels });
+        return { success: true, count, channels };
+      } else {
+        return { success: false, message: 'Node returned invalid channels payload' };
+      }
+    } catch (err) {
+      throw new Error(`Failed to synchronize pins from node ${ip}: ${err.message}`);
+    }
   }
 
   getHardwarePinCatalog(nodeId) {
@@ -1084,9 +1035,8 @@ class NodeManager {
 
     const relay = this.db.getRelay(nodeId, channelId);
     const nodeIp = node.ip || node.ip_address;
-    const user = node.auth_username || this.config.node_auth?.username || 'admin';
-    const pass = node.auth_password || this.config.node_auth?.password || 'admin';
-    const auth = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
+    const headers = this.getNodeAuthHeaders(node);
+    headers['Content-Type'] = 'application/json';
 
     // 1. Dual-Path: Direct LAN HTTP push (Fast path)
     if (nodeIp && node.is_online) {
@@ -1095,10 +1045,7 @@ class NodeManager {
           // Channel was deleted / unassigned -> notify node to remove from flash
           await fetch(`http://${nodeIp}/api/gpio/delete`, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': auth
-            },
+            headers,
             body: JSON.stringify({ id: Number(channelId) }),
             signal: AbortSignal.timeout(3000)
           });
@@ -1115,10 +1062,7 @@ class NodeManager {
           };
           const res = await fetch(`http://${nodeIp}/api/gpio/update`, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': auth
-            },
+            headers,
             body: JSON.stringify(updatePayload),
             signal: AbortSignal.timeout(3000)
           });
@@ -1129,10 +1073,7 @@ class NodeManager {
               // Channel does not exist on node yet -> add it
               await fetch(`http://${nodeIp}/api/gpio`, {
                 method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': auth
-                },
+                headers,
                 body: JSON.stringify({
                   pin: relay.pin,
                   name: relay.name,
