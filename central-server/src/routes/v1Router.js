@@ -698,10 +698,11 @@ function createV1Router(nodeManager, db) {
     try {
       const { nodeId } = req.params;
       const homeId = Number(req.body.homeId || req.body.home_id);
-      const roomId = Number(req.body.roomId || req.body.room_id);
+      const rawRoomId = req.body.roomId || req.body.room_id;
+      const { isCommon, targetRoom } = req.body;
 
-      if (!homeId || !roomId) {
-        return res.status(400).json({ success: false, error: 'homeId and roomId are required to assign a node' });
+      if (!homeId) {
+        return res.status(400).json({ success: false, error: 'homeId is required to assign a node' });
       }
 
       if (!req.user.is_superuser) {
@@ -711,7 +712,16 @@ function createV1Router(nodeManager, db) {
         }
       }
 
-      const node = db.assignNodeToRoom(nodeId, homeId, roomId);
+      let node;
+      if (isCommon || String(rawRoomId).startsWith('common') || rawRoomId === 'general' || rawRoomId === 'mains' || !rawRoomId) {
+        const roomName = targetRoom || (String(rawRoomId).includes('mains') ? 'Mains' : (String(rawRoomId).includes('floor') ? '1st Floor' : 'General'));
+        db.db.prepare("UPDATE nodes SET home_id = ?, room_id = NULL, room = ?, assigned_at = ? WHERE node_id = ?").run(homeId, roomName, Date.now() / 1000, nodeId);
+        db.db.prepare("UPDATE relays SET room = ? WHERE node_id = ?").run(roomName, nodeId);
+        node = db.getNode(nodeId);
+      } else {
+        node = db.assignNodeToRoom(nodeId, homeId, Number(rawRoomId));
+      }
+
       res.json({ success: true, node, message: `Node '${nodeId}' assigned successfully` });
     } catch (err) {
       res.status(400).json({ success: false, error: err.message });
@@ -869,12 +879,18 @@ function createV1Router(nodeManager, db) {
 
     await nodeManager.processTelemetry(nodePayload, ip, 'MANUAL_ADD');
 
-    // Save per-node credentials if provided
+    // Save per-node credentials and home/room assignment if provided
     const authUsername = (req.body.auth_username || req.body.username || 'admin').trim();
     const authPassword = req.body.auth_password || req.body.password || 'admin';
+    const homeId = req.body.home_id !== undefined ? req.body.home_id : req.body.homeId;
+    const roomId = req.body.room_id !== undefined ? req.body.room_id : req.body.roomId;
+
     db.updateNodeSettings(nodeId, {
       auth_username: authUsername,
-      auth_password: authPassword
+      auth_password: authPassword,
+      home_id: homeId ? Number(homeId) : undefined,
+      room_id: roomId && !isNaN(Number(roomId)) ? Number(roomId) : undefined,
+      room: room || undefined
     });
 
     db.logAudit('NODE_ADDED', nodeId, `Manually registered node '${nodeName}' (${ip}) into fleet [Auth User: ${authUsername}]`);

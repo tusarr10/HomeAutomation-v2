@@ -1301,6 +1301,8 @@ class FleetDatabase {
     const fw = settings.firmware_version !== undefined ? settings.firmware_version.trim() : existing.firmware_version;
     const authUser = settings.auth_username !== undefined ? settings.auth_username.trim() : (existing.auth_username || 'admin');
     const authPass = settings.auth_password !== undefined ? settings.auth_password : (existing.auth_password || 'admin');
+    const home_id = settings.home_id !== undefined ? (settings.home_id ? Number(settings.home_id) : null) : existing.home_id;
+    const room_id = settings.room_id !== undefined ? (settings.room_id ? Number(settings.room_id) : null) : existing.room_id;
 
     this.db.prepare(`
       UPDATE nodes SET
@@ -1312,9 +1314,18 @@ class FleetDatabase {
         hardware_type = ?,
         firmware_version = ?,
         auth_username = ?,
-        auth_password = ?
+        auth_password = ?,
+        home_id = ?,
+        room_id = ?
       WHERE node_id = ?
-    `).run(name, room, category, location, ip, hw, fw, authUser, authPass, nodeId);
+    `).run(name, room, category, location, ip, hw, fw, authUser, authPass, home_id, room_id, nodeId);
+
+    // Also sync relays.room if changed
+    if (room && room !== existing.room) {
+      try {
+        this.db.prepare(`UPDATE relays SET room = ? WHERE node_id = ?`).run(room, nodeId);
+      } catch (_) {}
+    }
 
     return this.getNode(nodeId);
   }
@@ -3094,15 +3105,16 @@ class FleetDatabase {
     const name = updates.name !== undefined ? updates.name.trim() : existing.name;
     const floor = updates.floor !== undefined ? updates.floor.trim() : existing.floor;
     const icon = updates.icon !== undefined ? updates.icon.trim() : existing.icon;
+    const home_id = updates.home_id !== undefined ? Number(updates.home_id) : existing.home_id;
     const nowEpoch = Date.now() / 1000;
 
     this.db.prepare(`
-      UPDATE rooms SET name = ?, floor = ?, icon = ?, updated_at = ? WHERE id = ?
-    `).run(name, floor, icon, nowEpoch, Number(roomId));
+      UPDATE rooms SET name = ?, floor = ?, icon = ?, home_id = ?, updated_at = ? WHERE id = ?
+    `).run(name, floor, icon, home_id, nowEpoch, Number(roomId));
 
-    // Update node room names if room name changed
-    if (name !== existing.name) {
-      this.db.prepare('UPDATE nodes SET room = ? WHERE room_id = ?').run(name, Number(roomId));
+    // Update node room names & home if changed
+    if (name !== existing.name || home_id !== existing.home_id) {
+      this.db.prepare('UPDATE nodes SET room = ?, home_id = ? WHERE room_id = ?').run(name, home_id, Number(roomId));
     }
 
     return this.getRoomById(roomId);

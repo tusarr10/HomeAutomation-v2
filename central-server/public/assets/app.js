@@ -2290,11 +2290,80 @@ function renderDevicesRows(nodes) {
 }
 
 // --------------------------------------------------------------------------
+// 🏠 & 🚪 CASCADING HOME & ROOM DROPDOWN HELPERS
+// --------------------------------------------------------------------------
+function getRoomOptionsForHomeHtml(homeId, selectedValue = null, rooms = null) {
+  const allRooms = rooms || fleetData.rooms || cachedRoomsList || [];
+  const targetHomeId = Number(homeId);
+  const homeRooms = allRooms.filter(r => Number(r.home_id) === targetHomeId);
+
+  const isSel = (val) => selectedValue != null && String(val).toLowerCase() === String(selectedValue).toLowerCase();
+
+  let html = `
+    <optgroup label="⚡ Home Shared / Common Utilities">
+      <option value="common_general" ${isSel('common_general') || isSel('General') || isSel('Whole Property') ? 'selected' : ''}>⚡ General (Whole Property)</option>
+      <option value="common_mains" ${isSel('common_mains') || isSel('Mains') || isSel('Mains Distribution Panel') ? 'selected' : ''}>🔌 Mains Distribution Panel (DB)</option>
+      <option value="common_first_floor" ${isSel('common_first_floor') || isSel('1st Floor Common') ? 'selected' : ''}>🏢 1st Floor Common Corridor</option>
+      <option value="common_outdoor" ${isSel('common_outdoor') || isSel('Outdoor Common') ? 'selected' : ''}>🌳 Outdoor / Gate Common</option>
+    </optgroup>
+  `;
+
+  if (homeRooms.length > 0) {
+    html += `
+      <optgroup label="🛋️ Private Rooms in this Home">
+        ${homeRooms.map(r => `
+          <option value="${r.id}" ${isSel(r.id) || isSel(r.name) ? 'selected' : ''}>
+            ${escapeHtml(r.name)} (${escapeHtml(r.floor || 'Ground')} Floor)
+          </option>
+        `).join('')}
+      </optgroup>
+    `;
+  } else {
+    html += `
+      <optgroup label="🛋️ Private Rooms">
+        <option value="" disabled>No private rooms yet in this home</option>
+      </optgroup>
+    `;
+  }
+
+  return html;
+}
+window.getRoomOptionsForHomeHtml = getRoomOptionsForHomeHtml;
+
+function onAssignNodeHomeChange() {
+  const homeSelect = document.getElementById("assign-target-home");
+  const roomSelect = document.getElementById("assign-target-room");
+  if (!homeSelect || !roomSelect) return;
+  const homeId = Number(homeSelect.value);
+  roomSelect.innerHTML = getRoomOptionsForHomeHtml(homeId, null, fleetData.rooms || cachedRoomsList);
+}
+window.onAssignNodeHomeChange = onAssignNodeHomeChange;
+
+function onNodeConfigHomeChange() {
+  const homeSelect = document.getElementById("config-node-home");
+  const roomSelect = document.getElementById("config-node-room-select");
+  if (!homeSelect || !roomSelect) return;
+  const homeId = Number(homeSelect.value);
+  roomSelect.innerHTML = getRoomOptionsForHomeHtml(homeId, null, fleetData.rooms || cachedRoomsList);
+}
+window.onNodeConfigHomeChange = onNodeConfigHomeChange;
+
+function onAddNodeHomeChange() {
+  const homeSelect = document.getElementById("add-node-home");
+  const roomSelect = document.getElementById("add-node-room");
+  if (!homeSelect || !roomSelect) return;
+  const homeId = Number(homeSelect.value);
+  roomSelect.innerHTML = getRoomOptionsForHomeHtml(homeId, null, fleetData.rooms || cachedRoomsList);
+}
+window.onAddNodeHomeChange = onAddNodeHomeChange;
+
+// --------------------------------------------------------------------------
 // + ADD DEVICE / PROBE & REGISTER MODAL
 // --------------------------------------------------------------------------
 function showAddNodeModal(prefillIp = '', prefillName = '', prefillUser = 'admin', prefillPass = 'admin') {
-  const homes = fleetData.homes || [];
-  const rooms = fleetData.rooms || [];
+  const homes = (fleetData.homes && fleetData.homes.length > 0) ? fleetData.homes : (cachedHomesList || []);
+  const rooms = (fleetData.rooms && fleetData.rooms.length > 0) ? fleetData.rooms : (cachedRoomsList || []);
+  const defaultHomeId = homes.length > 0 ? homes[0].id : 1;
 
   const html = `
     <div class="modal-content" style="max-width: 540px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
@@ -2319,16 +2388,15 @@ function showAddNodeModal(prefillIp = '', prefillName = '', prefillUser = 'admin
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
         <div class="form-group">
-          <label class="settings-field-label">Target Home</label>
-          <select id="add-node-home" class="filter-select-enhanced" style="width: 100%;">
+          <label class="settings-field-label">Target Property / Home</label>
+          <select id="add-node-home" class="filter-select-enhanced" style="width: 100%;" onchange="onAddNodeHomeChange()">
             ${homes.map(h => `<option value="${h.id}">${escapeHtml(h.name)}</option>`).join('')}
           </select>
         </div>
         <div class="form-group">
-          <label class="settings-field-label">Target Room</label>
+          <label class="settings-field-label">Target Room / Utility</label>
           <select id="add-node-room" class="filter-select-enhanced" style="width: 100%;">
-            ${rooms.map(r => `<option value="${escapeHtml(r.name)}">${escapeHtml(r.name)}</option>`).join('')}
-            <option value="General">General / Other</option>
+            ${getRoomOptionsForHomeHtml(defaultHomeId, 'common_general', rooms)}
           </select>
         </div>
       </div>
@@ -2354,15 +2422,29 @@ function showAddNodeModal(prefillIp = '', prefillName = '', prefillUser = 'admin
   `;
   openModal(html);
 }
+window.showAddNodeModal = showAddNodeModal;
 
 async function submitAddNode() {
   const ip = document.getElementById("add-node-ip").value.trim();
   const name = document.getElementById("add-node-name").value.trim();
-  const room = document.getElementById("add-node-room").value;
+  const homeId = Number(document.getElementById("add-node-home").value);
+  const roomVal = document.getElementById("add-node-room").value;
   const auth_username = document.getElementById("add-node-user").value.trim() || 'admin';
   const auth_password = document.getElementById("add-node-pass").value.trim() || 'admin';
   const statusBox = document.getElementById("add-node-status-box");
   const btn = document.getElementById("btn-submit-add-node");
+
+  let roomName = 'General';
+  let roomId = null;
+  if (roomVal === 'common_general') roomName = 'General';
+  else if (roomVal === 'common_mains') roomName = 'Mains';
+  else if (roomVal === 'common_first_floor') roomName = '1st Floor Common';
+  else if (roomVal === 'common_outdoor') roomName = 'Outdoor Common';
+  else {
+    roomId = Number(roomVal);
+    const roomObj = (fleetData.rooms || cachedRoomsList || []).find(r => r.id === roomId);
+    if (roomObj) roomName = roomObj.name;
+  }
 
   if (!ip) {
     statusBox.style.display = "block";
@@ -2383,7 +2465,7 @@ async function submitAddNode() {
     const res = await fetchWithAuth(`${API_BASE}/nodes/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ip, name, room, auth_username, auth_password })
+      body: JSON.stringify({ ip, name, room: roomName, homeId, roomId, auth_username, auth_password })
     });
     const result = await res.json();
 
@@ -2410,6 +2492,7 @@ async function submitAddNode() {
     statusBox.textContent = `Request error: ${err.message}`;
   }
 }
+window.submitAddNode = submitAddNode;
 
 // --------------------------------------------------------------------------
 // 🚪 ASSIGN NODE TO ROOM MODAL
@@ -2425,30 +2508,46 @@ async function showAssignNodeModal(nodeId) {
     const homes = homesData.homes || [];
     const rooms = roomsData.rooms || [];
 
+    // Sync in-memory caches
+    cachedHomesList = homes;
+    cachedRoomsList = rooms;
+    fleetData.homes = homes;
+    fleetData.rooms = rooms;
+
     const node = (fleetData.nodes || []).find(n => n.node_id === nodeId) || { node_id: nodeId };
+    const selectedHomeId = node.home_id || (homes.length > 0 ? homes[0].id : 1);
+
+    let selectedRoomVal = node.room_id || null;
+    if (!selectedRoomVal) {
+      if (node.room === 'Mains' || node.room === 'Mains Distribution Panel') selectedRoomVal = 'common_mains';
+      else if (node.room === '1st Floor Common') selectedRoomVal = 'common_first_floor';
+      else if (node.room === 'Outdoor Common') selectedRoomVal = 'common_outdoor';
+      else if (node.room === 'General') selectedRoomVal = 'common_general';
+      else selectedRoomVal = node.room || 'common_general';
+    }
 
     const html = `
       <div class="modal-content" style="max-width: 500px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
         <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 16px;">
-          <h3 style="margin: 0; color: #fff; font-size: 16px;">🚪 Assign Node to Room</h3>
+          <h3 style="margin: 0; color: #fff; font-size: 16px;">🚪 Assign Node to Property & Room</h3>
           <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
         </div>
 
         <p style="font-size: 13px; color: #94a3b8; margin: 0 0 16px 0; line-height: 1.5;">
-          Assign controller <strong style="color: #fff;">${escapeHtml(node.name || node.node_id)}</strong> (<code style="color: #38bdf8;">${nodeId}</code>) to a Home and Room location.
+          Assign controller <strong style="color: #fff;">${escapeHtml(node.name || node.node_id)}</strong> (<code style="color: #38bdf8;">${nodeId}</code>) to a Property and Room partition or shared utility.
         </p>
 
         <div class="form-group" style="margin-bottom: 12px;">
-          <label class="settings-field-label">Target Home *</label>
-          <select id="assign-target-home" class="filter-select-enhanced" style="width: 100%;">
-            ${homes.map(h => `<option value="${h.id}" ${h.id === node.home_id ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
+          <label class="settings-field-label">Target Property / Home *</label>
+          <select id="assign-target-home" class="filter-select-enhanced" style="width: 100%;" onchange="onAssignNodeHomeChange()">
+            ${homes.map(h => `<option value="${h.id}" ${h.id === selectedHomeId ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
           </select>
         </div>
 
         <div class="form-group" style="margin-bottom: 16px;">
-          <label class="settings-field-label">Target Room *</label>
+          <label class="settings-field-label">Target Room / Shared Utility *</label>
           <select id="assign-target-room" class="filter-select-enhanced" style="width: 100%;">
-            ${rooms.map(r => `<option value="${r.id}" ${r.id === node.room_id ? 'selected' : ''}>${escapeHtml(r.name)} (${escapeHtml(r.home_name || 'Home')})</option>`).join('')}
+            ${getRoomOptionsForHomeHtml(selectedHomeId, selectedRoomVal, rooms)}
           </select>
         </div>
 
@@ -2463,25 +2562,49 @@ async function showAssignNodeModal(nodeId) {
     alert("Error loading assignment options: " + err.message);
   }
 }
+window.showAssignNodeModal = showAssignNodeModal;
 
 async function submitAssignNode(nodeId) {
   const homeId = Number(document.getElementById("assign-target-home").value);
-  const roomId = Number(document.getElementById("assign-target-room").value);
+  const roomVal = document.getElementById("assign-target-room").value;
 
-  if (!homeId || !roomId) {
+  if (!homeId || !roomVal) {
     alert("Please select both a target Home and Room");
     return;
+  }
+
+  let roomId = null;
+  let targetRoom = 'General';
+  let isCommon = false;
+
+  if (roomVal === 'common_general') {
+    isCommon = true;
+    targetRoom = 'General';
+  } else if (roomVal === 'common_mains') {
+    isCommon = true;
+    targetRoom = 'Mains';
+  } else if (roomVal === 'common_first_floor') {
+    isCommon = true;
+    targetRoom = '1st Floor Common';
+  } else if (roomVal === 'common_outdoor') {
+    isCommon = true;
+    targetRoom = 'Outdoor Common';
+  } else {
+    roomId = Number(roomVal);
+    const roomObj = (cachedRoomsList || fleetData.rooms || []).find(r => r.id === roomId);
+    targetRoom = roomObj ? roomObj.name : 'Room';
+    isCommon = false;
   }
 
   try {
     const res = await fetchWithAuth(`${API_BASE}/nodes/${nodeId}/assign`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ homeId, roomId })
+      body: JSON.stringify({ homeId, roomId, isCommon, targetRoom })
     });
     const data = await res.json();
     if (data.success) {
-      alert(`Node successfully assigned to ${data.node?.room_name || 'Room'}!`);
+      alert(`Node successfully assigned to ${data.node?.room_name || targetRoom || 'Room'}!`);
       closeModal();
       loadNodes();
     } else {
@@ -2491,12 +2614,42 @@ async function submitAssignNode(nodeId) {
     alert("Assign request error: " + err.message);
   }
 }
+window.submitAssignNode = submitAssignNode;
 
 // --------------------------------------------------------------------------
 // ✏️ EDIT NODE SETTINGS MODAL
 // --------------------------------------------------------------------------
-function showNodeSettingsModal(nodeId) {
+async function showNodeSettingsModal(nodeId) {
+  try {
+    if (!fleetData.homes || fleetData.homes.length === 0 || !fleetData.rooms || fleetData.rooms.length === 0) {
+      const [homesRes, roomsRes] = await Promise.all([
+        fetchWithAuth(`${API_BASE}/homes`),
+        fetchWithAuth(`${API_BASE}/rooms`)
+      ]);
+      const homesData = await homesRes.json();
+      const roomsData = await roomsRes.json();
+      fleetData.homes = homesData.homes || [];
+      fleetData.rooms = roomsData.rooms || [];
+      cachedHomesList = fleetData.homes;
+      cachedRoomsList = fleetData.rooms;
+    }
+  } catch (_) {}
+
+  const homes = (fleetData.homes && fleetData.homes.length > 0) ? fleetData.homes : (cachedHomesList || []);
+  const rooms = (fleetData.rooms && fleetData.rooms.length > 0) ? fleetData.rooms : (cachedRoomsList || []);
+
   const node = (fleetData.nodes || []).find(n => n.node_id === nodeId) || { node_id: nodeId };
+  const selectedHomeId = node.home_id || (homes.length > 0 ? homes[0].id : 1);
+
+  let selectedRoomVal = node.room_id || null;
+  if (!selectedRoomVal) {
+    if (node.room === 'Mains' || node.room === 'Mains Distribution Panel') selectedRoomVal = 'common_mains';
+    else if (node.room === '1st Floor Common') selectedRoomVal = 'common_first_floor';
+    else if (node.room === 'Outdoor Common') selectedRoomVal = 'common_outdoor';
+    else if (node.room === 'General') selectedRoomVal = 'common_general';
+    else selectedRoomVal = node.room || 'common_general';
+  }
+
   const html = `
     <div class="modal-content" style="max-width: 520px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
       <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 16px;">
@@ -2514,9 +2667,19 @@ function showNodeSettingsModal(nodeId) {
         <input type="text" id="config-node-ip" class="settings-input" style="width: 100%; font-family: monospace;" value="${escapeHtml(node.ip_address || node.ip || '')}">
       </div>
 
-      <div class="form-group" style="margin-bottom: 12px;">
-        <label class="settings-field-label">Assigned Room</label>
-        <input type="text" id="config-node-room" class="settings-input" style="width: 100%;" value="${escapeHtml(node.room || node.room_name || '')}">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+        <div class="form-group">
+          <label class="settings-field-label">Target Property / Home</label>
+          <select id="config-node-home" class="filter-select-enhanced" style="width: 100%;" onchange="onNodeConfigHomeChange()">
+            ${homes.map(h => `<option value="${h.id}" ${h.id === selectedHomeId ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="settings-field-label">Assigned Room / Utility</label>
+          <select id="config-node-room-select" class="filter-select-enhanced" style="width: 100%;">
+            ${getRoomOptionsForHomeHtml(selectedHomeId, selectedRoomVal, rooms)}
+          </select>
+        </div>
       </div>
 
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
@@ -2538,19 +2701,33 @@ function showNodeSettingsModal(nodeId) {
   `;
   openModal(html);
 }
+window.showNodeSettingsModal = showNodeSettingsModal;
 
 async function saveNodeSettings(nodeId) {
   const name = document.getElementById("config-node-name").value.trim();
   const ip = document.getElementById("config-node-ip").value.trim();
-  const room = document.getElementById("config-node-room").value.trim();
+  const home_id = Number(document.getElementById("config-node-home").value);
+  const roomVal = document.getElementById("config-node-room-select").value;
   const auth_username = document.getElementById("config-node-user").value.trim();
   const auth_password = document.getElementById("config-node-pass").value.trim();
+
+  let room = 'General';
+  let room_id = null;
+  if (roomVal === 'common_general') room = 'General';
+  else if (roomVal === 'common_mains') room = 'Mains';
+  else if (roomVal === 'common_first_floor') room = '1st Floor Common';
+  else if (roomVal === 'common_outdoor') room = 'Outdoor Common';
+  else {
+    room_id = Number(roomVal);
+    const roomObj = (fleetData.rooms || cachedRoomsList || []).find(r => r.id === room_id);
+    if (roomObj) room = roomObj.name;
+  }
 
   try {
     const res = await fetchWithAuth(`${API_BASE}/nodes/${nodeId}/settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, ip, room, auth_username, auth_password })
+      body: JSON.stringify({ name, ip, room, home_id, room_id, auth_username, auth_password })
     });
     const data = await res.json();
     alert(data.message || 'Device settings updated successfully');
@@ -2561,6 +2738,7 @@ async function saveNodeSettings(nodeId) {
     alert("Failed to save device settings: " + err.message);
   }
 }
+window.saveNodeSettings = saveNodeSettings;
 
 // --------------------------------------------------------------------------
 // ℹ️ DEVICE DETAILS & DIAGNOSTICS MODAL
@@ -5940,6 +6118,8 @@ function showEditRoomModal(roomId) {
   const room = (cachedRoomsList || []).find(r => r.id === roomId);
   if (!room) return;
 
+  const homes = (cachedHomesList && cachedHomesList.length > 0) ? cachedHomesList : (fleetData.homes || []);
+
   const modalHtml = `
     <div class="modal-box" style="max-width: 480px; width: 90%;">
       <div class="modal-header">
@@ -5947,7 +6127,7 @@ function showEditRoomModal(roomId) {
           <div class="hardware-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8;">✏️</div>
           <div>
             <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #ffffff;">Edit Room</h3>
-            <p style="margin: 2px 0 0 0; font-size: 11px; color: #94a3b8;">Update room partition settings</p>
+            <p style="margin: 2px 0 0 0; font-size: 11px; color: #94a3b8;">Update room partition settings and property</p>
           </div>
         </div>
         <button class="modal-close-btn" onclick="closeModal()">✕</button>
@@ -5957,6 +6137,13 @@ function showEditRoomModal(roomId) {
         <div class="form-group" style="margin-bottom: 14px;">
           <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Room Name *</label>
           <input id="modal-edit-room-name" type="text" class="search-input" value="${escapeHtml(room.name)}" style="width: 100%; box-sizing: border-box;" />
+        </div>
+
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Target Property / Home *</label>
+          <select id="modal-edit-room-home" class="filter-select" style="width: 100%;">
+            ${homes.map(h => `<option value="${h.id}" ${h.id === room.home_id ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
+          </select>
         </div>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
@@ -5992,7 +6179,7 @@ function showEditRoomModal(roomId) {
         <div id="modal-edit-room-status" style="display: none; padding: 10px; border-radius: 6px; font-size: 12px; margin-top: 10px;"></div>
       </div>
 
-      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; padding: 14px 24px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; padding-line: 14px 24px; padding: 14px 24px; border-top: 1px solid rgba(255, 255, 255, 0.08);">
         <button class="btn-cancel" onclick="closeModal()">Cancel</button>
         <button id="btn-submit-edit-room" class="btn-primary" onclick="submitEditRoom(${room.id})">Save Changes</button>
       </div>
@@ -6003,6 +6190,7 @@ function showEditRoomModal(roomId) {
 
 async function submitEditRoom(roomId) {
   const name = document.getElementById("modal-edit-room-name").value.trim();
+  const home_id = Number(document.getElementById("modal-edit-room-home").value);
   const floor = document.getElementById("modal-edit-room-floor").value;
   const icon = document.getElementById("modal-edit-room-icon").value;
   const statusBox = document.getElementById("modal-edit-room-status");
@@ -6023,7 +6211,7 @@ async function submitEditRoom(roomId) {
     const res = await fetchWithAuth(`${API_BASE}/rooms/${roomId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, floor, icon })
+      body: JSON.stringify({ name, floor, icon, home_id })
     });
     const data = await res.json();
     if (data.success) {
