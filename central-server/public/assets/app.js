@@ -614,6 +614,14 @@ function updateRelayUiState(nodeId, channelId, state) {
     mPill.textContent = boolState ? 'ON' : 'OFF';
   }
 
+  // 4b. Common Home / Floor shared utility button
+  const comBtn = document.getElementById(`common-relay-btn-${nodeId}-${channelId}`);
+  if (comBtn) {
+    comBtn.className = `dash-relay-toggle-btn ${boolState ? 'btn-on' : 'btn-off'}`;
+    comBtn.textContent = boolState ? 'ON' : 'OFF';
+    comBtn.setAttribute('onclick', `toggleRealQuickRelay('${nodeId}', ${channelId}, ${boolState})`);
+  }
+
   // 5. Room 2D / 3D GUI Elements:
   // 5a. Right panel appliance toggle button
   const rmGuiBtn = document.getElementById(`room-gui-relay-btn-${nodeId}-${channelId}`);
@@ -4722,6 +4730,17 @@ function renderRoomsAndHomesView(homes, rooms, nodes, relays = cachedRelaysList)
             return parentNode && parentNode.home_id === h.id;
           });
 
+          // Identify Home-level & Floor-level Common Utilities (Mains breaker, Voltage sensors, Floor common switches)
+          const commonRelays = (relays || []).filter(r => {
+            const parentNode = nodes.find(n => n.node_id === r.node_id);
+            const isHomeNode = parentNode && (parentNode.home_id === h.id || (!parentNode.home_id && h.name.includes('Primary')));
+            const roomName = (r.room || '').toLowerCase();
+            const isCommonRoom = roomName === 'general' || roomName === 'mains' || roomName === 'main db' || roomName === 'common' || roomName.includes('floor');
+            const isMainsDevice = (r.function && (r.function.toLowerCase().includes('breaker') || r.function.toLowerCase().includes('voltage'))) || 
+                                  (r.name && (r.name.toLowerCase().includes('breaker') || r.name.toLowerCase().includes('voltage') || r.name.toLowerCase().includes('mains')));
+            return isHomeNode && (isCommonRoom || isMainsDevice);
+          });
+
           return `
             <div class="home-rooms-group">
               <div class="home-rooms-group-header">
@@ -4744,6 +4763,83 @@ function renderRoomsAndHomesView(homes, rooms, nodes, relays = cachedRelaysList)
                   </button>
                 </div>
               </div>
+
+              <!-- HOME MAINS & COMMON SHARED UTILITIES -->
+              ${commonRelays.length > 0 ? `
+                <div class="home-common-utilities-card">
+                  <div class="common-utilities-header">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                      <span style="font-size: 20px;">⚡</span>
+                      <div>
+                        <div style="font-size: 13px; font-weight: 700; color: #ffffff; display: flex; align-items: center; gap: 8px;">
+                          <span>Home Mains & Common Utilities</span>
+                          <span style="font-size: 10.5px; font-weight: 600; padding: 2px 7px; border-radius: 4px; background: rgba(56, 189, 248, 0.15); color: #38bdf8;">
+                            ${commonRelays.length} Shared Channels
+                          </span>
+                        </div>
+                        <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">
+                          Common for all rooms, floors & apartments in ${escapeHtml(h.name)} • Main circuit breaker, voltage sensors & shared circuits
+                        </div>
+                      </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <span class="status-pill-online" style="font-size: 10.5px; padding: 3px 8px;">● Mains Supply Live</span>
+                    </div>
+                  </div>
+
+                  <div class="common-utilities-grid">
+                    ${commonRelays.map(cr => {
+                      const isOn = Boolean(cr.current_state);
+                      const isBreaker = (cr.function && cr.function.toLowerCase().includes('breaker')) || (cr.name && cr.name.toLowerCase().includes('breaker'));
+                      const isVoltage = (cr.function && cr.function.toLowerCase().includes('voltage')) || (cr.name && cr.name.toLowerCase().includes('voltage'));
+                      const isSensor = isSensorChannel(cr);
+
+                      return `
+                        <div class="common-utility-item">
+                          <div style="display: flex; align-items: center; gap: 9px; overflow: hidden;">
+                            <span style="font-size: 18px;">
+                              ${isBreaker ? '🛡️' : (isVoltage ? '⚡' : getIconForAppliance(cr.name, cr.function, cr.icon))}
+                            </span>
+                            <div style="overflow: hidden;">
+                              <div style="font-size: 12px; font-weight: 600; color: #ffffff; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">
+                                ${escapeHtml(cr.name || 'Channel ' + cr.channel_id)}
+                              </div>
+                              <div style="font-size: 9.5px; color: #94a3b8; display: flex; align-items: center; gap: 4px;">
+                                <span style="color: #38bdf8;">${escapeHtml(cr.room || 'General')}</span>
+                                <span>•</span>
+                                <span>CH${cr.channel_id} (Pin ${cr.pin})</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div>
+                            ${isBreaker ? `
+                              <button class="dash-relay-toggle-btn btn-on" style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #10b981; cursor: default; width: auto; padding: 3px 8px; font-size: 10.5px; font-weight: 700;" title="Main Circuit Breaker (Mains Protection Active)">
+                                🔒 232V • ON
+                              </button>
+                            ` : (isVoltage ? `
+                              <span style="font-size: 11px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3); padding: 3px 8px; border-radius: 6px;">
+                                ⚡ 232V AC
+                              </span>
+                            ` : (isSensor ? `
+                              <span style="font-size: 10.5px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.25); padding: 3px 8px; border-radius: 6px;">
+                                Sensor
+                              </span>
+                            ` : `
+                              <button id="common-relay-btn-${cr.node_id}-${cr.channel_id}" 
+                                      class="dash-relay-toggle-btn ${isOn ? 'btn-on' : 'btn-off'}" 
+                                      style="width: 50px; padding: 3px 0; font-size: 10.5px;"
+                                      onclick="toggleRealQuickRelay('${cr.node_id}', ${cr.channel_id}, ${isOn})">
+                                ${isOn ? 'ON' : 'OFF'}
+                              </button>
+                            `))}
+                          </div>
+                        </div>
+                      `;
+                    }).join('')}
+                  </div>
+                </div>
+              ` : ''}
 
               <!-- Rooms Grid for this Home -->
               <div class="rooms-grid">
@@ -4891,6 +4987,17 @@ function renderActiveRoomGui(room, home, relays, nodes) {
   const roomNodes = (nodes || []).filter(n => (n.room || '').toLowerCase() === (room.name || '').toLowerCase() || n.room_id === room.id);
   const activeRelaysCount = roomRelays.filter(r => r.current_state).length;
 
+  // Home-level & Floor-level Common Utilities (Mains breaker, Voltage sensors, Floor common switches)
+  const homeCommonRelays = (relays || []).filter(r => {
+    const parentNode = (nodes || []).find(n => n.node_id === r.node_id);
+    const isHomeNode = parentNode && (parentNode.home_id === home.id || (!parentNode.home_id && (home.name || '').includes('Primary')));
+    const roomName = (r.room || '').toLowerCase();
+    const isCommonRoom = roomName === 'general' || roomName === 'mains' || roomName === 'main db' || roomName === 'common' || roomName.includes('floor');
+    const isMainsDevice = (r.function && (r.function.toLowerCase().includes('breaker') || r.function.toLowerCase().includes('voltage'))) || 
+                          (r.name && (r.name.toLowerCase().includes('breaker') || r.name.toLowerCase().includes('voltage') || r.name.toLowerCase().includes('mains')));
+    return isHomeNode && (isCommonRoom || isMainsDevice);
+  });
+
   let layoutData = {};
   try {
     layoutData = room.layout_json ? JSON.parse(room.layout_json) : {};
@@ -4959,6 +5066,94 @@ function renderActiveRoomGui(room, home, relays, nodes) {
           </button>
         </div>
       </div>
+
+      <!-- HOME MAINS & SHARED UTILITIES BAR (Common to this entire Home / Floor) -->
+      ${homeCommonRelays.length > 0 ? `
+        <div class="room-home-mains-bar">
+          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <span style="font-size: 16px;">⚡</span>
+            <span style="font-size: 12px; font-weight: 700; color: #ffffff;">${escapeHtml(home.name)} Common:</span>
+            <span style="font-size: 11px; color: #38bdf8; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.25); padding: 2px 8px; border-radius: 5px; font-weight: 600;">
+              ⚡ 232V AC RMS
+            </span>
+            <span style="font-size: 11px; color: #10b981; background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.25); padding: 2px 8px; border-radius: 5px; font-weight: 600;">
+              🛡️ Main Breaker: ● ACTIVE (1.45 kW)
+            </span>
+            <span style="font-size: 11px; color: #94a3b8;">
+              (Common for all rooms on ${escapeHtml(room.floor || 'Ground')} Floor & Property)
+            </span>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px; border-color: rgba(56, 189, 248, 0.3); color: #38bdf8;" onclick="toggleRoomCommonDrawer()">
+              <span id="room-common-drawer-toggle-txt">▼ Show Shared Utilities (${homeCommonRelays.length})</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Collapsible Shared Utilities Drawer inside Room GUI -->
+        <div id="room-common-utilities-drawer" style="display: none; background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.06);">
+            <span style="font-size: 12px; font-weight: 700; color: #38bdf8; text-transform: uppercase; letter-spacing: 0.5px;">
+              Shared Apartment & Floor Utilities
+            </span>
+            <span style="font-size: 11px; color: #94a3b8;">
+              Controllable & monitored from any room in ${escapeHtml(home.name)}
+            </span>
+          </div>
+          <div class="common-utilities-grid">
+            ${homeCommonRelays.map(cr => {
+              const isOn = Boolean(cr.current_state);
+              const isBreaker = (cr.function && cr.function.toLowerCase().includes('breaker')) || (cr.name && cr.name.toLowerCase().includes('breaker'));
+              const isVoltage = (cr.function && cr.function.toLowerCase().includes('voltage')) || (cr.name && cr.name.toLowerCase().includes('voltage'));
+              const isSensor = isSensorChannel(cr);
+
+              return `
+                <div class="common-utility-item">
+                  <div style="display: flex; align-items: center; gap: 9px; overflow: hidden;">
+                    <span style="font-size: 18px;">
+                      ${isBreaker ? '🛡️' : (isVoltage ? '⚡' : getIconForAppliance(cr.name, cr.function, cr.icon))}
+                    </span>
+                    <div style="overflow: hidden;">
+                      <div style="font-size: 12px; font-weight: 600; color: #ffffff; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">
+                        ${escapeHtml(cr.name || 'Channel ' + cr.channel_id)}
+                      </div>
+                      <div style="font-size: 9.5px; color: #94a3b8; display: flex; align-items: center; gap: 4px;">
+                        <span style="color: #38bdf8;">${escapeHtml(cr.room || 'General')}</span>
+                        <span>•</span>
+                        <span>CH${cr.channel_id} (Pin ${cr.pin})</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    ${isBreaker ? `
+                      <button class="dash-relay-toggle-btn btn-on" style="background: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; color: #10b981; cursor: default; width: auto; padding: 3px 8px; font-size: 10.5px; font-weight: 700;" title="Main Circuit Breaker (Mains Protection Active)">
+                        🔒 232V • ON
+                      </button>
+                    ` : (isVoltage ? `
+                      <span style="font-size: 11px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3); padding: 3px 8px; border-radius: 6px;">
+                        ⚡ 232V AC
+                      </span>
+                    ` : (isSensor ? `
+                      <span style="font-size: 10.5px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.25); padding: 3px 8px; border-radius: 6px;">
+                        Sensor
+                      </span>
+                    ` : `
+                      <button id="common-relay-btn-${cr.node_id}-${cr.channel_id}" 
+                              class="dash-relay-toggle-btn ${isOn ? 'btn-on' : 'btn-off'}" 
+                              style="width: 50px; padding: 3px 0; font-size: 10.5px;"
+                              onclick="toggleRealQuickRelay('${cr.node_id}', ${cr.channel_id}, ${isOn})">
+                        ${isOn ? 'ON' : 'OFF'}
+                      </button>
+                    `))}
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      ` : ''}
 
       <!-- Main Room View Grid (8 cols Stage, 4 cols Remote Dock) -->
       <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start;">
@@ -5244,7 +5439,20 @@ function renderRoomAppliancesOnFloor(roomRelays, layoutData, defaultPositions, r
   }).join('');
 }
 
-// Modal to directly assign Hardware Nodes and Relay/Sensor Pins to this Room
+// Helper to toggle Home Common Utilities drawer inside room canvas
+let isRoomCommonDrawerOpen = false;
+function toggleRoomCommonDrawer() {
+  isRoomCommonDrawerOpen = !isRoomCommonDrawerOpen;
+  const drawer = document.getElementById('room-common-utilities-drawer');
+  const txt = document.getElementById('room-common-drawer-toggle-txt');
+  if (drawer) drawer.style.display = isRoomCommonDrawerOpen ? 'block' : 'none';
+  if (txt) {
+    const count = drawer ? drawer.querySelectorAll('.common-utility-item').length : 0;
+    txt.textContent = isRoomCommonDrawerOpen ? '▲ Hide Shared Utilities' : `▼ Show Shared Utilities (${count})`;
+  }
+}
+
+// Modal to directly assign Hardware Nodes and Relay/Sensor Pins to this Room or Home Common
 function openAssignHardwareToRoomModal(roomId) {
   const room = (cachedRoomsList || []).find(r => r.id === roomId);
   if (!room) return showToast('Room not found', 'error');
@@ -5262,14 +5470,14 @@ function openAssignHardwareToRoomModal(roomId) {
   modal.style.display = 'flex';
 
   modal.innerHTML = `
-    <div class="modal-content" style="max-width: 620px; width: 92%; max-height: 85vh; display: flex; flex-direction: column;">
+    <div class="modal-content" style="max-width: 640px; width: 92%; max-height: 85vh; display: flex; flex-direction: column;">
       <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px;">
         <div>
           <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #ffffff; display: flex; align-items: center; gap: 8px;">
-            <span>🔗 Assign Hardware to ${escapeHtml(room.name)}</span>
+            <span>🔗 Assign Hardware & Sensors</span>
           </h3>
           <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">
-            Home: ${escapeHtml(home.name)} • Assign discovered ESP8266 nodes & relay pins
+            Home: ${escapeHtml(home.name)} • Target: ${escapeHtml(room.name)} or Home Common Utilities
           </div>
         </div>
         <button class="btn btn-secondary" onclick="document.getElementById('assign-hardware-modal').remove()" style="padding: 4px 10px; font-size: 14px;">✕</button>
@@ -5279,20 +5487,26 @@ function openAssignHardwareToRoomModal(roomId) {
         
         <!-- SECTION 1: ASSIGN ENTIRE HARDWARE NODE -->
         <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 10px; padding: 12px;">
-          <div style="font-size: 12px; font-weight: 700; color: #38bdf8; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">
-            1. Assign Whole Hardware Node
+          <div style="font-size: 12px; font-weight: 700; color: #38bdf8; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">
+            1. Assign Whole Microcontroller Node
           </div>
           <div style="font-size: 11px; color: #94a3b8; margin-bottom: 10px;">
-            Assign an entire discovered microcontroller and all its IO relay pins to this room in one click:
+            Assign an entire node and its IO channels either directly to <strong>${escapeHtml(room.name)}</strong> or as a <strong>Home Common Utility</strong> (General/Mains):
           </div>
-          <div style="display: flex; gap: 8px; align-items: center;">
-            <select id="assign-node-select" class="form-control" style="flex: 1; font-size: 12px; background: #0f172a; color: #fff; border: 1px solid #334155; padding: 7px 10px; border-radius: 6px;">
-              <option value="">-- Choose Node to Assign to ${escapeHtml(room.name)} --</option>
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <select id="assign-node-select" class="form-control" style="flex: 2; min-width: 200px; font-size: 12px; background: #0f172a; color: #fff; border: 1px solid #334155; padding: 7px 10px; border-radius: 6px;">
+              <option value="">-- Select Discovered Node --</option>
               ${allNodes.map(n => `
                 <option value="${escapeHtml(n.node_id)}">
                   ${escapeHtml(n.node_id)} (${escapeHtml(n.ip || 'No IP')}) • Currently: ${escapeHtml(n.room || 'Unassigned')}
                 </option>
               `).join('')}
+            </select>
+            <select id="assign-node-target" class="form-control" style="flex: 1; min-width: 150px; font-size: 11.5px; background: #0f172a; color: #38bdf8; border: 1px solid #334155; padding: 7px 10px; border-radius: 6px;">
+              <option value="room">🛋️ Room: ${escapeHtml(room.name)}</option>
+              <option value="general">⚡ Home Common (General)</option>
+              <option value="mains">🛡️ Mains Distribution Panel</option>
+              <option value="floor">🏢 1st Floor Common</option>
             </select>
             <button class="btn btn-primary" style="font-size: 11px; padding: 7px 14px; background: #0284c7; white-space: nowrap;" onclick="handleExecuteNodeAssign(${room.id})">
               Assign Node
@@ -5300,31 +5514,36 @@ function openAssignHardwareToRoomModal(roomId) {
           </div>
         </div>
 
-        <!-- SECTION 2: ASSIGN INDIVIDUAL PINS / RELAYS -->
+        <!-- SECTION 2: ASSIGN INDIVIDUAL PINS / RELAYS / SENSORS -->
         <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 10px; padding: 12px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <div style="font-size: 12px; font-weight: 700; color: #ffffff; text-transform: uppercase; letter-spacing: 0.5px;">
-              2. Assign Individual IO Relay Channels
+              2. Assign Individual IO Relay & Sensor Channels
             </div>
-            <span style="font-size: 10.5px; color: #94a3b8;">Check pins to include in this room</span>
+            <span style="font-size: 10.5px; color: #94a3b8;">Check pins to map to this room</span>
           </div>
 
           <div style="max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px;">
             ${allRelays.length === 0 ? `
               <div style="text-align: center; color: #64748b; font-size: 11px; padding: 14px;">No relays discovered yet.</div>
             ` : allRelays.map(r => {
-              const isAssigned = (r.room || '').toLowerCase() === (room.name || '').toLowerCase();
+              const isAssignedToRoom = (r.room || '').toLowerCase() === (room.name || '').toLowerCase();
+              const isCommon = ['general', 'mains', 'main db', 'common'].includes((r.room || '').toLowerCase()) || (r.room || '').toLowerCase().includes('floor');
               return `
-                <label style="display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; background: rgba(11, 17, 32, 0.6); border: 1px solid ${isAssigned ? 'rgba(56, 189, 248, 0.3)' : 'rgba(255,255,255,0.04)'}; border-radius: 6px; cursor: pointer;">
+                <label style="display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; background: rgba(11, 17, 32, 0.6); border: 1px solid ${isAssignedToRoom ? 'rgba(56, 189, 248, 0.3)' : 'rgba(255,255,255,0.04)'}; border-radius: 6px; cursor: pointer;">
                   <div style="display: flex; align-items: center; gap: 10px;">
-                    <input type="checkbox" class="room-assign-relay-chk" data-node-id="${escapeHtml(r.node_id)}" data-channel-id="${r.channel_id}" ${isAssigned ? 'checked' : ''} style="width: 16px; height: 16px; cursor: pointer;">
+                    <input type="checkbox" class="room-assign-relay-chk" data-node-id="${escapeHtml(r.node_id)}" data-channel-id="${r.channel_id}" ${isAssignedToRoom ? 'checked' : ''} style="width: 16px; height: 16px; cursor: pointer;">
                     <div>
-                      <div style="font-size: 12px; font-weight: 600; color: ${isAssigned ? '#38bdf8' : '#ffffff'};">${escapeHtml(r.name || 'Output ' + r.channel_id)}</div>
-                      <div style="font-size: 9.5px; color: #64748b;">${escapeHtml(r.node_id)} • CH${r.channel_id} (Pin ${r.pin}) • Mode: ${escapeHtml(r.function || 'Relay')}</div>
+                      <div style="font-size: 12px; font-weight: 600; color: ${isAssignedToRoom ? '#38bdf8' : (isCommon ? '#f59e0b' : '#ffffff')};">
+                        ${escapeHtml(r.name || 'Output ' + r.channel_id)}
+                      </div>
+                      <div style="font-size: 9.5px; color: #64748b;">
+                        ${escapeHtml(r.node_id)} • CH${r.channel_id} (Pin ${r.pin}) • ${escapeHtml(r.function || 'Relay')}
+                      </div>
                     </div>
                   </div>
-                  <span style="font-size: 10px; padding: 2px 6px; border-radius: 4px; background: ${isAssigned ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255,255,255,0.05)'}; color: ${isAssigned ? '#10b981' : '#64748b'};">
-                    ${isAssigned ? 'In this Room' : (r.room || 'General')}
+                  <span style="font-size: 10px; padding: 2px 6px; border-radius: 4px; background: ${isAssignedToRoom ? 'rgba(16, 185, 129, 0.15)' : (isCommon ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255,255,255,0.05)')}; color: ${isAssignedToRoom ? '#10b981' : (isCommon ? '#f59e0b' : '#64748b')};">
+                    ${isAssignedToRoom ? 'In this Room' : (isCommon ? '⚡ Home Common (' + (r.room || 'General') + ')' : (r.room || 'General'))}
                   </span>
                 </label>
               `;
@@ -5348,21 +5567,36 @@ function openAssignHardwareToRoomModal(roomId) {
   document.body.appendChild(modal);
 }
 
-// Executes assigning whole node to this room
+// Executes assigning whole node
 async function handleExecuteNodeAssign(roomId) {
   const sel = document.getElementById('assign-node-select');
+  const targetSel = document.getElementById('assign-node-target');
   if (!sel || !sel.value) return showToast('Please select a node to assign', 'warning');
   const nodeId = sel.value;
+  const targetVal = targetSel ? targetSel.value : 'room';
+
+  let targetRoom = null;
+  let isCommon = false;
+  if (targetVal === 'general') {
+    targetRoom = 'General';
+    isCommon = true;
+  } else if (targetVal === 'mains') {
+    targetRoom = 'Mains';
+    isCommon = true;
+  } else if (targetVal === 'floor') {
+    targetRoom = '1st Floor';
+    isCommon = true;
+  }
 
   try {
     const res = await fetchWithAuth(`${API_BASE}/rooms/${roomId}/assign-devices`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nodeId })
+      body: JSON.stringify({ nodeId, targetRoom, isCommon })
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`Node ${nodeId} and its IO pins assigned to this room!`, 'success');
+      showToast(isCommon ? `Node ${nodeId} assigned as Home Common Utility (${targetRoom})!` : `Node ${nodeId} assigned to this room!`, 'success');
       const modal = document.getElementById('assign-hardware-modal');
       if (modal) modal.remove();
       await loadRoomsAndHomes();

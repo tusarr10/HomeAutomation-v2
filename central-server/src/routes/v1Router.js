@@ -597,19 +597,25 @@ function createV1Router(nodeManager, db) {
       const room = db.getRoomById(roomId);
       if (!room) return res.status(404).json({ success: false, error: 'Room not found' });
 
-      const { nodeId, assignAllRelays, relayAssignments } = req.body;
+      const { nodeId, assignAllRelays, relayAssignments, targetRoom, isCommon } = req.body;
 
-      // 1. Assign entire hardware node to this room
+      // 1. Assign entire hardware node
       if (nodeId) {
-        db.assignNodeToRoom(nodeId, room.home_id, roomId);
+        if (isCommon || targetRoom === 'General' || targetRoom === 'Mains') {
+          // Assign as Home-level Common / Mains utility (not bound to single private room)
+          db.db.prepare("UPDATE nodes SET home_id = ?, room_id = NULL, room = ?, assigned_at = ? WHERE node_id = ?").run(Number(room.home_id), targetRoom || 'General', Date.now() / 1000, nodeId);
+          db.db.prepare("UPDATE relays SET room = ? WHERE node_id = ?").run(targetRoom || 'General', nodeId);
+        } else {
+          db.assignNodeToRoom(nodeId, room.home_id, roomId);
+        }
       }
 
       // 2. Assign or unassign individual relay channels
       if (Array.isArray(relayAssignments)) {
         for (const item of relayAssignments) {
           if (item.nodeId && item.channelId != null) {
-            const targetRoom = item.assigned ? room.name : 'General';
-            db.setRelayChannelRoom(item.nodeId, item.channelId, targetRoom);
+            const finalRoom = item.targetRoom || (item.assigned ? room.name : 'General');
+            db.setRelayChannelRoom(item.nodeId, item.channelId, finalRoom);
           }
         }
       }
