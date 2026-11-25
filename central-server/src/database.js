@@ -580,6 +580,10 @@ class FleetDatabase {
     try { this.db.exec(`ALTER TABLE relays ADD COLUMN last_sensor_str TEXT DEFAULT NULL`); } catch {}
     try { this.db.exec(`ALTER TABLE sensors ADD COLUMN pin INTEGER DEFAULT NULL`); } catch {}
     try { this.db.exec(`ALTER TABLE sensors ADD COLUMN config_json TEXT DEFAULT '{}'`); } catch {}
+    try { this.db.exec(`ALTER TABLE rooms ADD COLUMN layout_json TEXT DEFAULT '{}'`); } catch {}
+    try { this.db.exec(`ALTER TABLE rooms ADD COLUMN remotes_json TEXT DEFAULT '[]'`); } catch {}
+    try { this.db.exec(`ALTER TABLE relays ADD COLUMN pos_x INTEGER DEFAULT NULL`); } catch {}
+    try { this.db.exec(`ALTER TABLE relays ADD COLUMN pos_y INTEGER DEFAULT NULL`); } catch {}
 
     this.seedDefaults();
     this.deduplicateFleetNodes();
@@ -3102,6 +3106,28 @@ class FleetDatabase {
     }
 
     return this.getRoomById(roomId);
+  }
+
+  updateRoomLayout(roomId, layoutJson = null, remotesJson = null) {
+    const existing = this.getRoomById(roomId);
+    if (!existing) throw new Error(`Room ${roomId} not found`);
+
+    const nowEpoch = Date.now() / 1000;
+    const finalLayout = layoutJson != null ? (typeof layoutJson === 'string' ? layoutJson : JSON.stringify(layoutJson)) : existing.layout_json;
+    const finalRemotes = remotesJson != null ? (typeof remotesJson === 'string' ? remotesJson : JSON.stringify(remotesJson)) : existing.remotes_json;
+
+    this.db.prepare(`
+      UPDATE rooms SET layout_json = ?, remotes_json = ?, updated_at = ? WHERE id = ?
+    `).run(finalLayout, finalRemotes, nowEpoch, Number(roomId));
+
+    return this.getRoomById(roomId);
+  }
+
+  saveRelayPosition(nodeId, channelId, posX, posY) {
+    this.db.prepare(`
+      UPDATE relays SET pos_x = ?, pos_y = ? WHERE node_id = ? AND channel_id = ?
+    `).run(Number(posX) || 0, Number(posY) || 0, nodeId, Number(channelId));
+    return true;
   }
 
   deleteRoom(roomId) {

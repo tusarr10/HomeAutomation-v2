@@ -4506,42 +4506,61 @@ async function pulseRelay(nodeId, channelId, duration = 500) {
   }
 }
 
-// VIEW ③ & ④: ROOMS & HOMES MANAGEMENT (MATCHING PANELS ③ & ④)
+// VIEW ③ & ④: ROOMS & HOMES MANAGEMENT (GROUPED BY HOME & 3D ROOM GUI)
 // ==========================================================================
 let currentRoomsHomesSubTab = 'rooms'; // 'rooms' or 'homes'
+let selectedRoomHomeFilter = 'all'; // 'all' or numeric homeId
+let activeViewingRoomId = null; // null or numeric roomId
+let isRoomLayoutEditMode = false;
+let roomStageAngle = -42;
 let cachedRoomsList = [];
 let cachedHomesList = [];
 let cachedNodesList = [];
+let cachedRelaysList = [];
 
 async function loadRoomsAndHomes() {
   const container = document.getElementById("content-area");
   try {
-    const [homesRes, roomsRes, nodesRes] = await Promise.all([
+    const [homesRes, roomsRes, nodesRes, relaysRes] = await Promise.all([
       fetchWithAuth(`${API_BASE}/homes`),
       fetchWithAuth(`${API_BASE}/rooms`),
-      fetchWithAuth(`${API_BASE}/nodes`)
+      fetchWithAuth(`${API_BASE}/nodes`),
+      fetchWithAuth(`${API_BASE}/relays`)
     ]);
 
     const homesData = await homesRes.json();
     const roomsData = await roomsRes.json();
     const nodesData = await nodesRes.json();
+    const relaysData = await relaysRes.json();
 
     cachedHomesList = homesData.homes || [];
     cachedRoomsList = roomsData.rooms || [];
     cachedNodesList = Array.isArray(nodesData) ? nodesData : (nodesData.nodes || []);
+    cachedRelaysList = Array.isArray(relaysData) ? relaysData : (relaysData.relays || []);
 
     // Also update global cache if available
     cachedHomes = cachedHomesList;
     cachedRooms = cachedRoomsList;
 
-    renderRoomsAndHomesView(cachedHomesList, cachedRoomsList, cachedNodesList);
+    renderRoomsAndHomesView(cachedHomesList, cachedRoomsList, cachedNodesList, cachedRelaysList);
   } catch (err) {
     container.innerHTML = `<div style="color: var(--accent-red); padding: 20px;">Error loading rooms and homes: ${err.message}</div>`;
   }
 }
 
-function renderRoomsAndHomesView(homes, rooms, nodes) {
+function renderRoomsAndHomesView(homes, rooms, nodes, relays = cachedRelaysList) {
   const container = document.getElementById("content-area");
+
+  // If a specific room is being viewed in 3D GUI Canvas mode:
+  if (activeViewingRoomId != null && currentRoomsHomesSubTab === 'rooms') {
+    const activeRoom = rooms.find(r => r.id === activeViewingRoomId);
+    if (activeRoom) {
+      const activeHome = homes.find(h => h.id === activeRoom.home_id) || homes[0] || { name: 'Home' };
+      renderActiveRoomGui(activeRoom, activeHome, relays, nodes);
+      return;
+    }
+    activeViewingRoomId = null;
+  }
 
   // Modern room photo collection with graceful fallback
   const roomBackgrounds = {
@@ -4557,7 +4576,8 @@ function renderRoomsAndHomesView(homes, rooms, nodes) {
     'Main DB': 'https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=500&q=80',
     'Office': 'https://images.unsplash.com/photo-1497366216548-37526070297c?w=500&q=80',
     'Hall': 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=500&q=80',
-    'Balcony': 'https://images.unsplash.com/photo-1513694203232-719a280e022f?w=500&q=80'
+    'Balcony': 'https://images.unsplash.com/photo-1513694203232-719a280e022f?w=500&q=80',
+    'Home Cinema': 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=500&q=80'
   };
 
   const getDeviceCountForRoom = (roomName, roomId) => {
@@ -4568,16 +4588,25 @@ function renderRoomsAndHomesView(homes, rooms, nodes) {
     }).length;
   };
 
+  const getRelaysForRoom = (roomName) => {
+    return (relays || []).filter(r => (r.room || '').toLowerCase() === (roomName || '').toLowerCase());
+  };
+
+  // Filter homes if user selected a single home
+  const displayHomes = selectedRoomHomeFilter === 'all' 
+    ? homes 
+    : homes.filter(h => String(h.id) === String(selectedRoomHomeFilter));
+
   container.innerHTML = `
     <div class="homes-view-wrap">
       <!-- Topbar with tabs -->
       <div class="devices-topbar-actions">
         <div>
           <h2 style="font-size: 19px; font-weight: 700; color: #ffffff; margin: 0;" id="rooms-homes-title">
-            ${currentRoomsHomesSubTab === 'rooms' ? 'Rooms' : 'Homes / Sites'}
+            ${currentRoomsHomesSubTab === 'rooms' ? 'Rooms & Spaces' : 'Homes & Properties'}
           </h2>
           <p style="font-size: 12px; color: #94a3b8; margin: 3px 0 0 0;" id="rooms-homes-sub">
-            ${currentRoomsHomesSubTab === 'rooms' ? 'Manage rooms, assign devices and set icons' : 'Manage multiple homes or locations'}
+            ${currentRoomsHomesSubTab === 'rooms' ? 'Rooms organized by Home with interactive 3D layout visualizer' : 'Manage multiple residences, villas, and commercial properties'}
           </p>
         </div>
         <div style="display: flex; align-items: center; gap: 12px;">
@@ -4591,38 +4620,100 @@ function renderRoomsAndHomesView(homes, rooms, nodes) {
         </div>
       </div>
 
-      <!-- Rooms Grid (Panel ③) -->
-      <div id="rooms-view-container" class="rooms-grid" style="display: ${currentRoomsHomesSubTab === 'rooms' ? 'grid' : 'none'};">
-        ${rooms.map(r => {
-          const bgImg = roomBackgrounds[r.name] || 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=500&q=80';
-          const count = getDeviceCountForRoom(r.name, r.id);
+      <!-- HOME FILTER TABS (When on Rooms View) -->
+      ${currentRoomsHomesSubTab === 'rooms' ? `
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 20px; overflow-x: auto; padding-bottom: 4px;">
+          <button class="subview-tab-btn ${selectedRoomHomeFilter === 'all' ? 'active' : ''}" onclick="filterRoomsByHome('all')">
+            🏠 All Homes (${rooms.length} Rooms)
+          </button>
+          ${homes.map(h => {
+            const hRooms = rooms.filter(r => r.home_id === h.id);
+            return `
+              <button class="subview-tab-btn ${String(selectedRoomHomeFilter) === String(h.id) ? 'active' : ''}" onclick="filterRoomsByHome(${h.id})">
+                🏡 ${escapeHtml(h.name)} (${hRooms.length})
+              </button>
+            `;
+          }).join('')}
+        </div>
+      ` : ''}
+
+      <!-- ROOMS GROUPED BY HOME -->
+      <div id="rooms-view-container" style="display: ${currentRoomsHomesSubTab === 'rooms' ? 'block' : 'none'};">
+        ${displayHomes.map(h => {
+          const homeRooms = rooms.filter(r => r.home_id === h.id);
+          const homeNodes = nodes.filter(n => n.home_id === h.id || (n.location && n.location.toLowerCase() === h.name.toLowerCase()));
+          const homeRelays = (relays || []).filter(r => {
+            const parentNode = nodes.find(n => n.node_id === r.node_id);
+            return parentNode && parentNode.home_id === h.id;
+          });
+
           return `
-            <div class="room-card">
-              <div class="room-card-preview" style="background-image: url('${bgImg}');">
-                <div class="room-preview-overlay"></div>
-                <div class="room-card-title-wrap">
-                  <div class="room-card-name">
-                    <span style="color: #10b981; font-size: 10px;">●</span> ${escapeHtml(r.name)}
+            <div class="home-rooms-group">
+              <div class="home-rooms-group-header">
+                <div class="home-rooms-group-title">
+                  <span style="font-size: 24px;">🏡</span>
+                  <div>
+                    <h3>${escapeHtml(h.name)}</h3>
+                    <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">
+                      ${escapeHtml(h.address || h.description || 'Primary Smart Residence')} • 
+                      <strong style="color: #38bdf8;">${homeRooms.length} Rooms</strong> • 
+                      <strong style="color: #10b981;">${homeNodes.length} Online Nodes</strong> • 
+                      <strong style="color: #f59e0b;">${homeRelays.length} Appliances</strong>
+                    </div>
                   </div>
-                  <span class="room-card-count">${count} ${count === 1 ? 'Device' : 'Devices'}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span class="home-rooms-badge">${homeRooms.length} Spaces</span>
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px;" onclick="showAddRoomModal(${h.id})">
+                    + Add Room
+                  </button>
                 </div>
               </div>
-              <div class="room-card-body">
-                <span style="font-size: 11px; color: #64748b;">Floor: ${escapeHtml(r.floor || 'Ground')}</span>
-                <div class="actions-cell">
-                  <button class="action-btn" title="Edit Room" onclick="showEditRoomModal(${r.id})">✏️</button>
-                  <button class="action-btn delete-btn" title="Delete Room" onclick="handleDeleteRoom(${r.id}, '${escapeHtml(r.name)}')">🗑️</button>
+
+              <!-- Rooms Grid for this Home -->
+              <div class="rooms-grid">
+                ${homeRooms.map(r => {
+                  const bgImg = roomBackgrounds[r.name] || 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=500&q=80';
+                  const devCount = getDeviceCountForRoom(r.name, r.id);
+                  const roomRelays = getRelaysForRoom(r.name);
+                  const activeCount = roomRelays.filter(rel => rel.current_state).length;
+
+                  return `
+                    <div class="room-card" style="cursor: pointer;" onclick="openRoomGuiCanvas(${r.id})">
+                      <div class="room-card-preview" style="background-image: url('${bgImg}');">
+                        <div class="room-preview-overlay"></div>
+                        <div class="room-card-title-wrap">
+                          <div class="room-card-name">
+                            <span style="color: #10b981; font-size: 10px;">●</span> ${escapeHtml(r.name)}
+                          </div>
+                          <span class="room-card-count">
+                            ${roomRelays.length} Appliances (${activeCount} ON) • ${devCount} Nodes
+                          </span>
+                        </div>
+                      </div>
+                      <div class="room-card-body">
+                        <div>
+                          <span style="font-size: 11px; color: #64748b;">Floor: ${escapeHtml(r.floor || 'Ground')}</span>
+                          <span style="display: inline-block; margin-left: 6px; font-size: 11px; color: #38bdf8; font-weight: 600;">🚀 Open GUI ↗</span>
+                        </div>
+                        <div class="actions-cell" onclick="event.stopPropagation()">
+                          <button class="action-btn" title="Edit Room" onclick="showEditRoomModal(${r.id})">✏️</button>
+                          <button class="action-btn delete-btn" title="Delete Room" onclick="handleDeleteRoom(${r.id}, '${escapeHtml(r.name)}')">🗑️</button>
+                        </div>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+
+                <!-- Add Room Card for this Home -->
+                <div class="room-add-card" onclick="showAddRoomModal(${h.id})">
+                  <span style="font-size: 26px;">+</span>
+                  <span style="font-weight: 700; font-size: 13px;">Add Room to ${escapeHtml(h.name)}</span>
                 </div>
               </div>
             </div>
           `;
         }).join('')}
-
-        <!-- Add Room Card -->
-        <div class="room-add-card" onclick="showAddRoomModal()">
-          <span style="font-size: 28px;">+</span>
-          <span style="font-weight: 700; font-size: 14px;">Add Room</span>
-        </div>
       </div>
 
       <!-- Homes List (Panel ④) -->
@@ -4666,6 +4757,7 @@ function renderRoomsAndHomesView(homes, rooms, nodes) {
 
 function switchRoomsHomesTab(tab) {
   currentRoomsHomesSubTab = tab;
+  activeViewingRoomId = null;
   loadRoomsAndHomes();
 }
 
@@ -4678,12 +4770,443 @@ function handleAddRoomOrHome() {
 }
 
 // --------------------------------------------------------------------------
+// 3D ISOMETRIC INTERACTIVE ROOM GUI CANVAS
+// --------------------------------------------------------------------------
+
+function openRoomGuiCanvas(roomId) {
+  activeViewingRoomId = Number(roomId);
+  isRoomLayoutEditMode = false;
+  loadRoomsAndHomes();
+}
+
+function closeRoomGuiCanvas() {
+  activeViewingRoomId = null;
+  isRoomLayoutEditMode = false;
+  loadRoomsAndHomes();
+}
+
+function filterRoomsByHome(homeId) {
+  selectedRoomHomeFilter = homeId;
+  activeViewingRoomId = null;
+  loadRoomsAndHomes();
+}
+
+function renderActiveRoomGui(room, home, relays, nodes) {
+  const container = document.getElementById("content-area");
+
+  // Filter relays mapped to this room
+  const roomRelays = (relays || []).filter(r => (r.room || '').toLowerCase() === (room.name || '').toLowerCase());
+  const roomNodes = (nodes || []).filter(n => (n.room || '').toLowerCase() === (room.name || '').toLowerCase() || n.room_id === room.id);
+  const activeRelaysCount = roomRelays.filter(r => r.current_state).length;
+
+  let layoutData = {};
+  try {
+    layoutData = room.layout_json ? JSON.parse(room.layout_json) : {};
+  } catch {}
+
+  const defaultPositions = [
+    { x: 130, y: 130 },
+    { x: 330, y: 150 },
+    { x: 230, y: 220 },
+    { x: 100, y: 310 },
+    { x: 320, y: 320 },
+    { x: 230, y: 360 }
+  ];
+
+  container.innerHTML = `
+    <div class="homes-view-wrap">
+      <!-- Room Navigation Bar -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 14px; padding: 12px 18px;">
+        <div style="display: flex; align-items: center; gap: 14px;">
+          <button class="btn btn-secondary" onclick="closeRoomGuiCanvas()" style="padding: 6px 14px; font-weight: 600; font-size: 12px;">
+            ← Back to Rooms Grid
+          </button>
+          <div>
+            <div style="font-size: 11px; color: #94a3b8; display: flex; align-items: center; gap: 5px;">
+              <span>🏠 ${escapeHtml(home.name)}</span>
+              <span>›</span>
+              <span style="color: #38bdf8; font-weight: 600;">${escapeHtml(room.name)}</span>
+              <span>(${escapeHtml(room.floor || 'Ground')} Floor)</span>
+            </div>
+            <h2 style="margin: 2px 0 0 0; font-size: 18px; font-weight: 700; color: #ffffff; display: flex; align-items: center; gap: 8px;">
+              <span>🛋️ ${escapeHtml(room.name)}</span>
+              <span style="font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3);">
+                ${activeRelaysCount} Active Devices
+              </span>
+            </h2>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button id="btn-room-edit-pos" class="btn btn-secondary" style="font-size: 11px; padding: 6px 12px; border-color: ${isRoomLayoutEditMode ? '#f59e0b' : 'rgba(255,255,255,0.1)'}; background: ${isRoomLayoutEditMode ? 'rgba(245, 158, 11, 0.2)' : 'rgba(15, 23, 42, 0.6)'}; color: ${isRoomLayoutEditMode ? '#f59e0b' : '#cbd5e1'}; font-weight: 600;" onclick="toggleRoomLayoutEditMode(${room.id})">
+            <span>✏️</span> <span>${isRoomLayoutEditMode ? '💾 Save Positions' : 'Edit Positions'}</span>
+          </button>
+          <button class="btn btn-primary" style="font-size: 11px; padding: 6px 12px; background: #10b981; border: none;" onclick="handleToggleRoomAllAppliances(${room.id}, true)">
+            ⚡ All ON
+          </button>
+          <button class="btn btn-secondary" style="font-size: 11px; padding: 6px 12px;" onclick="handleToggleRoomAllAppliances(${room.id}, false)">
+            All OFF
+          </button>
+          <button class="btn btn-secondary" style="font-size: 11px; padding: 6px 12px;" onclick="showEditRoomModal(${room.id})">
+            ⚙ Configure
+          </button>
+        </div>
+      </div>
+
+      <!-- Main Room View Grid (8 cols Stage, 4 cols Remote Dock) -->
+      <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start;">
+        
+        <!-- 3D ISOMETRIC ROOM CANVAS -->
+        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.15); border-radius: 16px; padding: 18px; position: relative; min-height: 520px; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+          
+          <!-- Edit Notice -->
+          <div id="room-edit-notice" style="display: ${isRoomLayoutEditMode ? 'flex' : 'none'}; position: absolute; top: 14px; left: 14px; z-index: 40; padding: 6px 12px; border-radius: 8px; background: rgba(245, 158, 11, 0.2); border: 1px solid rgba(245, 158, 11, 0.4); color: #f59e0b; font-size: 11.5px; font-weight: 600; align-items: center; gap: 6px;">
+            <span>✋ Drag any appliance node on the floor to match your real physical room layout!</span>
+          </div>
+
+          <!-- Rotation & Zoom Controls -->
+          <div style="position: absolute; top: 14px; right: 14px; z-index: 40; display: flex; align-items: center; gap: 4px; background: rgba(11, 17, 32, 0.9); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 4px; font-size: 11px;">
+            <button onclick="rotateRoomStage(-10)" style="width: 26px; height: 26px; background: transparent; border: none; color: #94a3b8; cursor: pointer; border-radius: 4px;" title="Rotate Left">↺</button>
+            <button onclick="rotateRoomStage(10)" style="width: 26px; height: 26px; background: transparent; border: none; color: #94a3b8; cursor: pointer; border-radius: 4px;" title="Rotate Right">↻</button>
+            <button onclick="resetRoomStage()" style="padding: 2px 8px; background: transparent; border: none; color: #94a3b8; cursor: pointer; border-radius: 4px;">Reset</button>
+          </div>
+
+          <!-- Stage View -->
+          <div class="room-gui-canvas-wrap">
+            <div id="room-stage-element" class="room-iso-stage" style="transform: rotateX(56deg) rotateZ(${roomStageAngle}deg) scale(0.92);">
+              
+              <!-- Back Left Wall -->
+              <div class="room-wall-left">
+                <!-- Smart OLED TV -->
+                <div id="room-tv-screen" class="room-tv-glow" style="position: absolute; left: 100px; bottom: 20px; width: 140px; height: 80px; background: #000; border: 2px solid #334155; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer;" onclick="handleToggleTvAppliance('${room.name}')">
+                  <span style="font-size: 10px; font-weight: 700; color: #38bdf8; letter-spacing: 1px;">SMART OLED TV</span>
+                  <span id="room-tv-status" style="font-size: 9px; color: #10b981; margin-top: 4px;">● Active • HDMI 1</span>
+                  <span style="font-size: 8px; color: #64748b;">Living Room Media</span>
+                </div>
+                <!-- Wall Window -->
+                <div style="position: absolute; right: 50px; bottom: 30px; width: 90px; height: 90px; border: 1.5px solid rgba(56, 189, 248, 0.3); background: rgba(56, 189, 248, 0.05); border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #64748b; font-size: 11px;">
+                  🪟 Window
+                </div>
+              </div>
+
+              <!-- Back Right Wall -->
+              <div class="room-wall-right">
+                <!-- AC Unit -->
+                <div style="position: absolute; left: 40px; top: 40px; width: 110px; height: 42px; background: #f1f5f9; color: #0f172a; border-radius: 6px; padding: 6px 10px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 10px 20px rgba(0,0,0,0.5); cursor: pointer;" onclick="openRoomIrRemoteModal('${room.name}', 'AC')">
+                  <div style="font-size: 9.5px; font-weight: 800;">DAIKIN</div>
+                  <div style="font-size: 10px; font-weight: 800; background: #0284c7; color: #fff; padding: 2px 5px; border-radius: 4px;">22°C</div>
+                </div>
+              </div>
+
+              <!-- Floor Canvas -->
+              <div id="room-floor-canvas" class="room-iso-floor">
+                <div class="room-floor-grid"></div>
+
+                <!-- Decor: Modular Sofa -->
+                <div style="position: absolute; left: 80px; bottom: 60px; width: 170px; height: 80px; background: rgba(30, 41, 59, 0.85); border: 1.5px solid rgba(56, 189, 248, 0.2); border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #94a3b8; box-shadow: 0 10px 25px rgba(0,0,0,0.4);">
+                  🛋️ Modular Sofa
+                </div>
+                <!-- Decor: Coffee Table -->
+                <div style="position: absolute; left: 125px; bottom: 160px; width: 90px; height: 44px; background: rgba(120, 53, 15, 0.3); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #fde68a;">
+                  Coffee Table
+                </div>
+
+                <!-- Live Room Appliances Anchored on Floor Grid -->
+                ${roomRelays.map((r, idx) => {
+                  const defaultPos = defaultPositions[idx % defaultPositions.length];
+                  const savedPos = layoutData[r.channel_id] || { x: r.pos_x || defaultPos.x, y: r.pos_y || defaultPos.y };
+                  const isOn = Boolean(r.current_state);
+                  const isFan = (r.function && r.function.toLowerCase().includes('fan')) || (r.name && r.name.toLowerCase().includes('fan'));
+                  const isLight = !isFan && ((r.function && r.function.toLowerCase().includes('light')) || (r.name && r.name.toLowerCase().includes('light')) || (r.icon && r.icon.includes('light')));
+
+                  return `
+                    <div id="room-node-${r.node_id}-${r.channel_id}" 
+                         class="room-appliance-node" 
+                         style="left: ${savedPos.x}px; top: ${savedPos.y}px;"
+                         onpointerdown="handleRoomAppliancePointerDown(event, '${r.node_id}', ${r.channel_id}, ${room.id})"
+                         onclick="handleRoomApplianceClick(event, '${r.node_id}', ${r.channel_id}, ${isOn})">
+                      
+                      ${isLight ? `
+                        <div id="room-glow-${r.node_id}-${r.channel_id}" class="room-light-glow" style="opacity: ${isOn ? '1' : '0'};"></div>
+                      ` : ''}
+
+                      <div style="width: 42px; height: 42px; border-radius: 50%; background: #0b1120; border: 2px solid ${isOn ? (isLight ? '#f59e0b' : '#38bdf8') : 'rgba(255,255,255,0.15)'}; display: flex; align-items: center; justify-content: center; font-size: 19px; box-shadow: 0 8px 20px rgba(0,0,0,0.6); position: relative; z-index: 10;">
+                        <span id="room-icon-${r.node_id}-${r.channel_id}" class="${isFan && isOn ? 'room-fan-spin' : ''}">
+                          ${getIconForAppliance(r.name, r.function, r.icon)}
+                        </span>
+                      </div>
+
+                      <div style="margin-top: 4px; padding: 2px 7px; border-radius: 5px; background: rgba(11, 17, 32, 0.9); border: 1px solid rgba(255,255,255,0.1); font-size: 9.5px; font-weight: 700; color: ${isOn ? '#ffffff' : '#94a3b8'}; white-space: nowrap; text-align: center;">
+                        ${escapeHtml(r.name || 'Output ' + r.channel_id)}
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT PANEL: APPLIANCES SWITCHES & IN-ROOM IR REMOTE DOCK -->
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          
+          <!-- Appliances Quick Toggles Card -->
+          <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.15); border-radius: 14px; padding: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 8px;">
+              <span style="font-size: 12px; font-weight: 700; color: #ffffff; text-transform: uppercase; letter-spacing: 0.5px;">Room Appliances</span>
+              <span style="font-size: 11px; color: #38bdf8; font-weight: 600;">${roomRelays.length} Mapped</span>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              ${roomRelays.length === 0 ? `
+                <div style="padding: 16px; text-align: center; color: #64748b; font-size: 11.5px;">
+                  No relays mapped to '${escapeHtml(room.name)}' yet.<br>
+                  <a href="javascript:void(0)" onclick="openAssignNewPinModal()" style="color: #38bdf8;">+ Assign Pin to this Room</a>
+                </div>
+              ` : roomRelays.map(r => {
+                const isOn = Boolean(r.current_state);
+                return `
+                  <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; background: rgba(11, 17, 32, 0.7); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <span style="font-size: 16px;">${getIconForAppliance(r.name, r.function, r.icon)}</span>
+                      <div>
+                        <div style="font-size: 12px; font-weight: 600; color: #ffffff;">${escapeHtml(r.name)}</div>
+                        <div style="font-size: 10px; color: #64748b;">CH${r.channel_id} • Pin ${r.pin}</div>
+                      </div>
+                    </div>
+                    <button class="dash-relay-toggle-btn ${isOn ? 'btn-on' : 'btn-off'}" 
+                            style="width: 54px; padding: 4px 0;"
+                            onclick="toggleRealQuickRelay('${r.node_id}', ${r.channel_id}, ${isOn})">
+                      ${isOn ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+
+          <!-- IN-ROOM VIRTUAL IR REMOTE DOCK -->
+          <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(168, 85, 247, 0.25); border-radius: 14px; padding: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.4);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 8px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 16px;">📡</span>
+                <span style="font-size: 13px; font-weight: 700; color: #ffffff;">Room TV Remote (IR)</span>
+              </div>
+              <span style="font-size: 10px; color: #c084fc; font-family: monospace; background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.3); padding: 2px 6px; border-radius: 4px;">
+                CH11 (GPIO 13)
+              </span>
+            </div>
+
+            <!-- Virtual Remote Keypad -->
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <button class="btn btn-danger" style="width: 38px; height: 38px; border-radius: 50%; font-weight: 800; font-size: 14px; background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); color: #f87171;" onclick="handleDispatchRoomIrCommand('0xA90', 'TV Power')">
+                  ⏻
+                </button>
+                <div style="display: flex; gap: 6px;">
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 6px 10px;" onclick="handleDispatchRoomIrCommand('0xA50', 'TV Input Source')">Source</button>
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 6px 10px;" onclick="handleDispatchRoomIrCommand('0x290', 'Mute')">🔇</button>
+                </div>
+              </div>
+
+              <!-- D-Pad Navigation -->
+              <div style="background: #090e1a; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                <button class="btn btn-secondary" style="width: 60px; padding: 4px 0; font-size: 11px;" onclick="handleDispatchRoomIrCommand('0x2F0', 'Nav UP')">▲</button>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <button class="btn btn-secondary" style="width: 50px; padding: 6px 0; font-size: 11px;" onclick="handleDispatchRoomIrCommand('0x2D0', 'Nav LEFT')">◀</button>
+                  <button class="btn btn-primary" style="width: 50px; padding: 6px 0; font-size: 11px; font-weight: 700; background: #0284c7; border: none;" onclick="handleDispatchRoomIrCommand('0xA70', 'Select OK')">OK</button>
+                  <button class="btn btn-secondary" style="width: 50px; padding: 6px 0; font-size: 11px;" onclick="handleDispatchRoomIrCommand('0xCD0', 'Nav RIGHT')">▶</button>
+                </div>
+                <button class="btn btn-secondary" style="width: 60px; padding: 4px 0; font-size: 11px;" onclick="handleDispatchRoomIrCommand('0xAF0', 'Nav DOWN')">▼</button>
+              </div>
+
+              <!-- Volume & Channel Rockers -->
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                <div style="background: #090e1a; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 6px; display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                  <span style="font-size: 10px; font-weight: 700; color: #64748b;">VOL</span>
+                  <button class="btn btn-secondary" style="width: 100%; padding: 4px 0; font-weight: 700;" onclick="handleDispatchRoomIrCommand('0x490', 'Volume UP')">+</button>
+                  <button class="btn btn-secondary" style="width: 100%; padding: 4px 0; font-weight: 700;" onclick="handleDispatchRoomIrCommand('0xC90', 'Volume DOWN')">−</button>
+                </div>
+                <div style="background: #090e1a; border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 6px; display: flex; flex-direction: column; align-items: center; gap: 4px;">
+                  <span style="font-size: 10px; font-weight: 700; color: #64748b;">CH</span>
+                  <button class="btn btn-secondary" style="width: 100%; padding: 4px 0; font-weight: 700;" onclick="handleDispatchRoomIrCommand('0x090', 'Channel UP')">▲</button>
+                  <button class="btn btn-secondary" style="width: 100%; padding: 4px 0; font-weight: 700;" onclick="handleDispatchRoomIrCommand('0x890', 'Channel DOWN')">▼</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  `;
+}
+
+// Interactive Room Controls & Drag Handlers
+function rotateRoomStage(delta) {
+  roomStageAngle += delta;
+  const stage = document.getElementById('room-stage-element');
+  if (stage) stage.style.transform = `rotateX(56deg) rotateZ(${roomStageAngle}deg) scale(0.92)`;
+}
+
+function resetRoomStage() {
+  roomStageAngle = -42;
+  const stage = document.getElementById('room-stage-element');
+  if (stage) stage.style.transform = `rotateX(56deg) rotateZ(-42deg) scale(0.92)`;
+}
+
+async function toggleRoomLayoutEditMode(roomId) {
+  isRoomLayoutEditMode = !isRoomLayoutEditMode;
+  const notice = document.getElementById('room-edit-notice');
+  const btn = document.getElementById('btn-room-edit-pos');
+  if (notice) notice.style.display = isRoomLayoutEditMode ? 'flex' : 'none';
+
+  if (!isRoomLayoutEditMode) {
+    // Save all current positions to database
+    const room = cachedRoomsList.find(r => r.id === roomId);
+    if (!room) return;
+    const roomRelays = (cachedRelaysList || []).filter(r => (r.room || '').toLowerCase() === (room.name || '').toLowerCase());
+    const appliances = [];
+
+    roomRelays.forEach(r => {
+      const el = document.getElementById(`room-node-${r.node_id}-${r.channel_id}`);
+      if (el) {
+        const x = Math.round(parseFloat(el.style.left) || 120);
+        const y = Math.round(parseFloat(el.style.top) || 120);
+        appliances.push({ nodeId: r.node_id, channelId: r.channel_id, posX: x, posY: y });
+      }
+    });
+
+    try {
+      const res = await fetchWithAuth(`${API_BASE}/rooms/${roomId}/layout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appliances })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Appliance positions saved permanently to database!', 'success');
+      }
+    } catch (e) {
+      showToast('Error saving positions: ' + e.message, 'error');
+    }
+  }
+
+  if (btn) {
+    btn.innerHTML = `<span>✏️</span> <span>${isRoomLayoutEditMode ? '💾 Save Positions' : 'Edit Positions'}</span>`;
+  }
+}
+
+let activeDraggingRelay = null;
+let roomDragStartPos = { x: 0, y: 0 };
+let roomDragInitialOffset = { x: 0, y: 0 };
+
+function handleRoomAppliancePointerDown(e, nodeId, channelId, roomId) {
+  if (!isRoomLayoutEditMode) return;
+  activeDraggingRelay = { nodeId, channelId };
+  const el = document.getElementById(`room-node-${nodeId}-${channelId}`);
+  if (!el) return;
+  el.classList.add('dragging');
+  roomDragInitialOffset.x = parseFloat(el.style.left) || 0;
+  roomDragInitialOffset.y = parseFloat(el.style.top) || 0;
+  roomDragStartPos.x = e.clientX;
+  roomDragStartPos.y = e.clientY;
+
+  window.addEventListener('pointermove', onRoomAppliancePointerMove);
+  window.addEventListener('pointerup', onRoomAppliancePointerUp);
+}
+
+function onRoomAppliancePointerMove(e) {
+  if (!activeDraggingRelay) return;
+  const dx = (e.clientX - roomDragStartPos.x) * 1.25;
+  const dy = (e.clientY - roomDragStartPos.y) * 1.25;
+  const newX = Math.max(30, Math.min(410, roomDragInitialOffset.x + dx));
+  const newY = Math.max(30, Math.min(410, roomDragInitialOffset.y + dy));
+  const el = document.getElementById(`room-node-${activeDraggingRelay.nodeId}-${activeDraggingRelay.channelId}`);
+  if (el) {
+    el.style.left = newX + 'px';
+    el.style.top = newY + 'px';
+  }
+}
+
+function onRoomAppliancePointerUp() {
+  if (!activeDraggingRelay) return;
+  const el = document.getElementById(`room-node-${activeDraggingRelay.nodeId}-${activeDraggingRelay.channelId}`);
+  if (el) el.classList.remove('dragging');
+  window.removeEventListener('pointermove', onRoomAppliancePointerMove);
+  window.removeEventListener('pointerup', onRoomAppliancePointerUp);
+  activeDraggingRelay = null;
+}
+
+function handleRoomApplianceClick(e, nodeId, channelId, currentState) {
+  if (isRoomLayoutEditMode) return;
+  toggleRealQuickRelay(nodeId, channelId, currentState);
+}
+
+async function handleToggleRoomAllAppliances(roomId, state) {
+  const room = cachedRoomsList.find(r => r.id === roomId);
+  if (!room) return;
+  const roomRelays = (cachedRelaysList || []).filter(r => (r.room || '').toLowerCase() === (room.name || '').toLowerCase());
+  for (const r of roomRelays) {
+    toggleRealQuickRelay(r.node_id, r.channel_id, !state);
+  }
+  showToast(`All appliances in ${room.name} turned ${state ? 'ON' : 'OFF'}`, 'success');
+}
+
+function handleToggleTvAppliance(roomName) {
+  const tv = document.getElementById('room-tv-screen');
+  const txt = document.getElementById('room-tv-status');
+  if (tv && txt) {
+    const isNowOn = !tv.classList.contains('room-tv-glow');
+    if (isNowOn) {
+      tv.classList.add('room-tv-glow');
+      txt.textContent = '● Active • HDMI 1';
+      txt.style.color = '#10b981';
+      showToast('Smart TV Powered ON', 'success');
+    } else {
+      tv.classList.remove('room-tv-glow');
+      txt.textContent = '○ Standby';
+      txt.style.color = '#64748b';
+      showToast('Smart TV Powered OFF', 'info');
+    }
+  }
+}
+
+function openRoomIrRemoteModal(roomName, applianceType) {
+  showToast(`Opening ${applianceType} Remote for ${roomName}`, 'info');
+}
+
+async function handleDispatchRoomIrCommand(hexCode, label = 'IR Command') {
+  const targetNodeId = 'NODE-8C4F00565D72';
+  try {
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${targetNodeId}/ir/transmit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        protocol: 'NEC',
+        code: hexCode,
+        bits: 32
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`IR Transmitted: ${label} (${hexCode})`, 'success');
+    } else {
+      showToast(`IR Blast error: ${data.error || 'Failed'}`, 'error');
+    }
+  } catch (e) {
+    showToast(`IR request failed: ${e.message}`, 'error');
+  }
+}
+
+// --------------------------------------------------------------------------
 // ROOM MODALS: ADD, EDIT, DELETE
 // --------------------------------------------------------------------------
 
-function showAddRoomModal() {
+function showAddRoomModal(preselectedHomeId = null) {
   const homeOptions = (cachedHomesList || []).map(h => 
-    `<option value="${h.id}">${escapeHtml(h.name)}</option>`
+    `<option value="${h.id}" ${preselectedHomeId && Number(preselectedHomeId) === Number(h.id) ? 'selected' : ''}>${escapeHtml(h.name)}</option>`
   ).join('');
 
   const modalHtml = `

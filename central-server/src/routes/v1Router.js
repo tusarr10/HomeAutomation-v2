@@ -568,6 +568,29 @@ function createV1Router(nodeManager, db) {
     }
   });
 
+  router.post('/rooms/:roomId/layout', authenticateUser(db), (req, res) => {
+    try {
+      const roomId = Number(req.params.roomId);
+      const room = db.getRoomById(roomId);
+      if (!room) return res.status(404).json({ success: false, error: 'Room not found' });
+
+      const { layout, remotes, appliances } = req.body;
+      const updated = db.updateRoomLayout(roomId, layout, remotes);
+
+      if (Array.isArray(appliances)) {
+        for (const app of appliances) {
+          if (app.nodeId && app.channelId != null && app.posX != null && app.posY != null) {
+            db.saveRelayPosition(app.nodeId, app.channelId, app.posX, app.posY);
+          }
+        }
+      }
+
+      res.json({ success: true, room: updated });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  });
+
   router.get('/rooms/:roomId/members', authenticateUser(db), (req, res) => {
     try {
       const roomId = Number(req.params.roomId);
