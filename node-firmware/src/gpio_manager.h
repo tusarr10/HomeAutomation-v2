@@ -202,9 +202,9 @@ enum GpioInitialMode {
 struct GpioChannel {
     uint8_t id;
     uint8_t pin;
-    String name;
-    String room;
-    String function;
+    char name[32];
+    char room[24];
+    char function[28];
     bool activeLow;
     uint8_t initialMode;
     bool enabled;

@@ -3706,45 +3706,72 @@ void WebServerManager::registerApiRoutes() {
 
     // === DOWNLOAD CONFIGURATION & SETTINGS BACKUP (.JSON) ===
     _server.on("/api/backup/download", HTTP_GET, [this]() {
-        DynamicJsonDocument backupDoc(4096);
-        backupDoc["nodeId"] = ReceiverClient::getInstance().getConfig().nodeId;
-        backupDoc["nodeName"] = ReceiverClient::getInstance().getConfig().nodeName;
-        backupDoc["firmwareVersion"] = FIRMWARE_VERSION;
-        backupDoc["timestamp"] = AutomationEngine::getInstance().getFormattedTime();
-        backupDoc["epoch"] = (unsigned long)time(nullptr);
+        StaticJsonDocument<256> metaDoc;
+        metaDoc["nodeId"] = ReceiverClient::getInstance().getConfig().nodeId;
+        metaDoc["nodeName"] = ReceiverClient::getInstance().getConfig().nodeName;
+        metaDoc["firmwareVersion"] = FIRMWARE_VERSION;
+        metaDoc["timestamp"] = AutomationEngine::getInstance().getFormattedTime();
+        metaDoc["epoch"] = (unsigned long)time(nullptr);
 
-        DynamicJsonDocument subDoc(1024);
-        if (StorageManager::getInstance().loadJsonFile(FILE_SYSTEM_CONFIG, subDoc)) {
-            backupDoc["system"] = subDoc;
-        }
-        subDoc.clear();
-        if (StorageManager::getInstance().loadJsonFile(FILE_GPIO_CONFIG, subDoc)) {
-            backupDoc["gpio"] = subDoc;
-        }
-        subDoc.clear();
-        if (StorageManager::getInstance().loadJsonFile(FILE_RULES_CONFIG, subDoc)) {
-            backupDoc["rules"] = subDoc;
-        }
-        subDoc.clear();
-        if (StorageManager::getInstance().loadJsonFile(FILE_RECEIVER_CONFIG, subDoc)) {
-            backupDoc["receiver"] = subDoc;
-        }
-        subDoc.clear();
-        if (StorageManager::getInstance().loadJsonFile(FILE_WIFI_CONFIG, subDoc)) {
-            backupDoc["wifi"] = subDoc;
+        String header;
+        header.reserve(220);
+        serializeJson(metaDoc, header);
+        if (header.endsWith("}")) header.remove(header.length() - 1);
+
+        struct BackupPart { const char* key; const char* path; size_t size; bool valid; };
+        BackupPart parts[5] = {
+            {"system",   FILE_SYSTEM_CONFIG,   0, false},
+            {"gpio",     FILE_GPIO_CONFIG,     0, false},
+            {"rules",    FILE_RULES_CONFIG,    0, false},
+            {"receiver", FILE_RECEIVER_CONFIG, 0, false},
+            {"wifi",     FILE_WIFI_CONFIG,     0, false}
+        };
+
+        size_t totalLen = header.length() + 1;
+        for (int i = 0; i < 5; i++) {
+            if (LittleFS.exists(parts[i].path)) {
+                File f = LittleFS.open(parts[i].path, "r");
+                if (f && f.size() >= 2) {
+                    int c = f.read();
+                    if (c == '{' || c == '[') {
+                        parts[i].valid = true;
+                        parts[i].size = f.size();
+                        totalLen += 4 + strlen(parts[i].key) + parts[i].size;
+                    }
+                }
+                if (f) f.close();
+            }
         }
 
         String nodeMac = WiFi.macAddress();
         nodeMac.replace(":", "");
-        String filename = "smarthome_config_" + nodeMac + ".json";
+        String filename = String(F("smarthome_config_")) + nodeMac + F(".json");
 
-        _server.sendHeader(F("Content-Disposition"), "attachment; filename=\"" + filename + "\"");
-        _server.sendHeader(F("Content-Type"), F("application/json"));
+        _server.sendHeader(F("Content-Disposition"), String(F("attachment; filename=\"")) + filename + F("\""));
         _server.sendHeader(F("Cache-Control"), F("no-cache, no-store, must-revalidate"));
+        _server.setContentLength(totalLen);
+        _server.send(200, "application/json", String());
 
-        String out;
-        serializeJsonPretty(backupDoc, out);
-        _server.send(200, "application/json", out);
+        WiFiClient client = _server.client();
+        client.write((const uint8_t*)header.c_str(), header.length());
+
+        uint8_t buf[256];
+        for (int i = 0; i < 5; i++) {
+            if (!parts[i].valid) continue;
+            client.print(F(",\""));
+            client.print(parts[i].key);
+            client.print(F("\":"));
+            File f = LittleFS.open(parts[i].path, "r");
+            if (f) {
+                while (f.available()) {
+                    size_t n = f.read(buf, sizeof(buf));
+                    if (n > 0) client.write(buf, n);
+                    yield();
+                }
+                f.close();
+            }
+        }
+        client.write((const uint8_t*)"}", 1);
     });
 
     // === RESTORE CONFIGURATION FROM BACKUP (.JSON) ===
@@ -3818,7 +3845,7 @@ void WebServerManager::registerApiRoutes() {
         if (upload.status == UPLOAD_FILE_START) {
             String filename = upload.filename;
             if (!filename.startsWith("/")) filename = "/" + filename;
-            Serial.printf("[FS] File upload started: %s\n", filename.c_str());
+            Serial.printf_P(PSTR("[FS] File upload started: %s\n"), filename.c_str());
             if (LittleFS.exists(filename)) {
                 LittleFS.remove(filename);
             }
@@ -3831,7 +3858,7 @@ void WebServerManager::registerApiRoutes() {
             if (_fsUploadFile) {
                 _fsUploadFile.flush();
                 _fsUploadFile.close();
-                Serial.printf("[FS] File upload finished: %u bytes\n", (unsigned int)upload.totalSize);
+                Serial.printf_P(PSTR("[FS] File upload finished: %u bytes\n"), (unsigned int)upload.totalSize);
             }
         }
     });
@@ -3927,7 +3954,7 @@ void WebServerManager::registerApiRoutes() {
 
     _server.on("/api/fs/save-content", HTTP_POST, [this]() {
         if (!checkAuthOrReject()) return;
-        String body = _server.arg("plain");
+        const String& body = _server.arg("plain");
         if (body.length() > 6144) {
             sendJsonResponse(413, false, F("Payload exceeds 6KB limit"));
             return;
@@ -3944,8 +3971,9 @@ void WebServerManager::registerApiRoutes() {
             return;
         }
         if (!path.startsWith("/")) path = "/" + path;
-        String content = doc["content"] | "";
-        if (content.length() > 5120) {
+        const char* contentPtr = doc["content"] | "";
+        size_t contentLen = strlen(contentPtr);
+        if (contentLen > 5120) {
             sendJsonResponse(413, false, F("Content exceeds 5KB safety limit"));
             return;
         }
@@ -3959,7 +3987,7 @@ void WebServerManager::registerApiRoutes() {
             sendJsonResponse(500, false, F("Failed to open LittleFS file for writing"));
             return;
         }
-        size_t written = file.print(content);
+        size_t written = file.write((const uint8_t*)contentPtr, contentLen);
         file.flush();
         file.close();
         Logger::log(String(F("[FS] Saved file: ")) + path);
@@ -4070,9 +4098,9 @@ void WebServerManager::registerApiRoutes() {
                 resp["success"] = false;
                 resp["error"] = F("Channel not found");
             } else {
-                String name = doc.containsKey("name") ? doc["name"].as<String>() : existing->name;
-                String room = doc.containsKey("room") ? doc["room"].as<String>() : existing->room;
-                String fn = doc.containsKey("function") ? doc["function"].as<String>() : existing->function;
+                String name = doc.containsKey("name") ? doc["name"].as<String>() : String(existing->name);
+                String room = doc.containsKey("room") ? doc["room"].as<String>() : String(existing->room);
+                String fn = doc.containsKey("function") ? doc["function"].as<String>() : String(existing->function);
                 bool activeLow = doc.containsKey("activeLow") ? doc["activeLow"].as<bool>() : existing->activeLow;
                 uint8_t initMode = doc.containsKey("initialMode") ? doc["initialMode"].as<uint8_t>() : existing->initialMode;
                 bool enabled = doc.containsKey("enabled") ? doc["enabled"].as<bool>() : existing->enabled;

@@ -898,12 +898,12 @@ String WifiManager::getDefaultApSsid() {
     uint8_t mac[6];
     WiFi.macAddress(mac);
     char suffix[5];
-    snprintf(suffix, sizeof(suffix), "%02X%02X", mac[4], mac[5]);
+    snprintf_P(suffix, sizeof(suffix), PSTR("%02X%02X"), mac[4], mac[5]);
     if (mac[4] == 0 && mac[5] == 0 && mac[0] == 0 && mac[1] == 0) {
 #if defined(ESP8266)
-        snprintf(suffix, sizeof(suffix), "%04X", (uint16_t)(ESP.getChipId() & 0xFFFF));
+        snprintf_P(suffix, sizeof(suffix), PSTR("%04X"), (uint16_t)(ESP.getChipId() & 0xFFFF));
 #elif defined(ESP32)
-        snprintf(suffix, sizeof(suffix), "%04X", (uint16_t)(ESP.getEfuseMac() & 0xFFFF));
+        snprintf_P(suffix, sizeof(suffix), PSTR("%04X"), (uint16_t)(ESP.getEfuseMac() & 0xFFFF));
 #endif
     }
     return String(F(DEFAULT_AP_SSID)) + F("-") + String(suffix);
@@ -944,7 +944,7 @@ bool WifiManager::begin() {
     WiFi.setSleepMode(WIFI_NONE_SLEEP);
     delay(100);
 
-    Serial.printf("[WIFI] Initializing Wi-Fi. Mode: %u, Configured: %s\n",
+    Serial.printf_P(PSTR("[WIFI] Initializing Wi-Fi. Mode: %u, Configured: %s\n"),
                   _config.mode, _config.isConfigured ? "YES" : "NO");
 
     if (!_config.isConfigured || _config.mode == WIFI_MODE_AP_ONLY) {
@@ -977,7 +977,7 @@ void WifiManager::startAP() {
         _apActive = true;
         _dnsServer.stop();
         _dnsServer.start(DNS_PORT, "*", DEFAULT_AP_IP);
-        Serial.printf("[WIFI] Access Point '%s' started at IP: %s\n",
+        Serial.printf_P(PSTR("[WIFI] Access Point '%s' started at IP: %s\n"),
                       _config.apSsid.c_str(), WiFi.softAPIP().toString().c_str());
     } else {
         Serial.println(F("[WIFI] Failed to start Access Point!"));
@@ -1009,7 +1009,7 @@ void WifiManager::applyIpConfig() {
             } else {
                 WiFi.config(ip, gw, mask, gw);
             }
-            Serial.printf("[WIFI] Static IP configured: %s, GW: %s, Subnet: %s\n",
+            Serial.printf_P(PSTR("[WIFI] Static IP configured: %s, GW: %s, Subnet: %s\n"),
                           ip.toString().c_str(), gw.toString().c_str(), mask.toString().c_str());
             return;
         }
@@ -1024,7 +1024,7 @@ bool WifiManager::connectToRouter(const String& ssid, const String& password, bo
                                  const String& subnet, const String& dns1, const String& dns2) {
     if (ssid.length() == 0) return false;
 
-    Serial.printf("[WIFI] Connecting to router '%s' (IP Mode: %s)...\n",
+    Serial.printf_P(PSTR("[WIFI] Connecting to router '%s' (IP Mode: %s)...\n"),
                   ssid.c_str(), useStatic ? "Static IP" : "DHCP");
     _isConnecting = true;
     _connectStartTime = millis();
@@ -1095,7 +1095,7 @@ void WifiManager::loop() {
         if (WiFi.status() == WL_CONNECTED) {
             _isConnecting = false;
             _wifiConnectedTime = now;
-            Serial.printf("[WIFI] Connected to router! IP: %s, RSSI: %d dBm\n",
+            Serial.printf_P(PSTR("[WIFI] Connected to router! IP: %s, RSSI: %d dBm\n"),
                           WiFi.localIP().toString().c_str(), WiFi.RSSI());
 
             // Trigger immediate NTP synchronization with Indian / Google servers

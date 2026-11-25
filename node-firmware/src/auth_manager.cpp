@@ -178,7 +178,7 @@ bool AuthManager::checkCredentials(const String& username, const String& passwor
 
 // Standard compact SHA-256 implementation
 namespace {
-    static const uint32_t K256[64] = {
+    static const uint32_t K256[64] PROGMEM = {
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
         0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
         0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -229,7 +229,7 @@ String AuthManager::sha256(const String& input) {
 
         uint32_t a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
         for (int t = 0; t < 64; t++) {
-            uint32_t T1 = h + sig1(e) + ch(e, f, g) + K256[t] + W[t];
+            uint32_t T1 = h + sig1(e) + ch(e, f, g) + pgm_read_dword(&K256[t]) + W[t];
             uint32_t T2 = sig0(a) + maj(a, b, c);
             h = g;
             g = f;
@@ -373,7 +373,7 @@ bool AuthManager::login(const String& username, const String& password, String& 
         _currentSession.lastActivity = now;
         _currentSession.active = true;
         outToken = _currentSession.token;
-        Serial.printf("[AUTH] User '%s' logged in successfully (%s)\n",
+        Serial.printf_P(PSTR("[AUTH] User '%s' logged in successfully (%s)\n"),
                       username.c_str(), passMatches ? "Admin Password" : "Server Pairing Key");
         return true;
     }

@@ -37,7 +37,7 @@ IrManager& IrManager::getInstance() {
 
 bool IrManager::begin() {
     loadCodesFromStorage();
-    Serial.printf("[IR] Engine initialized. Loaded %u saved remote button(s).\n", (unsigned int)_buttons.size());
+    Serial.printf_P(PSTR("[IR] Engine initialized. Loaded %u saved remote button(s).\n"), (unsigned int)_buttons.size());
     return true;
 }
 
@@ -58,7 +58,7 @@ void IrManager::setReceiverPin(uint8_t pin) {
     newRecv->enableIRIn(true);
     _irrecvPtr = newRecv;
 
-    Serial.printf("[IR] Receiver active on GPIO%u (D%s)\n", _rxPin, (_rxPin == 14) ? "5" : String(_rxPin).c_str());
+    Serial.printf_P(PSTR("[IR] Receiver active on GPIO%u (D%s)\n"), _rxPin, (_rxPin == 14) ? "5" : String(_rxPin).c_str());
 }
 
 void IrManager::setTransmitterPin(uint8_t pin) {
@@ -75,7 +75,7 @@ void IrManager::setTransmitterPin(uint8_t pin) {
     newSend->begin();
     _irsendPtr = newSend;
 
-    Serial.printf("[IR] Transmitter active on GPIO%u (D%s)\n", _txPin, (_txPin == 13) ? "7" : String(_txPin).c_str());
+    Serial.printf_P(PSTR("[IR] Transmitter active on GPIO%u (D%s)\n"), _txPin, (_txPin == 13) ? "7" : String(_txPin).c_str());
 }
 
 void IrManager::loop() {
@@ -100,13 +100,13 @@ void IrManager::loop() {
             _lastCaptureTime = now;
             _hasCaptured = true;
 
-            Serial.printf("[IR] Intercepted %s Code: %s (%u bits)\n",
+            Serial.printf_P(PSTR("[IR] Intercepted %s Code: %s (%u bits)\n"),
                           _lastProtocol.c_str(), _lastHexCode.c_str(), _lastBits);
 
             if (_isTraining) {
                 _trainingSuccess = true;
                 _isTraining = false;
-                Serial.printf("[IR] Training captured: %s %s (%u bits)\n",
+                Serial.printf_P(PSTR("[IR] Training captured: %s %s (%u bits)\n"),
                               _lastProtocol.c_str(), _lastHexCode.c_str(), _lastBits);
             }
 #if !defined(TARGET_ESP01_1M) && !defined(TARGET_ESP01_PCF8574) && !defined(TARGET_NODEMCU_PCF8574)
@@ -130,7 +130,7 @@ void IrManager::startTraining(unsigned long timeoutSec) {
     _lastHexCode = "";
     _lastBits = 0;
     _trainingDeadline = millis() + (timeoutSec * 1000);
-    Serial.printf("[IR] Started training mode for %lu seconds...\n", timeoutSec);
+    Serial.printf_P(PSTR("[IR] Started training mode for %lu seconds...\n"), timeoutSec);
 }
 
 void IrManager::stopTraining() {
@@ -174,7 +174,7 @@ bool IrManager::transmit(uint8_t pin, const String& protocol, const String& hexC
     }
     uint64_t code = strtoull(cleanHex.c_str(), nullptr, 16);
 
-    Serial.printf("[IR] Blasting on Pin GPIO%u: Protocol=%s, Code=0x%s, Bits=%u, Repeat=%u\n",
+    Serial.printf_P(PSTR("[IR] Blasting on Pin GPIO%u: Protocol=%s, Code=0x%s, Bits=%u, Repeat=%u\n"),
                   _txPin, protocol.c_str(), cleanHex.c_str(), bits, repeat);
 
     if (protocol.equalsIgnoreCase("NEC")) {
