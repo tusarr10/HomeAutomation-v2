@@ -796,6 +796,8 @@ function updateRelaysViewTelemetrySilently(data) {
 
 // --- 1. OVERVIEW / RELAY SERVER DASHBOARD (v2.0) ---
 let quickRelaySelectedHome = 'all'; // 'all' or numeric homeId
+let quickRelayCurrentPage = 1;
+let quickRelayPageSize = 6; // default 6 tiles per page (2 columns x 3 rows)
 let dashFleetRelays = [];
 let dashFleetNodes = [];
 let dashFleetHomes = [];
@@ -887,14 +889,49 @@ function getApplianceIcon(iconKey) {
 
 function onQuickRelayHomeChange(val) {
   quickRelaySelectedHome = val;
+  quickRelayCurrentPage = 1;
+  refreshQuickRelaysView();
+  const opt = document.querySelector('#quick-relay-home-select option[value="all"]');
+  if (opt) {
+    opt.textContent = `All Homes (${getFilteredQuickRelays().length})`;
+  }
+}
+
+function onQuickRelayPageChange(newPage) {
+  const meta = getQuickRelayPaginationMeta();
+  let p = Number(newPage) || 1;
+  if (p < 1) p = 1;
+  if (p > meta.totalPages) p = meta.totalPages;
+  quickRelayCurrentPage = p;
+  refreshQuickRelaysView();
+}
+
+function onQuickRelayPageSizeChange(newSize) {
+  quickRelayPageSize = Number(newSize) || 6;
+  quickRelayCurrentPage = 1;
+  refreshQuickRelaysView();
+}
+
+function refreshQuickRelaysView() {
   const grid = document.getElementById('dash-quick-relays-grid');
   if (grid) {
     grid.innerHTML = renderQuickRelaysGridHtml();
   }
+  const pagination = document.getElementById('dash-quick-relays-pagination');
+  if (pagination) {
+    pagination.innerHTML = renderQuickRelaysPaginationHtml();
+  }
 }
 
-function renderQuickRelaysGridHtml() {
-  let list = dashFleetRelays.slice();
+function getFilteredQuickRelays() {
+  let list = (dashFleetRelays || []).slice();
+
+  // Exclude sensors so relay control strictly displays actuators & breakers
+  list = list.filter(r => {
+    if (typeof isSensorChannel === 'function' && isSensorChannel(r)) return false;
+    return true;
+  });
+
   if (quickRelaySelectedHome !== 'all') {
     const targetHomeId = Number(quickRelaySelectedHome);
     const targetHome = (dashFleetHomes || []).find(h => h.id === targetHomeId);
@@ -909,8 +946,38 @@ function renderQuickRelaysGridHtml() {
     });
   }
 
-  if (list.length === 0) {
-    return `<div style="grid-column: span 2; padding: 24px; text-align: center; color: #64748b; font-size: 12px;">
+  return list;
+}
+
+function getQuickRelayPaginationMeta() {
+  const filtered = getFilteredQuickRelays();
+  const totalItems = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / quickRelayPageSize));
+  if (quickRelayCurrentPage > totalPages) quickRelayCurrentPage = totalPages;
+  if (quickRelayCurrentPage < 1) quickRelayCurrentPage = 1;
+
+  const startIndex = (quickRelayCurrentPage - 1) * quickRelayPageSize;
+  const endIndex = Math.min(startIndex + quickRelayPageSize, totalItems);
+  const pageItems = filtered.slice(startIndex, endIndex);
+
+  return {
+    filtered,
+    totalItems,
+    totalPages,
+    startIndex,
+    endIndex,
+    pageItems,
+    currentPage: quickRelayCurrentPage,
+    pageSize: quickRelayPageSize
+  };
+}
+
+function renderQuickRelaysGridHtml() {
+  const meta = getQuickRelayPaginationMeta();
+  const list = meta.pageItems;
+
+  if (meta.totalItems === 0) {
+    return `<div style="grid-column: span 2; padding: 32px; text-align: center; color: #64748b; font-size: 12px;">
       No relay channels registered for this home.
     </div>`;
   }
@@ -946,6 +1013,54 @@ function renderQuickRelaysGridHtml() {
       </div>
     `;
   }).join('');
+}
+
+function renderQuickRelaysPaginationHtml() {
+  const meta = getQuickRelayPaginationMeta();
+  if (meta.totalItems === 0) return '';
+
+  const { currentPage, totalPages, totalItems, startIndex, endIndex, pageSize } = meta;
+
+  let pagePills = [];
+  for (let i = 1; i <= totalPages; i++) {
+    const isActive = i === currentPage;
+    pagePills.push(`
+      <button class="dash-page-pill ${isActive ? 'active' : ''}" 
+              onclick="onQuickRelayPageChange(${i})"
+              title="Page ${i}">
+        ${i}
+      </button>
+    `);
+  }
+
+  return `
+    <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 4px 4px 4px; font-size: 11.5px; color: #94a3b8;">
+      <div>
+        Showing <strong style="color: #f1f5f9;">${startIndex + 1}–${endIndex}</strong> of <strong style="color: #f1f5f9;">${totalItems}</strong> relays
+      </div>
+      <div style="display: flex; align-items: center; gap: 5px;">
+        <button class="dash-page-nav-btn" 
+                onclick="onQuickRelayPageChange(${currentPage - 1})" 
+                ${currentPage <= 1 ? 'disabled style="opacity: 0.35; cursor: not-allowed;"' : ''}>
+          ‹ Prev
+        </button>
+        ${pagePills.join('')}
+        <button class="dash-page-nav-btn" 
+                onclick="onQuickRelayPageChange(${currentPage + 1})" 
+                ${currentPage >= totalPages ? 'disabled style="opacity: 0.35; cursor: not-allowed;"' : ''}>
+          Next ›
+        </button>
+        <select onchange="onQuickRelayPageSizeChange(this.value)" 
+                class="filter-select"
+                style="padding: 2px 6px; font-size: 11px; background: #0f172a; color: #cbd5e1; border: 1px solid rgba(255,255,255,0.1); border-radius: 5px; cursor: pointer; margin-left: 6px;">
+          <option value="4" ${pageSize === 4 ? 'selected' : ''}>4 / page</option>
+          <option value="6" ${pageSize === 6 ? 'selected' : ''}>6 / page</option>
+          <option value="8" ${pageSize === 8 ? 'selected' : ''}>8 / page</option>
+          <option value="10" ${pageSize === 10 ? 'selected' : ''}>10 / page</option>
+        </select>
+      </div>
+    </div>
+  `;
 }
 
 async function toggleRealQuickRelay(nodeId, channelId, currentState) {
@@ -1095,6 +1210,11 @@ function updateOverviewInPlace(overviewRes, breakerRes, totalNodes, onlineNodes,
   (dashFleetRelays || []).forEach(r => {
     updateRelayUiState(r.node_id, r.channel_id, Boolean(r.current_state));
   });
+
+  const paginationEl = document.getElementById('dash-quick-relays-pagination');
+  if (paginationEl) {
+    paginationEl.innerHTML = renderQuickRelaysPaginationHtml();
+  }
 
   if (breakerRes) updateBreakerTilesSilently(breakerRes);
 }
@@ -1383,14 +1503,17 @@ async function loadOverview() {
               <div style="display: flex; align-items: center; gap: 6px;">
                 <label style="font-size: 11px; color: #94a3b8; font-weight: 500;">Home:</label>
                 <select id="quick-relay-home-select" class="filter-select" onchange="onQuickRelayHomeChange(this.value)" style="padding: 4px 10px; font-size: 11.5px; background: #0f172a; color: #f1f5f9; border: 1px solid #334155; border-radius: 6px; cursor: pointer;">
-                  <option value="all" ${quickRelaySelectedHome === 'all' ? 'selected' : ''}>All Homes (${dashFleetRelays.length})</option>
+                  <option value="all" ${quickRelaySelectedHome === 'all' ? 'selected' : ''}>All Homes (${getFilteredQuickRelays().length})</option>
                   ${dashFleetHomes.map(h => `<option value="${h.id}" ${quickRelaySelectedHome == h.id ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
                 </select>
               </div>
             </div>
 
-            <div id="dash-quick-relays-grid" class="dash-quick-relays-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 0;">
+            <div id="dash-quick-relays-grid" class="dash-quick-relays-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 0; min-height: 220px;">
               ${renderQuickRelaysGridHtml()}
+            </div>
+            <div id="dash-quick-relays-pagination" class="dash-quick-relays-pagination">
+              ${renderQuickRelaysPaginationHtml()}
             </div>
           </div>
         </div>
