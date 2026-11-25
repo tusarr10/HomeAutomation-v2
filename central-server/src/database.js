@@ -3211,6 +3211,15 @@ class FleetDatabase {
       WHERE node_id = ?
     `).run(Number(homeId), Number(roomId), room.name, nowEpoch, nodeId);
 
+    // Also update all relays of this node to belong to this room
+    try {
+      this.db.prepare(`
+        UPDATE relays 
+        SET room = ?
+        WHERE node_id = ?
+      `).run(room.name, nodeId);
+    } catch (_) {}
+
     this.logAudit(
       'NODE_ASSIGNED',
       'SYSTEM',
@@ -3218,6 +3227,14 @@ class FleetDatabase {
     );
 
     return this.getNode(nodeId);
+  }
+
+  setRelayChannelRoom(nodeId, channelId, roomName) {
+    this.db.prepare(`
+      UPDATE relays
+      SET room = ?
+      WHERE node_id = ? AND channel_id = ?
+    `).run(roomName, nodeId, Number(channelId));
   }
 
   moveNode(nodeId, newHomeId, newRoomId) {

@@ -591,6 +591,35 @@ function createV1Router(nodeManager, db) {
     }
   });
 
+  router.post('/rooms/:roomId/assign-devices', authenticateUser(db), (req, res) => {
+    try {
+      const roomId = Number(req.params.roomId);
+      const room = db.getRoomById(roomId);
+      if (!room) return res.status(404).json({ success: false, error: 'Room not found' });
+
+      const { nodeId, assignAllRelays, relayAssignments } = req.body;
+
+      // 1. Assign entire hardware node to this room
+      if (nodeId) {
+        db.assignNodeToRoom(nodeId, room.home_id, roomId);
+      }
+
+      // 2. Assign or unassign individual relay channels
+      if (Array.isArray(relayAssignments)) {
+        for (const item of relayAssignments) {
+          if (item.nodeId && item.channelId != null) {
+            const targetRoom = item.assigned ? room.name : 'General';
+            db.setRelayChannelRoom(item.nodeId, item.channelId, targetRoom);
+          }
+        }
+      }
+
+      res.json({ success: true, message: `Devices successfully assigned to room '${room.name}'` });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   router.get('/rooms/:roomId/members', authenticateUser(db), (req, res) => {
     try {
       const roomId = Number(req.params.roomId);
