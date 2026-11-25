@@ -2827,6 +2827,43 @@ input, textarea, select {
   border-color: #ffffff;
 }
 
+/* In-Edit-Mode Appliance Visuals */
+.room-appliance-node.in-edit-mode {
+  z-index: 40 !important;
+}
+.room-appliance-node.in-edit-mode .room-appliance-gear-btn {
+  opacity: 1 !important;
+  background: #f59e0b !important;
+  color: #0f172a !important;
+  border-color: #ffffff !important;
+  font-weight: 800;
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.9);
+  transform: scale(1.15);
+  animation: editPulse 2s infinite ease-in-out;
+}
+@keyframes editPulse {
+  0%, 100% { transform: scale(1.1); box-shadow: 0 0 8px rgba(245, 158, 11, 0.6); }
+  50% { transform: scale(1.25); box-shadow: 0 0 16px rgba(245, 158, 11, 1); }
+}
+.room-appliance-node.in-edit-mode [id^="room-bubble-"] {
+  border: 2px dashed #f59e0b !important;
+  box-shadow: 0 0 16px rgba(245, 158, 11, 0.45) !important;
+}
+.room-appliance-edit-tag {
+  display: none;
+  font-size: 8.5px;
+  font-weight: 700;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  padding: 1px 4px;
+  border-radius: 4px;
+  margin-left: 4px;
+}
+.in-edit-mode .room-appliance-edit-tag {
+  display: inline-block;
+}
+
 .icon-pill-choice {
   font-size: 20px;
   padding: 6px 10px;

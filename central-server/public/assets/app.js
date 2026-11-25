@@ -5242,7 +5242,7 @@ function renderActiveRoomGui(room, home, relays, nodes) {
           </button>
 
           <button id="btn-room-edit-pos" class="btn btn-secondary" style="font-size: 11px; padding: 6px 12px; border-color: ${isRoomLayoutEditMode ? '#f59e0b' : 'rgba(255,255,255,0.1)'}; background: ${isRoomLayoutEditMode ? 'rgba(245, 158, 11, 0.2)' : 'rgba(15, 23, 42, 0.6)'}; color: ${isRoomLayoutEditMode ? '#f59e0b' : '#cbd5e1'}; font-weight: 600;" onclick="toggleRoomLayoutEditMode(${room.id})">
-            <span>✏️</span> <span>${isRoomLayoutEditMode ? '💾 Save Positions' : 'Edit Positions'}</span>
+            <span>${isRoomLayoutEditMode ? '💾' : '✏️'}</span> <span>${isRoomLayoutEditMode ? 'Save & Done' : 'Edit Mode'}</span>
           </button>
           <button class="btn btn-primary" style="font-size: 11px; padding: 6px 12px; background: #10b981; border: none;" onclick="handleToggleRoomAllAppliances(${room.id}, true)">
             ⚡ All ON
@@ -5351,8 +5351,19 @@ function renderActiveRoomGui(room, home, relays, nodes) {
         <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.15); border-radius: 16px; padding: 18px; position: relative; min-height: 520px; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center;">
           
           <!-- Edit Notice -->
-          <div id="room-edit-notice" style="display: ${isRoomLayoutEditMode ? 'flex' : 'none'}; position: absolute; top: 14px; left: 14px; z-index: 40; padding: 6px 12px; border-radius: 8px; background: rgba(245, 158, 11, 0.2); border: 1px solid rgba(245, 158, 11, 0.4); color: #f59e0b; font-size: 11.5px; font-weight: 600; align-items: center; gap: 6px;">
-            <span>✋ Drag any appliance node on the floor to match your real physical room layout!</span>
+          <div id="room-edit-notice" style="display: ${isRoomLayoutEditMode ? 'flex' : 'none'}; position: absolute; top: 14px; left: 14px; right: 14px; z-index: 45; padding: 8px 14px; border-radius: 8px; background: rgba(15, 23, 42, 0.95); border: 1px solid rgba(245, 158, 11, 0.5); color: #f59e0b; font-size: 11.5px; font-weight: 600; align-items: center; justify-content: space-between; box-shadow: 0 8px 25px rgba(0,0,0,0.6);">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 15px;">✏️</span>
+              <span><strong>Edit Mode Active:</strong> Click any appliance to customize icon, type & relay • Drag to move</span>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-primary" style="font-size: 11px; padding: 4px 10px; background: #0284c7; border: none; font-weight: 700;" onclick="openAddRoomApplianceModal(${room.id})">
+                + Add Appliance
+              </button>
+              <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 12px; border-color: #f59e0b; color: #f59e0b; font-weight: 700; background: rgba(245, 158, 11, 0.15);" onclick="toggleRoomLayoutEditMode(${room.id})">
+                💾 Save & Done
+              </button>
+            </div>
           </div>
 
           <!-- 3D Rotation Controls (Visible in 3D Mode only) -->
@@ -5616,11 +5627,11 @@ function renderRoomAppliancesOnFloor(roomRelays, layoutData, defaultPositions, r
 
     return `
       <div id="room-node-${r.node_id}-${r.channel_id}" 
-           class="room-appliance-node" 
+           class="room-appliance-node ${isRoomLayoutEditMode ? 'in-edit-mode' : ''}" 
            data-state="${isOn ? '1' : '0'}"
            style="left: ${savedPos.x}px; top: ${savedPos.y}px;"
            onpointerdown="handleRoomAppliancePointerDown(event, '${r.node_id}', ${r.channel_id}, ${roomId})"
-           onclick="handleRoomApplianceClick(event, '${r.node_id}', ${r.channel_id}, ${isOn})"
+           onclick="handleRoomApplianceClick(event, '${r.node_id}', ${r.channel_id}, ${isOn}, ${roomId})"
            oncontextmenu="event.preventDefault(); openEditRoomApplianceModal('${r.node_id}', ${r.channel_id}, ${roomId})">
         
         <button class="room-appliance-gear-btn" 
@@ -5644,6 +5655,7 @@ function renderRoomAppliancesOnFloor(roomRelays, layoutData, defaultPositions, r
 
         <div id="room-lbl-${r.node_id}-${r.channel_id}" style="margin-top: 4px; padding: 2px 7px; border-radius: 5px; background: rgba(11, 17, 32, 0.92); border: 1px solid ${isOn ? 'rgba(56, 189, 248, 0.4)' : 'rgba(255,255,255,0.1)'}; font-size: 9.5px; font-weight: 700; color: ${isOn ? '#ffffff' : '#94a3b8'}; white-space: nowrap; text-align: center;">
           ${escapeHtml(r.name || 'Output ' + r.channel_id)}
+          <span class="room-appliance-edit-tag">✏️ Edit</span>
         </div>
       </div>
     `;
@@ -6241,6 +6253,18 @@ async function toggleRoomLayoutEditMode(roomId) {
   const btn = document.getElementById('btn-room-edit-pos');
   if (notice) notice.style.display = isRoomLayoutEditMode ? 'flex' : 'none';
 
+  // Toggle in-edit-mode class on all floor appliance nodes
+  document.querySelectorAll('.room-appliance-node').forEach(node => {
+    node.classList.toggle('in-edit-mode', isRoomLayoutEditMode);
+  });
+
+  if (btn) {
+    btn.style.borderColor = isRoomLayoutEditMode ? '#f59e0b' : 'rgba(255,255,255,0.1)';
+    btn.style.background = isRoomLayoutEditMode ? 'rgba(245, 158, 11, 0.2)' : 'rgba(15, 23, 42, 0.6)';
+    btn.style.color = isRoomLayoutEditMode ? '#f59e0b' : '#cbd5e1';
+    btn.innerHTML = `<span>${isRoomLayoutEditMode ? '💾' : '✏️'}</span> <span>${isRoomLayoutEditMode ? 'Save & Done' : 'Edit Mode'}</span>`;
+  }
+
   if (!isRoomLayoutEditMode) {
     // Save all current positions to database
     const room = cachedRoomsList.find(r => r.id === roomId);
@@ -6271,19 +6295,17 @@ async function toggleRoomLayoutEditMode(roomId) {
       showToast('Error saving positions: ' + e.message, 'error');
     }
   }
-
-  if (btn) {
-    btn.innerHTML = `<span>✏️</span> <span>${isRoomLayoutEditMode ? '💾 Save Positions' : 'Edit Positions'}</span>`;
-  }
 }
 
 let activeDraggingRelay = null;
 let roomDragStartPos = { x: 0, y: 0 };
 let roomDragInitialOffset = { x: 0, y: 0 };
+let roomDragMoved = false;
 
 function handleRoomAppliancePointerDown(e, nodeId, channelId, roomId) {
   if (!isRoomLayoutEditMode) return;
-  activeDraggingRelay = { nodeId, channelId };
+  activeDraggingRelay = { nodeId, channelId, roomId };
+  roomDragMoved = false;
   const el = document.getElementById(`room-node-${nodeId}-${channelId}`);
   if (!el) return;
   el.classList.add('dragging');
@@ -6302,6 +6324,9 @@ function onRoomAppliancePointerMove(e) {
   const mult = is2D ? 1.0 : 1.25;
   const dx = (e.clientX - roomDragStartPos.x) * mult;
   const dy = (e.clientY - roomDragStartPos.y) * mult;
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+    roomDragMoved = true;
+  }
   const maxX = is2D ? 470 : 410;
   const maxY = is2D ? 400 : 410;
   const newX = Math.max(30, Math.min(maxX, roomDragInitialOffset.x + dx));
@@ -6322,8 +6347,12 @@ function onRoomAppliancePointerUp() {
   activeDraggingRelay = null;
 }
 
-function handleRoomApplianceClick(e, nodeId, channelId, currentState) {
-  if (isRoomLayoutEditMode) return;
+function handleRoomApplianceClick(e, nodeId, channelId, currentState, roomId) {
+  if (isRoomLayoutEditMode) {
+    if (roomDragMoved) return; // Ignore if user dragged to move
+    openEditRoomApplianceModal(nodeId, channelId, roomId || activeViewingRoomId);
+    return;
+  }
   toggleRealQuickRelay(nodeId, channelId, currentState);
 }
 
