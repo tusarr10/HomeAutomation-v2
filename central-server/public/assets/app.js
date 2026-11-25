@@ -5502,7 +5502,7 @@ function renderActiveRoomGui(room, home, relays, nodes) {
                 <span style="font-size: 11px; color: #38bdf8; font-weight: 600; margin-left: 6px;">(${roomRelays.length})</span>
               </div>
               <div style="display: flex; gap: 6px;">
-                <button class="btn btn-secondary" style="font-size: 10px; padding: 3px 8px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.35); font-weight: 600;" onclick="openAddRoomApplianceModal(${room.id})">
+                <button id="btn-right-panel-add-appliance" class="btn btn-secondary" style="display: ${isRoomLayoutEditMode ? 'inline-block' : 'none'}; font-size: 10px; padding: 3px 8px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.35); font-weight: 600;" onclick="openAddRoomApplianceModal(${room.id})">
                   + Add Appliance
                 </button>
                 <button class="btn btn-secondary" style="font-size: 10px; padding: 3px 8px; color: #94a3b8; border-color: rgba(255, 255, 255, 0.15);" onclick="openAssignHardwareToRoomModal(${room.id})">
@@ -5537,7 +5537,7 @@ function renderActiveRoomGui(room, home, relays, nodes) {
                       </div>
                     </div>
                     <div style="display: flex; align-items: center; gap: 6px;">
-                      <button class="btn btn-secondary" style="padding: 3px 7px; font-size: 11px; color: #94a3b8; border-color: rgba(255,255,255,0.15);" title="Edit Appliance Icon, Type & Relay" onclick="openEditRoomApplianceModal('${r.node_id}', ${r.channel_id}, ${room.id})">
+                      <button class="btn btn-secondary room-appliance-edit-action-btn" style="display: ${isRoomLayoutEditMode ? 'inline-block' : 'none'}; padding: 3px 7px; font-size: 11px; color: #f59e0b; border-color: rgba(245, 158, 11, 0.4);" title="Edit Appliance Icon, Type & Relay" onclick="openEditRoomApplianceModal('${r.node_id}', ${r.channel_id}, ${room.id})">
                         ✏️
                       </button>
                       ${isSensor ? `
@@ -6257,6 +6257,13 @@ async function toggleRoomLayoutEditMode(roomId) {
   document.querySelectorAll('.room-appliance-node').forEach(node => {
     node.classList.toggle('in-edit-mode', isRoomLayoutEditMode);
   });
+
+  // Toggle edit action buttons in right panel list
+  document.querySelectorAll('.room-appliance-edit-action-btn').forEach(b => {
+    b.style.display = isRoomLayoutEditMode ? 'inline-block' : 'none';
+  });
+  const rightPanelAddBtn = document.getElementById('btn-right-panel-add-appliance');
+  if (rightPanelAddBtn) rightPanelAddBtn.style.display = isRoomLayoutEditMode ? 'inline-block' : 'none';
 
   if (btn) {
     btn.style.borderColor = isRoomLayoutEditMode ? '#f59e0b' : 'rgba(255,255,255,0.1)';
