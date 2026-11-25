@@ -935,6 +935,10 @@ class FleetDatabase {
     return activeChannelIds.length;
   }
 
+  updateNodeChannels(nodeId, channels) {
+    return this.syncNodeRelays(nodeId, channels, false);
+  }
+
   touchNode(nodeId) {
     const nowEpoch = Date.now() / 1000;
     const nowStr = new Date().toISOString();
@@ -994,8 +998,27 @@ class FleetDatabase {
     const pinMode = isSensor ? 'SENSOR_INPUT' : (ch.pin_mode || 'RELAY_OUTPUT');
     const sensorType = isSensor ? (ch.type || ch.sensor_type || ch.function || 'Sensor') : null;
     const sensorUnit = isSensor ? (ch.unit || ch.sensor_unit || '') : null;
-    const sensorVal = (isSensor && ch.value !== undefined) ? Number(ch.value) : null;
-    const sensorStr = (isSensor && ch.value !== undefined) ? String(ch.value) : null;
+    let sensorVal = (isSensor && ch.value !== undefined) ? Number(ch.value) : null;
+    let sensorStr = (isSensor && ch.value !== undefined) ? String(ch.value) : null;
+    let sensorMetaJson = null;
+
+    if (isSensor && (ch.dcVoltage !== undefined || ch.acRms !== undefined || ch.rawAdc !== undefined || ch.protocol || ch.code)) {
+      const dc = ch.dcVoltage !== undefined ? Number(ch.dcVoltage) : (ch.value !== undefined ? Number(ch.value) : 0);
+      const rms = Number(ch.acRms ?? 0);
+      const raw = ch.rawAdc !== undefined ? Number(ch.rawAdc) : null;
+      if (ch.type === 'VOLTAGE_ADC' || (sensorType && sensorType.includes('ADC')) || func.toLowerCase().includes('voltage')) {
+        sensorStr = `DC ${dc.toFixed(3)}V | AC ${rms.toFixed(3)}V (ADC ${raw ?? 0})`;
+      } else if (ch.code || ch.strValue) {
+        sensorStr = ch.strValue || ch.code;
+      }
+      sensorMetaJson = JSON.stringify({
+        dcVoltage: ch.dcVoltage,
+        acRms: ch.acRms,
+        rawAdc: ch.rawAdc,
+        protocol: ch.protocol,
+        code: ch.code
+      });
+    }
 
     const existingRelay = this.db.prepare('SELECT current_state, name, room, pin, function, icon, pin_mode, active_low, enabled FROM relays WHERE node_id = ? AND channel_id = ?').get(nodeId, chId);
 
@@ -1023,7 +1046,8 @@ class FleetDatabase {
           current_state = ?, requested_state = ?, is_syncing = 0, last_changed_at = ?,
           pin_mode = ?, sensor_type = ?, sensor_unit = ?,
           last_sensor_value = COALESCE(?, last_sensor_value),
-          last_sensor_str = COALESCE(?, last_sensor_str)
+          last_sensor_str = COALESCE(?, last_sensor_str),
+          sensor_config_json = CASE WHEN ? IS NOT NULL THEN ? ELSE sensor_config_json END
         WHERE node_id = ? AND channel_id = ?
       `);
       updateStmt.run(
@@ -1032,6 +1056,7 @@ class FleetDatabase {
         state, state, nowStr,
         pinMode, sensorType, sensorUnit,
         sensorVal, sensorStr,
+        sensorMetaJson, sensorMetaJson,
         nodeId, chId
       );
     } else {
@@ -1040,13 +1065,13 @@ class FleetDatabase {
         INSERT INTO relays (
           node_id, channel_id, pin, name, room, function, icon, active_low, initial_mode,
           enabled, current_state, requested_state, is_syncing, last_changed_at,
-          pin_mode, sensor_type, sensor_unit, last_sensor_value, last_sensor_str
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+          pin_mode, sensor_type, sensor_unit, last_sensor_value, last_sensor_str, sensor_config_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
       `);
       insertStmt.run(
         nodeId, chId, pin, name, room, func, finalIcon, activeLow, initialMode,
         enabled, state, state, nowStr,
-        pinMode, sensorType, sensorUnit, sensorVal, sensorStr
+        pinMode, sensorType, sensorUnit, sensorVal, sensorStr, sensorMetaJson || '{}'
       );
     }
 
@@ -1426,6 +1451,7 @@ class FleetDatabase {
         sensor_type: r.sensor_type || null,
         sensor_unit: r.sensor_unit || null,
         sensor_config: sensorCfg,
+        sensor_meta: sensorCfg,
         last_sensor_value: r.last_sensor_value,
         last_sensor_str: r.last_sensor_str,
         active_low: Boolean(r.active_low),
@@ -1476,6 +1502,7 @@ class FleetDatabase {
       sensor_type: row.sensor_type || null,
       sensor_unit: row.sensor_unit || null,
       sensor_config: sensorCfg,
+      sensor_meta: sensorCfg,
       last_sensor_value: row.last_sensor_value,
       last_sensor_str: row.last_sensor_str,
       active_low: Boolean(row.active_low),
@@ -1488,19 +1515,34 @@ class FleetDatabase {
     };
   }
 
-  updatePinSensorReading(nodeId, channelId, value, strValue = null) {
+  updatePinSensorReading(nodeId, channelId, value, strValue = null, meta = null) {
     const nowStr = new Date().toISOString();
     try {
-      this.db.prepare(`
-        UPDATE relays SET
-          last_sensor_value = ?,
-          last_sensor_str = ?,
-          last_changed_at = ?
-        WHERE node_id = ? AND (channel_id = ? OR pin = ?)
-      `).run(Number(value) || 0, strValue ? String(strValue) : String(value), nowStr, nodeId, Number(channelId) || 0, Number(channelId) || 0);
+      if (meta) {
+        this.db.prepare(`
+          UPDATE relays SET
+            last_sensor_value = ?,
+            last_sensor_str = ?,
+            sensor_config_json = ?,
+            last_changed_at = ?
+          WHERE node_id = ? AND (channel_id = ? OR pin = ?)
+        `).run(Number(value) || 0, strValue ? String(strValue) : String(value), typeof meta === 'object' ? JSON.stringify(meta) : String(meta), nowStr, nodeId, Number(channelId) || 0, Number(channelId) || 0);
+      } else {
+        this.db.prepare(`
+          UPDATE relays SET
+            last_sensor_value = ?,
+            last_sensor_str = ?,
+            last_changed_at = ?
+          WHERE node_id = ? AND (channel_id = ? OR pin = ?)
+        `).run(Number(value) || 0, strValue ? String(strValue) : String(value), nowStr, nodeId, Number(channelId) || 0, Number(channelId) || 0);
+      }
     } catch (e) {
       console.warn('[Database] updatePinSensorReading error:', e.message);
     }
+  }
+
+  updateSensorReading(nodeId, channelId, { value = 0, strValue = null, unit = '', meta = null } = {}) {
+    this.updatePinSensorReading(nodeId, channelId, value, strValue, meta);
   }
 
   updateRelayState(nodeId, channelId, state) {

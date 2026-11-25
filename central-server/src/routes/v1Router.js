@@ -1421,13 +1421,14 @@ function createV1Router(nodeManager, db) {
       const updatedRelays = db.getRelays();
       res.json({
         success: true,
+        status: 'ok',
         message: 'Synchronized hardware GPIO pins with nodes',
         totalRelays: updatedRelays.length,
         results,
         relays: updatedRelays
       });
     } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
+      res.status(500).json({ success: false, status: 'error', error: err.message });
     }
   });
 
@@ -1448,6 +1449,7 @@ function createV1Router(nodeManager, db) {
       const catalog = nodeManager.getHardwarePinCatalog(req.params.nodeId);
       res.json({
         success: true,
+        status: 'ok',
         message: `Synchronized ${result.count} pins from node ${req.params.nodeId}`,
         nodeId: req.params.nodeId,
         count: result.count,
@@ -1455,7 +1457,7 @@ function createV1Router(nodeManager, db) {
         relays: catalog ? catalog.relays : []
       });
     } catch (err) {
-      res.status(500).json({ success: false, error: err.message });
+      res.status(500).json({ success: false, status: 'error', error: err.message });
     }
   });
 
@@ -2418,6 +2420,22 @@ function createV1Router(nodeManager, db) {
 
       db.logAudit('IR_TRANSMIT', nodeId, `Transmitted IR code ${code} (${protocol})`);
       res.json({ success: true, message: `IR transmission dispatched: ${code}`, result });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // --- Live Sensor Read from Node ---
+  router.post('/nodes/:nodeId/read-sensor', requirePermission(db, 'devices:control'), async (req, res) => {
+    try {
+      const { nodeId } = req.params;
+      const { channelId, id } = req.body;
+      const targetId = Number(channelId ?? id ?? 0);
+      const result = await nodeManager.dispatchCommand(nodeId, {
+        action: 'read_sensor',
+        id: targetId
+      }, req.user);
+      res.json({ success: true, result });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
     }

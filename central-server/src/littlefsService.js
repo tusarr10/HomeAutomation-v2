@@ -310,10 +310,39 @@ class LittlefsService {
       }
     }
 
-    const dir = path.dirname(cleanPath);
-    const filename = path.basename(cleanPath);
+    const { node, ip, authHeader } = await this.getNodeIp(nodeId);
+    const authHeaders = this.nodeManager ? this.nodeManager.getNodeAuthHeaders(node) : {};
+    let directSaved = false;
 
-    await this.uploadFileToNode(nodeId, contentBuffer, filename, dir);
+    // Fast-path: Native direct POST /api/fs/save-content on node (<= 5KB)
+    try {
+      const payload = JSON.stringify({ path: cleanPath, content: contentString });
+      const headers = {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'Authorization': authHeader,
+        ...authHeaders
+      };
+
+      const res = await fetch(`http://${ip}/api/fs/save-content`, {
+        method: 'POST',
+        headers,
+        body: payload,
+        signal: AbortSignal.timeout(4000)
+      });
+
+      if (res.ok) {
+        directSaved = true;
+      }
+    } catch (directErr) {
+      // Fall through to multipart upload fallback
+    }
+
+    if (!directSaved) {
+      const dir = path.dirname(cleanPath);
+      const filename = path.basename(cleanPath);
+      await this.uploadFileToNode(nodeId, contentBuffer, filename, dir);
+    }
 
     // Auto-reconcile database if this was a known config file
     if (cleanPath === '/config/gpio.json') {
@@ -332,6 +361,7 @@ class LittlefsService {
       success: true,
       path: cleanPath,
       size: contentBuffer.length,
+      directFastPath: directSaved,
       message: `File '${cleanPath}' successfully saved to LittleFS`
     };
   }

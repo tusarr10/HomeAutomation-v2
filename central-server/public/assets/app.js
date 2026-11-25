@@ -616,10 +616,15 @@ function handleLiveEvent(type, data) {
   } else if (type === "node_status") {
     // Zero-flicker targeted node status update
     updateNodeUiStatus(data.node_id, data.is_online, data.rssi);
-  } else if (type === "telemetry_update" || type === "poll_cycle_completed") {
+  } else if (type === "telemetry_update" || type === "poll_cycle_completed" || type === "sensor_event" || type === "sensor_telemetry") {
     if (currentView === "telemetry") appendTelemetryLog(data);
     // Silent in-place metrics refresh without wiping DOM
     if (currentView === "overview") updateOverviewTelemetrySilently();
+    // Real-time IR / Sensor Event dispatch
+    const sEvt = data.sensorEvent || (type === "sensor_event" ? data : null);
+    if (sEvt && (sEvt.sensor_type === "IR_RECEIVER" || sEvt.ir_code)) {
+      handleRealtimeIrEvent(data.nodeId || data.node_id, sEvt);
+    }
   } else if (type === "node_added" || type === "node_deleted") {
     if (currentView === "nodes") loadNodes();
     else if (currentView === "overview") loadOverview();
@@ -660,6 +665,34 @@ function openModal(htmlContent) {
 function closeModal() {
   const overlay = document.getElementById("global-modal-overlay");
   if (overlay) overlay.style.display = "none";
+}
+
+function handleRealtimeIrEvent(nodeId, evt) {
+  const code = evt.ir_code || evt.code;
+  const protocol = evt.ir_protocol || evt.protocol || 'NEC';
+  if (!code) return;
+
+  // Auto-populate active IR Learning modal if open
+  const statusBox = document.getElementById("ir-train-status-box");
+  const saveContainer = document.getElementById("ir-save-container");
+  const btnStart = document.getElementById("btn-start-ir-train");
+
+  if (statusBox) {
+    if (typeof stopIrTrainingTimer === 'function') stopIrTrainingTimer();
+    if (btnStart) btnStart.disabled = false;
+    capturedIrData = {
+      protocol: protocol,
+      code: code,
+      bits: evt.bits || 32
+    };
+    statusBox.innerHTML = `
+      <div style="color: #10b981; font-weight: 600; font-size: 13px;">✅ IR Code Captured Instantly!</div>
+      <div style="font-family: monospace; color: #fff; font-size: 14px; margin-top: 4px;">${escapeHtml(code)} <span style="font-size: 11px; color: #38bdf8;">(${protocol})</span></div>
+    `;
+    if (saveContainer) saveContainer.style.display = 'flex';
+  }
+
+  showToast(`📡 IR Signal Received: ${code} (${protocol}) from ${nodeId}`, 'info');
 }
 
 // --- 1. OVERVIEW / RELAY SERVER DASHBOARD (v2.0) ---
@@ -3224,7 +3257,7 @@ function renderRelaysPinMatrixView(nodes, relays, homes = []) {
       const isSensor = r.pin_mode === 'SENSOR_INPUT' || r.function === 'Sensor' || Boolean(r.sensor_type);
       if (matrixFilterRole === 'relay' && isSensor) return false;
       if (matrixFilterRole === 'sensor' && !isSensor) return false;
-      if (matrixFilterRole === 'voltage' && r.sensor_type !== 'VOLTAGE' && r.function !== 'Voltage Sensor') return false;
+      if (matrixFilterRole === 'voltage' && r.sensor_type !== 'VOLTAGE' && r.sensor_type !== 'VOLTAGE_ADC' && !r.function?.toLowerCase().includes('voltage')) return false;
       if (matrixFilterRole === 'ir' && r.sensor_type !== 'IR_RECEIVER' && r.sensor_type !== 'IR_TRANSMITTER' && !r.function?.includes('IR')) return false;
       if (matrixFilterRole === 'motion' && r.sensor_type !== 'PIR_MOTION' && r.sensor_type !== 'DOOR_WINDOW' && !r.function?.includes('Motion')) return false;
       if (matrixFilterRole === 'temp' && r.sensor_type !== 'TEMP_HUMIDITY' && !r.function?.includes('Temp')) return false;
@@ -3342,8 +3375,9 @@ function renderRelaysPinMatrixView(nodes, relays, homes = []) {
 
             // Role Badge styling
             let roleBadgeHtml = '';
-            if (r.sensor_type === 'VOLTAGE' || r.function === 'Voltage Sensor') {
-              roleBadgeHtml = '<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(245, 158, 11, 0.15); color: #f59e0b; font-weight: 700; border: 1px solid rgba(245, 158, 11, 0.3);">📊 Voltage Sensor</span>';
+            if (r.sensor_type === 'VOLTAGE' || r.sensor_type === 'VOLTAGE_ADC' || r.function?.toLowerCase().includes('voltage')) {
+              const isAc = r.function?.toLowerCase().includes('ac') || r.function?.toLowerCase().includes('rms');
+              roleBadgeHtml = `<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(245, 158, 11, 0.15); color: #f59e0b; font-weight: 700; border: 1px solid rgba(245, 158, 11, 0.3);">📊 ${isAc ? 'AC RMS' : 'DC'} Voltage</span>`;
             } else if (r.sensor_type === 'IR_RECEIVER' || r.function === 'IR Receiver') {
               roleBadgeHtml = '<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(168, 85, 247, 0.15); color: #c084fc; font-weight: 700; border: 1px solid rgba(168, 85, 247, 0.3);">📡 IR Receiver</span>';
             } else if (r.sensor_type === 'IR_TRANSMITTER' || r.function === 'IR Transmitter') {
@@ -3373,9 +3407,23 @@ function renderRelaysPinMatrixView(nodes, relays, homes = []) {
             // Live State / Reading element
             let liveControlHtml = '';
             if (isSensor) {
-              if (r.sensor_type === 'VOLTAGE' || r.function === 'Voltage Sensor') {
-                const voltVal = r.last_sensor_value != null ? r.last_sensor_value : (r.node_id === 'NODE-30487DE85D5C' ? 255 : '--');
-                liveControlHtml = `<span style="font-weight: 700; color: #f59e0b; font-family: monospace; font-size: 12px; background: rgba(245, 158, 11, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(245, 158, 11, 0.3);">⚡ ${voltVal} V</span>`;
+              if (r.sensor_type === 'VOLTAGE' || r.sensor_type === 'VOLTAGE_ADC' || r.function?.toLowerCase().includes('voltage')) {
+                const meta = r.sensor_config || r.sensor_meta || {};
+                const dc = meta.dcVoltage != null ? meta.dcVoltage : r.last_sensor_value;
+                const rms = meta.acRms;
+                const rawAdc = meta.rawAdc;
+                let badgeText = '';
+                if (rms != null && Number(rms) > 0.005) {
+                  badgeText = `⚡ AC ${Number(rms).toFixed(2)}V | DC ${Number(dc ?? 0).toFixed(2)}V`;
+                } else if (dc != null) {
+                  badgeText = `⚡ ${Number(dc).toFixed(3)} V`;
+                } else if (r.node_id === 'NODE-30487DE85D5C') {
+                  badgeText = `⚡ 255 V`;
+                } else {
+                  badgeText = `⚡ -- V`;
+                }
+                const tooltip = `title="DC: ${dc != null ? Number(dc).toFixed(3) : '--'}V | AC RMS: ${rms != null ? Number(rms).toFixed(3) : '--'}V | Raw ADC: ${rawAdc ?? '--'}"`;
+                liveControlHtml = `<span ${tooltip} style="font-weight: 700; color: #f59e0b; font-family: monospace; font-size: 11px; background: rgba(245, 158, 11, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(245, 158, 11, 0.3); cursor: help;">${badgeText}</span>`;
               } else if (r.sensor_type === 'IR_RECEIVER' || r.function === 'IR Receiver') {
                 liveControlHtml = `<span style="font-weight: 700; color: #c084fc; font-family: monospace; font-size: 11px; background: rgba(168, 85, 247, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(168, 85, 247, 0.3);">📡 ${escapeHtml(r.last_sensor_str || 'Listening...')}</span>`;
               } else if (r.sensor_type === 'IR_TRANSMITTER' || r.function === 'IR Transmitter') {
@@ -3562,7 +3610,7 @@ function openRelayChannelConfigModal(nodeId, channelId) {
         <label class="settings-field-label" style="color: #38bdf8; font-weight: 700;">Hardware Role / Mode</label>
         <select id="cfg-pin-role" class="filter-select-enhanced" style="width: 100%; font-weight: 600;" onchange="toggleConfigPinRole(this.value)">
           <option value="RELAY_OUTPUT" ${!isSensor ? 'selected' : ''}>⚡ Relay Output (Switch Appliance ON / OFF)</option>
-          <option value="VOLTAGE" ${r.sensor_type === 'VOLTAGE' || r.function === 'Voltage Sensor' ? 'selected' : ''}>📊 Voltage Sensor (AC / DC Voltage on A0 / ADC)</option>
+          <option value="VOLTAGE" ${r.sensor_type === 'VOLTAGE' || r.sensor_type === 'VOLTAGE_ADC' || r.function?.includes('Voltage') ? 'selected' : ''}>📊 Voltage Sensor (AC / DC Voltage on A0 / ADC)</option>
           <option value="IR_RECEIVER" ${r.sensor_type === 'IR_RECEIVER' || r.function === 'IR Receiver' ? 'selected' : ''}>📡 IR Receiver (Decode Remote Control Signals)</option>
           <option value="IR_TRANSMITTER" ${r.sensor_type === 'IR_TRANSMITTER' || r.function === 'IR Transmitter' ? 'selected' : ''}>📶 IR Blaster / Transmitter (Transmit Remote Codes)</option>
           <option value="PIR_MOTION" ${r.sensor_type === 'PIR_MOTION' || r.function === 'PIR Motion' ? 'selected' : ''}>🚶 PIR Motion / Radar Detector</option>
@@ -3663,6 +3711,14 @@ function openRelayChannelConfigModal(nodeId, channelId) {
       <div id="sec-sensor-options" style="display: ${isSensor ? 'block' : 'none'}; background: rgba(30, 41, 59, 0.5); border-radius: 8px; padding: 12px; margin-bottom: 12px; border: 1px solid #1e293b;">
         <div style="font-size: 12px; font-weight: 700; color: #c084fc; margin-bottom: 10px;">📡 Sensor Configuration & Calibration</div>
 
+        <div id="cfg-voltage-mode-wrap" class="form-group" style="display: ${(r.sensor_type === 'VOLTAGE' || r.sensor_type === 'VOLTAGE_ADC' || r.function?.includes('Voltage')) ? 'block' : 'none'}; margin-bottom: 10px;">
+          <label class="settings-field-label">Analog Sampling Mode (A0 / ADC)</label>
+          <select id="cfg-voltage-mode" class="filter-select-enhanced" style="width: 100%;">
+            <option value="AC" ${r.function?.toLowerCase().includes('ac') || r.function?.toLowerCase().includes('rms') ? 'selected' : ''}>⚡ AC RMS Voltage (Mains AC 50/60Hz RMS Cycle Sampling)</option>
+            <option value="DC" ${!r.function?.toLowerCase().includes('ac') && !r.function?.toLowerCase().includes('rms') ? 'selected' : ''}>🔋 DC Voltage (Direct DC Level / Resistor Divider)</option>
+          </select>
+        </div>
+
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
           <div class="form-group">
             <label class="settings-field-label">Telemetry Reporting Interval</label>
@@ -3720,8 +3776,10 @@ function toggleConfigPinRole(role) {
   const isSensor = role !== 'RELAY_OUTPUT';
   const secRelay = document.getElementById('sec-relay-options');
   const secSensor = document.getElementById('sec-sensor-options');
+  const voltWrap = document.getElementById('cfg-voltage-mode-wrap');
   if (secRelay) secRelay.style.display = isSensor ? 'none' : 'block';
   if (secSensor) secSensor.style.display = isSensor ? 'block' : 'none';
+  if (voltWrap) voltWrap.style.display = (role === 'VOLTAGE') ? 'block' : 'none';
 
   // Automatically adjust icon hint
   const iconSelect = document.getElementById('cfg-relay-icon');
@@ -3761,17 +3819,19 @@ async function saveRelayChannelConfig(nodeId, channelId) {
   const icon = document.getElementById("cfg-relay-icon").value;
   const pin = Number(document.getElementById("cfg-relay-pin").value);
   const active_low = document.getElementById("cfg-relay-logic") ? document.getElementById("cfg-relay-logic").value === '1' : true;
+  const voltMode = document.getElementById("cfg-voltage-mode")?.value || 'AC';
 
   const sensorConfig = isSensor ? {
     interval_ms: Number(document.getElementById("cfg-sensor-interval")?.value || 0),
     multiplier: Number(document.getElementById("cfg-sensor-multiplier")?.value || 1.0),
     offset: Number(document.getElementById("cfg-sensor-offset")?.value || 0.0),
-    ir_protocol: document.getElementById("cfg-sensor-ir-proto")?.value || 'NEC'
+    ir_protocol: document.getElementById("cfg-sensor-ir-proto")?.value || 'NEC',
+    voltage_mode: (role === 'VOLTAGE') ? voltMode : undefined
   } : {};
 
   const sensorUnit = isSensor ? (document.getElementById("cfg-sensor-unit")?.value || '') : null;
   const sensorType = isSensor ? role : null;
-  const func = isSensor ? (role === 'VOLTAGE' ? 'Voltage Sensor' : (role === 'IR_RECEIVER' ? 'IR Receiver' : (role === 'IR_TRANSMITTER' ? 'IR Transmitter' : 'Sensor'))) : 'Relay';
+  const func = isSensor ? (role === 'VOLTAGE' ? (voltMode === 'AC' ? 'AC RMS Voltage Sensor' : 'DC Voltage Sensor') : (role === 'IR_RECEIVER' ? 'IR Receiver' : (role === 'IR_TRANSMITTER' ? 'IR Transmitter' : 'Sensor'))) : 'Relay';
   const pinMode = isSensor ? 'SENSOR_INPUT' : 'RELAY_OUTPUT';
 
   try {
@@ -4958,19 +5018,34 @@ async function syncPinsWithHardware(nodeId) {
     const url = nodeId ? `${API_BASE}/nodes/${nodeId}/sync-pins` : `${API_BASE}/relays/sync`;
     const res = await fetch(url, { method: "POST" });
     const data = await res.json();
-    if (data.status === "ok") {
-      alert(`Hardware pin synchronization complete: ${data.message || 'Synced'}`);
+    if (data.success || data.status === "ok") {
+      const msg = data.message || (data.count ? `Synchronized ${data.count} pins from hardware node` : 'Hardware pin synchronization complete');
+      if (typeof showToast === 'function') {
+        showToast(msg, 'success');
+      } else {
+        alert(msg);
+      }
       if (typeof currentView !== 'undefined') {
         if (currentView === 'relays') loadRelays();
         else if (currentView === 'nodes') loadNodes();
+        else if (currentView === 'pin-matrix') loadPinMatrix();
       } else {
         loadRelays();
       }
     } else {
-      alert(`Sync failed: ${data.error || 'Unknown error'}`);
+      const errMsg = data.error || data.message || 'Unknown error';
+      if (typeof showToast === 'function') {
+        showToast(`Sync failed: ${errMsg}`, 'error');
+      } else {
+        alert(`Sync failed: ${errMsg}`);
+      }
     }
   } catch (err) {
-    alert(`Sync request error: ${err.message}`);
+    if (typeof showToast === 'function') {
+      showToast(`Sync request error: ${err.message}`, 'error');
+    } else {
+      alert(`Sync request error: ${err.message}`);
+    }
   }
 }
 

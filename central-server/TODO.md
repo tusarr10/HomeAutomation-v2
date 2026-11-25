@@ -8,28 +8,22 @@ All node-side `P0` / `P1` / `P2` items are now implemented and verified live on 
 ## Priority Checklist
 
 ### P0 — Telemetry Ingestion & Real-Time Sensor Events
-- [ ] **Handle `eventType === "sensor_event"` & forward `sensors[]` in `src/nodeManager.js`**
-  - **Gap observed:** `nodeManager.js` (`L505–L517`) broadcasts `telemetry_update` with `channels` and `pcf8574`, but does **not** forward `data.sensors`, `data.sensor_type`, `data.pin`, `data.channel_id`, `data.ir_code`, or `data.ir_protocol`.
-  - **Action:** When ingesting node telemetry (`ingestTelemetry` / TCP receiver), upsert `data.sensors[]` values (`value`, `dcVoltage`, `acRms`, `rawAdc`, `code`, `protocol`), include `sensors: data.sensors || []` and `sensorEvent` metadata inside the `telemetry_update` WebSocket broadcast, and emit notifications/rule triggers when `eventType === "sensor_event"`.
-
-- [ ] **Normalize `VOLTAGE_ADC` vs `VOLTAGE` & Persist `acRms` / `dcVoltage`**
-  - **Gap observed:** `public/assets/app.js` (`L3345`, `L3376`) checks `r.sensor_type === 'VOLTAGE'`, whereas the node reports `type: "VOLTAGE_ADC"` with both `dcVoltage`, `acRms`, and `rawAdc` (plus `value` selected by channel function name containing `"ac"` or `"rms"`).
-  - **Action:** Treat `VOLTAGE_ADC` identically to `VOLTAGE` in UI badges/controls and persist/display `dcVoltage`, `acRms`, and `rawAdc`.
+- [x] **Handle `eventType === "sensor_event"` & forward `sensors[]` in `src/nodeManager.js`** *(Implemented & Verified)*
+  - **Status:** `nodeManager.js` ingests `data.sensors[]`, persists `dcVoltage`, `acRms`, `rawAdc`, and forwards `sensors` and `sensorEvent` via WebSocket `telemetry_update` and `sensor_event`.
+- [x] **Normalize `VOLTAGE_ADC` vs `VOLTAGE` & Persist `acRms` / `dcVoltage`** *(Implemented & Verified)*
+  - **Status:** Normalized in `database.js` (`upsertRelayFromChannel`), `nodeManager.js`, and `public/assets/app.js` (tooltips and badges for AC RMS & DC Voltage).
 
 ### P1 — Command Dispatch & Onboarding Upgrades
-- [ ] **Expose Unified Node Actions (`send_ir`, `configure_pin`, `read_sensor`) in Central Dispatch & UI**
-  - **Context:** Nodes now natively support `send_ir`, `configure_pin`, and `read_sensor` via both `POST /api/commands/execute` (HTTP) and `send_ir` in the async TCP telemetry ACK command queue (`ReceiverClient::processServerCommands`).
-  - **Action:** Add helper routes/buttons in `src/routes/v1Router.js` and `public/assets/app.js` to invoke `send_ir` (especially for sleeping/NAT nodes via telemetry queue) and `read_sensor` on-demand refresh.
-
-- [ ] **Verify Direct Node LittleFS Save Fallback (`POST /api/fs/save-content`)**
-  - **Context:** `public/assets/app.js` (`L7144`) calls `POST /api/nodes/:nodeId/fs/save-content`. The node now exposes native `POST /api/fs/save-content` (`<= 5KB` JSON `{ path, content }`).
-  - **Action:** Route `central-server` save-content calls directly to `/api/fs/save-content` when the file is `<= 5120` bytes instead of building multipart form uploads on the ESP8266.
+- [x] **Expose Unified Node Actions (`send_ir`, `configure_pin`, `read_sensor`) in Central Dispatch & UI** *(Implemented & Verified)*
+  - **Status:** Added `POST /api/v1/nodes/:nodeId/read-sensor` and updated `dispatchCommand` in `nodeManager.js` to dispatch `read_sensor`, `send_ir`, and `configure_pin` directly with `X-Server-Key` authentication.
+- [x] **Verify Direct Node LittleFS Save Fallback (`POST /api/fs/save-content`)** *(Implemented & Verified)*
+  - **Status:** Implemented in `src/littlefsService.js` with direct fast-path (`<= 5KB`) to `POST /api/fs/save-content`, verified live with `directFastPath: true`.
 
 ### P2 — Dashboard UX & Fleet Polish
-- [ ] **Add AC RMS vs DC Mode Toggle in Channel Editor (`configure_pin`)**
-  - Let users name or tag analog A0 channels with `"AC RMS"` vs `"DC Voltage"` (`function`), immediately switching `value` calculation on the node while keeping both `dcVoltage` and `acRms` visible in tooltips.
-- [ ] **Real-Time IR Learned Code Toast & Auto-Bind Flow**
-  - Subscribe to WebSocket `telemetry_update` frames where `eventType === "sensor_event"` and `sensorEvent.sensor_type === "IR_RECEIVER"` so Central Server's IR modal auto-populates `ir_code` + `ir_protocol` without polling `/api/ir/train/result`.
+- [x] **Add AC RMS vs DC Mode Toggle in Channel Editor (`configure_pin`)** *(Implemented & Verified)*
+  - **Status:** Added `Analog Sampling Mode (A0 / ADC)` dropdown to Pin Configuration modal in `public/assets/app.js` with `⚡ AC RMS Voltage` and `🔋 DC Voltage` modes.
+- [x] **Real-Time IR Learned Code Toast & Auto-Bind Flow** *(Implemented & Verified)*
+  - **Status:** Added `handleRealtimeIrEvent` in `public/assets/app.js` listening for WebSocket sensor events to instantly populate learned IR codes and display toasts.
 
 ---
 

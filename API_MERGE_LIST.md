@@ -42,31 +42,31 @@ The SmartHome ecosystem relies on a hybrid communication model designed for sub-
 | **1** | HTTP | Central Server / UI | Node | `POST /api/auth/login` | Session token generation | `nodeManager.authenticateNode()` | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
 | **2** | HTTP | Central Server / UI | Node | `GET /api/auth/check` | Validate active authentication | *Internal verification* | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
 | **3** | HTTP | Central Server / UI | Node | `POST /api/auth/logout` | Revoke session token | *Session lifecycle* | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
-| **4** | HTTP | Central Server | Node | `GET / POST /api/auth/pair` | Query pairing status / provision server pairing key | Node onboarding flow | `AuthManager::setServerPairingKey()` | 🟢 **Matched** |
-| **5** | HTTP | Central Server | Node | `POST /api/auth/unpair` | Clear server pairing key | Node decommissioning | `AuthManager::clearServerPairingKey()` | 🟢 **Matched** |
+| **4** | HTTP | Central Server | Node | `GET / POST /api/auth/pair` | Query pairing status / provision server pairing key | `POST /api/v1/nodes/:id/pair` & Auto-Pair | `AuthManager::setServerPairingKey()` | 🟢 **Matched** |
+| **5** | HTTP | Central Server | Node | `POST /api/auth/unpair` | Clear server pairing key | `POST /api/v1/nodes/:id/unpair` & Decom | `AuthManager::clearServerPairingKey()` | 🟢 **Matched** |
 | **6** | HTTP | Central Server / UI | Node | `GET /api/status` | Microcontroller health, heap, uptime, RSSI, PCF8574 | `GET /api/v1/nodes/:id` / Poller | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
 | **7** | HTTP | Node | Client | `GET /api/all` | Self-discovery API catalog (all 57 REST endpoints) | *Developer Discovery* | `API_CATALOG_JSON` (`PROGMEM`) | 🟢 **Matched** |
-| **8** | HTTP | Central Server / UI | Node | `GET /api/logs` | Fetch circular in-memory diagnostic logs | `GET /api/v1/nodes/:id/logs` | `Logger::toJson()` | 🟢 **Matched** |
+| **8** | HTTP | Central Server / UI | Node | `GET /api/logs` | Fetch circular in-memory diagnostic logs | `GET /api/v1/nodes/:id/hardware-logs` | `Logger::toJson()` | 🟢 **Matched** |
 | **9** | HTTP | Central Server / UI | Node | `GET /api/gpio` | Query full channel matrix & states | `GET /api/v1/nodes/:id/pins` | `GpioManager::toJson()` | 🟢 **Matched** |
 | **10** | HTTP | Central Server / UI | Node | `GET /api/sensors` | Filtered list of pure input sensors | Poller / UI Sensor Cards | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
 | **11** | HTTP | Central Server / UI | Node | `POST /api/gpio` | Add brand new physical or I2C pin channel | `POST /api/v1/nodes/:id/pins` | `GpioManager::addChannel()` | 🟢 **Matched** |
 | **12** | HTTP | Central Server / UI | Node | `POST /api/gpio/update` | Update channel name, room, function, activeLow | `syncPinToNode()` / Advanced Config | `GpioManager::updateChannel()` | 🟢 **Matched** |
 | **13** | HTTP | Central Server / UI | Node | `POST /api/gpio/delete` | Delete / unassign channel from microcontroller | `DELETE /api/v1/nodes/:id/pins/:ch` | `GpioManager::deleteChannel()` | 🟢 **Matched** |
 | **14** | HTTP | Central Server / UI | Node | `POST /api/gpio/state` | Set relay state, toggle, or pulse | Legacy fallback execution | `GpioManager::setState() / toggle()` | 🟢 **Matched** |
-| **15** | HTTP | Central Server / UI | Node | `POST /api/commands/execute` | Unified command dispatcher (`setState`, `toggle`, `pulse`, `reboot`, `syncConfig`) | Fast-path in `sendDirectLanHttp()` | `WebServerManager::handleCommandsExecute()` | 🟢 **Matched** |
-| **16** | HTTP | Central Server | Node | `POST /api/commands/execute` (`action: send_ir`) | Transmit 38kHz infrared blaster signal | `POST /api/v1/nodes/:id/ir/transmit` | `IrManager::transmit()` | 🔴 **Missing in Node Cmd** |
-| **17** | HTTP | Central Server / UI | Node | `GET /api/i2c` | Inspect I2C bus config & PCF8574 status | Expander status sync | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
-| **18** | HTTP | Central Server / UI | Node | `POST /api/i2c` | Configure I2C SDA/SCL pins and expander address | Hardware config | `GpioManager::setI2cConfig()` | 🟢 **Matched** |
-| **19** | HTTP | Central Server / UI | Node | `POST /api/i2c/auto-channels`| Auto-map P0-P7 to virtual channels 100-107 | Batch expander init | `GpioManager::autoConfigurePcfChannels()` | 🟢 **Matched** |
-| **20** | HTTP | Central Server / UI | Node | `GET /api/i2c/scan` | I2C address bus scanner (0x01–0x7F) | Diagnostics | `Wire` scanner loop | 🟢 **Matched** |
-| **21** | HTTP | Central Server / UI | Node | `GET /api/ir/status` | Query IR receiver/transmitter pin & training state | Hardware diagnostic | `IrManager::getStatusJson()` | 🟢 **Matched** |
-| **22** | HTTP | Central Server / UI | Node | `POST /api/ir/train/start` | Enter interactive IR code learning mode | UI Remote Builder | `IrManager::startTraining()` | 🟢 **Matched** |
-| **23** | HTTP | Central Server / UI | Node | `POST /api/ir/train/stop` | Abort IR code learning mode | UI Remote Builder | `IrManager::stopTraining()` | 🟢 **Matched** |
-| **24** | HTTP | Central Server / UI | Node | `GET /api/ir/train/result`| Poll latest intercepted IR signal | UI Remote Builder | `IrManager::getLastCaptured()` | 🟢 **Matched** |
-| **25** | HTTP | Central Server / UI | Node | `POST /api/ir/transmit` | Direct REST IR code blaster transmission | UI Remote Control | `IrManager::transmit()` | 🟢 **Matched** |
-| **26** | HTTP | Central Server / UI | Node | `GET /api/ir/remotes` | Fetch virtual remote controls & buttons | `config/ir_codes.json` Explorer | `IrManager::getRemotesJson()` | 🟢 **Matched** |
-| **27** | HTTP | Central Server / UI | Node | `POST /api/ir/remotes/save`| Save button code into virtual remote | UI Remote Manager | `IrManager::saveButton()` | 🟢 **Matched** |
-| **28** | HTTP | Central Server / UI | Node | `POST /api/ir/remotes/delete`| Delete button or entire virtual remote | UI Remote Manager | `IrManager::deleteRemoteOrButton()` | 🟢 **Matched** |
+| **15** | HTTP | Central Server / UI | Node | `POST /api/commands/execute` | Unified command dispatcher (`setState`, `toggle`, `pulse`, `reboot`, `syncConfig`, `configure_pin`, `read_sensor`) | Fast-path in `sendDirectLanHttp()` | `WebServerManager::handleCommandsExecute()` | 🟢 **Matched** |
+| **16** | HTTP | Central Server | Node | `POST /api/commands/execute` (`action: send_ir`) | Transmit 38kHz infrared blaster signal (unified command) | `nodeManager.dispatchCommand()` | `IrManager::transmit()` | 🟢 **Matched** |
+| **17** | HTTP | Central Server / UI | Node | `GET /api/i2c` | Inspect I2C bus config & PCF8574 status | `GET /api/v1/nodes/:id/i2c` | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
+| **18** | HTTP | Central Server / UI | Node | `POST /api/i2c` | Configure I2C SDA/SCL pins and expander address | `POST /api/v1/nodes/:id/i2c` | `GpioManager::setI2cConfig()` | 🟢 **Matched** |
+| **19** | HTTP | Central Server / UI | Node | `POST /api/i2c/auto-channels`| Auto-map P0-P7 to virtual channels 100-107 | `POST /api/v1/nodes/:id/i2c/auto-channels` | `GpioManager::autoConfigurePcfChannels()` | 🟢 **Matched** |
+| **20** | HTTP | Central Server / UI | Node | `GET /api/i2c/scan` | I2C address bus scanner (0x01–0x7F) | `GET /api/v1/nodes/:id/i2c/scan` | `Wire` scanner loop | 🟢 **Matched** |
+| **21** | HTTP | Central Server / UI | Node | `GET /api/ir/status` | Query IR receiver/transmitter pin & training state | `GET /api/v1/nodes/:id/ir/status` | `IrManager::getStatusJson()` | 🟢 **Matched** |
+| **22** | HTTP | Central Server / UI | Node | `POST /api/ir/train/start` | Enter interactive IR code learning mode | `POST /api/v1/nodes/:id/ir/train/start` | `IrManager::startTraining()` | 🟢 **Matched** |
+| **23** | HTTP | Central Server / UI | Node | `POST /api/ir/train/stop` | Abort IR code learning mode | `POST /api/v1/nodes/:id/ir/train/stop` | `IrManager::stopTraining()` | 🟢 **Matched** |
+| **24** | HTTP | Central Server / UI | Node | `GET /api/ir/train/result`| Poll latest intercepted IR signal | `GET /api/v1/nodes/:id/ir/train/result` | `IrManager::getLastCaptured()` | 🟢 **Matched** |
+| **25** | HTTP | Central Server / UI | Node | `POST /api/ir/transmit` | Direct REST IR code blaster transmission | `POST /api/v1/nodes/:id/ir/transmit` | `IrManager::transmit()` | 🟢 **Matched** |
+| **26** | HTTP | Central Server / UI | Node | `GET /api/ir/remotes` | Fetch virtual remote controls & buttons | `GET /api/v1/nodes/:id/ir/remotes` | `IrManager::getRemotesJson()` | 🟢 **Matched** |
+| **27** | HTTP | Central Server / UI | Node | `POST /api/ir/remotes/save`| Save button code into virtual remote | `POST /api/v1/nodes/:id/ir/remotes/save` | `IrManager::saveButton()` | 🟢 **Matched** |
+| **28** | HTTP | Central Server / UI | Node | `POST /api/ir/remotes/delete`| Delete button or entire virtual remote | `POST /api/v1/nodes/:id/ir/remotes/delete` | `IrManager::deleteRemoteOrButton()` | 🟢 **Matched** |
 | **29** | HTTP | Central Server | Node | `GET /api/receiver` | Get Central Server IP:Port telemetry settings | Status sync | `ReceiverClient::getStatusJson()` | 🟢 **Matched** |
 | **30** | HTTP | Central Server | Node | `POST /api/receiver` | Configure Central Server IP:Port for telemetry | `POST /api/v1/nodes/:id/push-config`| `ReceiverClient::setConfig()` | 🟢 **Matched** |
 | **31** | HTTP | Central Server / UI | Node | `POST /api/receiver/test` | Ping Central Server TCP telemetry socket | Diagnostics | `ReceiverClient::testConnection()` | 🟢 **Matched** |
@@ -76,10 +76,10 @@ The SmartHome ecosystem relies on a hybrid communication model designed for sub-
 | **35** | HTTP | Central Server / UI | Node | `POST /api/wifi/connect` | Save Wi-Fi router credentials and connect | Provisioning | `WifiManager::connectSTA()` | 🟢 **Matched** |
 | **36** | HTTP | Central Server / UI | Node | `POST /api/wifi/mode` | Switch Wi-Fi mode (AP, STA, AP+STA) | Network Management | `WifiManager::setMode()` | 🟢 **Matched** |
 | **37** | HTTP | Central Server / UI | Node | `POST /api/wifi/reset` | Erase Wi-Fi credentials and start captive portal| Factory recovery | `WifiManager::resetCredentials()` | 🟢 **Matched** |
-| **38** | HTTP | Central Server / UI | Node | `GET /api/automation` | List localized edge automation rules | Automation manager | `AutomationEngine::toJson()` | 🟢 **Matched** |
-| **39** | HTTP | Central Server / UI | Node | `POST /api/automation` | Add localized edge automation rule | Automation manager | `AutomationEngine::addRule()` | 🟢 **Matched** |
-| **40** | HTTP | Central Server / UI | Node | `POST /api/automation/toggle`| Enable or disable edge automation rule | Automation manager | `AutomationEngine::toggleRule()` | 🟢 **Matched** |
-| **41** | HTTP | Central Server / UI | Node | `POST /api/automation/delete`| Delete edge automation rule | Automation manager | `AutomationEngine::deleteRule()` | 🟢 **Matched** |
+| **38** | HTTP | Central Server / UI | Node | `GET /api/automation` | List localized edge automation rules | `GET /api/v1/nodes/:id/edge-automations` | `AutomationEngine::toJson()` | 🟢 **Matched** |
+| **39** | HTTP | Central Server / UI | Node | `POST /api/automation` | Add localized edge automation rule | `POST /api/v1/nodes/:id/edge-automations` | `AutomationEngine::addRule()` | 🟢 **Matched** |
+| **40** | HTTP | Central Server / UI | Node | `POST /api/automation/toggle`| Enable or disable edge automation rule | `POST /api/v1/nodes/:id/edge-automations/:ruleId/toggle` | `AutomationEngine::toggleRule()` | 🟢 **Matched** |
+| **41** | HTTP | Central Server / UI | Node | `POST /api/automation/delete`| Delete edge automation rule | `DELETE /api/v1/nodes/:id/edge-automations/:ruleId` | `AutomationEngine::deleteRule()` | 🟢 **Matched** |
 | **42** | HTTP | Central Server / UI | Node | `GET /api/settings` | Device hostname, AP config, NTP timezone offset| Diagnostics | `StorageManager::loadSystemConfig()`| 🟢 **Matched** |
 | **43** | HTTP | Central Server / UI | Node | `POST /api/settings` | Update device name, AP credentials, timezone | Device settings | `StorageManager::saveSystemConfig()`| 🟢 **Matched** |
 | **44** | HTTP | Central Server / UI | Node | `POST /api/settings/password`| Change human admin password | Security management | `AuthManager::changePassword()` | 🟢 **Matched** |
@@ -97,12 +97,13 @@ The SmartHome ecosystem relies on a hybrid communication model designed for sub-
 | **56** | HTTP | Central Server | Node | `POST /api/fs/rename` | Rename file on LittleFS flash | `POST /api/v1/nodes/:id/fs/rename` | `LittleFS.rename()` | 🟢 **Matched** |
 | **57** | TCP | Node | Central Server | `TCP:2000` Telemetry Heartbeat | Periodic health, RSSI, heap, channels, sensors | `nodeManager.processTelemetry()` | `ReceiverClient::fillTelemetryDoc()` | 🟢 **Matched** |
 | **58** | TCP | Node | Central Server | `TCP:2000` State Change Event | Immediate push on physical toggle / relay switch | `nodeManager.processTelemetry()` | `ReceiverClient::onGpioStateChanged()`| 🟢 **Matched** |
-| **59** | TCP | Node | Central Server | `TCP:2000` Sensor / IR Interrupt Push | Immediate push on sensor trigger (IR decode, ADC alert) | `nodeManager.processTelemetry()` | `IrManager -> ReceiverClient` | 🔴 **Missing Wire Hook** |
+| **59** | TCP | Node | Central Server | `TCP:2000` Sensor / IR Interrupt Push | Immediate push on sensor trigger (IR decode, ADC alert) | `nodeManager.processTelemetry()` | `ReceiverClient::pushSensorEvent()` | 🟢 **Matched** |
 | **60** | TCP | Central Server | Node | `TCP:2000` Command Dispatch | Inbound remote command execution stream | `nodeManager.dispatchCommand()` | `ReceiverClient::processServerCommands()`| 🟢 **Matched** |
-| **61** | TCP | Central Server | Node | `TCP:2000` `send_ir` Command | Trigger 38kHz IR transmission over TCP | `nodeManager.dispatchCommand()` | `ReceiverClient::processServerCommands()`| 🔴 **Missing Action** |
-| **62** | HTTP | Node | Central Server | `POST /api/v1/sensors/telemetry` | Fallback HTTP sensor ingestion if TCP blocked | `POST /api/v1/sensors/telemetry` | `ReceiverClient::sendHttp()` | 🟢 **Matched** |
-| **63** | WS | Central Server | UI Clients | `GET /api/v1/ws` | Real-time WebSocket event stream | WebSocket Server (`wss`) | Frontend Browser App | 🟢 **Matched** |
-| **64** | TCP/HTTP| Central Server | Breaker Bridge | Port `8085` Tuya Bridge API | Dedicated Smart Breaker LAN Control (`NODE-30487DE85D5C`) | `tuyaBridge.js` | Dedicated Go/Node Tuya Bridge | 🟢 **Matched (Isolated)**|
+| **61** | TCP | Central Server | Node | `TCP:2000` `send_ir` Command | Trigger 38kHz IR transmission over TCP ACK response | `nodeManager.dispatchCommand()` | `ReceiverClient::processServerCommands()`| 🟢 **Matched** |
+| **62** | HTTP | Central Server / UI | Node | `POST /api/fs/save-content` | Direct in-browser edit & save for config files (<= 5KB) | `POST /api/v1/nodes/:id/fs/save-content` | `WebServerManager::registerApiRoutes()` | 🟢 **Matched** |
+| **63** | HTTP | Node | Central Server | `POST /api/v1/sensors/telemetry` | Fallback HTTP sensor ingestion if TCP blocked | `POST /api/v1/sensors/telemetry` | `ReceiverClient::sendHttp()` | 🟢 **Matched** |
+| **64** | WS | Central Server | UI Clients | `GET /api/v1/ws` | Real-time WebSocket event stream | WebSocket Server (`wss`) | Frontend Browser App | 🟢 **Matched** |
+| **65** | TCP/HTTP| Central Server | Breaker Bridge | Port `8085` Tuya Bridge API | Dedicated Smart Breaker LAN Control (`NODE-30487DE85D5C`) | `tuyaBridge.js` | Dedicated Go/Node Tuya Bridge | 🟢 **Matched (Isolated)**|
 
 ---
 

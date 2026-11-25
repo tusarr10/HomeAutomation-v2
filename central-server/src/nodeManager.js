@@ -457,22 +457,44 @@ class NodeManager {
       });
     }
 
-    // Process sensor telemetry if present (Voltage, IR, Motion, DHT, CT, etc.)
+    // Process sensor telemetry if present (Voltage ADC, IR, Motion, DHT, CT, etc.)
     if (Array.isArray(data.sensors) && data.sensors.length > 0) {
       for (const s of data.sensors) {
+        const channelId = Number(s.channel_id ?? s.id);
         const sType = s.type || s.sensor_type || 'GENERIC';
-        const sVal = s.value !== undefined ? s.value : (s.val || 0);
-        const sUnit = s.unit || '';
+        const numVal = typeof s.value === 'number' ? s.value : Number(s.value || 0);
+        let strVal = s.strValue || s.code || null;
+
+        if (sType === 'VOLTAGE_ADC' || sType === 'VOLTAGE') {
+          const dc = Number(s.dcVoltage ?? s.value ?? 0).toFixed(3);
+          const rms = Number(s.acRms ?? 0).toFixed(3);
+          strVal = `DC ${dc}V | AC ${rms}V (ADC ${s.rawAdc ?? 0})`;
+        } else if (sType === 'PIR_MOTION' || sType === 'DOOR_SENSOR') {
+          strVal = numVal ? 'ACTIVE' : 'IDLE';
+        }
+
         this.db.upsertSensor({
           nodeId,
           sensorType: sType,
           name: s.name,
           room: s.room || 'General',
-          value: sVal,
-          unit: sUnit
+          value: numVal,
+          unit: s.unit || ''
         });
-        if (s.pin || s.channel_id) {
-          this.db.updatePinSensorReading(nodeId, s.channel_id || s.pin, sVal, s.strValue || s.code || String(sVal));
+
+        if (Number.isFinite(channelId) && channelId > 0) {
+          this.db.updateSensorReading(nodeId, channelId, {
+            value: numVal,
+            strValue,
+            unit: s.unit || '',
+            meta: {
+              dcVoltage: s.dcVoltage,
+              acRms: s.acRms,
+              rawAdc: s.rawAdc,
+              protocol: s.protocol,
+              code: s.code,
+            }
+          });
         }
       }
       this.broadcast('sensor_telemetry', { nodeId, sensors: data.sensors });
@@ -486,7 +508,10 @@ class NodeManager {
         value: 1,
         unit: 'HEX'
       });
-      this.db.updatePinSensorReading(nodeId, data.channel_id || data.pin || 0, 1, code);
+      this.db.updatePinSensorReading(nodeId, data.channel_id || data.pin || 0, 1, code, {
+        code,
+        protocol
+      });
       this.broadcast('sensor_telemetry', { nodeId, type: 'IR_RECEIVER', code, protocol });
     } else if (data.voltage !== undefined) {
       this.db.upsertSensor({
@@ -496,8 +521,26 @@ class NodeManager {
         value: Number(data.voltage),
         unit: 'V'
       });
-      this.db.updatePinSensorReading(nodeId, data.channel_id || data.pin || 0, Number(data.voltage), `${data.voltage} V`);
+      this.db.updatePinSensorReading(nodeId, data.channel_id || data.pin || 0, Number(data.voltage), `${data.voltage} V`, {
+        dcVoltage: data.voltage
+      });
       this.broadcast('sensor_telemetry', { nodeId, type: 'VOLTAGE', value: data.voltage });
+    }
+
+    // Real-time sensor / IR event payload when eventType === 'sensor_event'
+    const sensorEvent = (eventType === 'sensor_event' || data.ir_code || data.sensor_type) ? {
+      sensor_type: data.sensor_type || (data.ir_code ? 'IR_RECEIVER' : null),
+      pin: data.pin ?? null,
+      channel_id: data.channel_id ?? null,
+      ir_code: data.ir_code || data.code || null,
+      ir_protocol: data.ir_protocol || data.protocol || null,
+      value: data.value,
+      strValue: data.strValue || data.ir_code || null
+    } : null;
+
+    if (sensorEvent && sensorEvent.ir_code) {
+      this.db.logAudit('IR_INTERCEPT', nodeId, `IR signal intercepted: ${sensorEvent.ir_code} (${sensorEvent.ir_protocol || 'UNKNOWN'}) on pin ${sensorEvent.pin}`);
+      this.broadcast('sensor_event', { nodeId, ...sensorEvent });
     }
 
     // Live telemetry update broadcast
@@ -510,7 +553,10 @@ class NodeManager {
       rssi: data.rssi,
       uptime_sec: data.uptimeSec || data.uptime_sec,
       free_heap: data.freeHeap || data.free_heap,
+      hardware: data.hardware || 'ESP8266',
       channels: data.channels || [],
+      sensors: data.sensors || [],
+      sensorEvent,
       pcf8574: expanderInfo,
       eventType,
       timestamp: data.timestamp
@@ -659,6 +705,21 @@ class NodeManager {
           'PIN',
           { nodeId, channelId, state: nextState }
         );
+      } else if (action === 'send_ir') {
+        const code = command.hexCode || command.code || '';
+        const proto = command.protocol || 'NEC';
+        this.db.logAudit('IR_TRANSMIT', nodeId, `Transmitted IR code ${code} (${proto}) on node '${node.name}'`);
+        this.broadcastNotification(
+          'IR Signal Dispatched',
+          `Transmitted IR code ${code} (${proto}) on node '${node.name}'.`,
+          'INFO',
+          'IR',
+          { nodeId, protocol: proto, code }
+        );
+      } else if (action === 'configure_pin') {
+        this.db.logAudit('PIN_CONFIGURE', nodeId, `Channel ${channelId} configured on node '${node.name}' via unified command`);
+      } else if (action === 'read_sensor') {
+        this.db.logAudit('SENSOR_READ', nodeId, `Live sensor read executed on node '${node.name}' (channel ${channelId})`);
       }
 
       this.db.markCommandAcknowledged(commandUuid, {
@@ -667,20 +728,27 @@ class NodeManager {
         message: directMsg || 'OK'
       });
 
+      let parsedDirectResult = null;
+      try {
+        parsedDirectResult = JSON.parse(directMsg);
+      } catch {}
+
       this.broadcast('command_executed', {
         command_uuid: commandUuid,
         node_id: nodeId,
         nodeId: nodeId,
         channel_id: channelId,
         command,
-        delivery: 'direct_lan_http'
+        delivery: 'direct_lan_http',
+        result: parsedDirectResult
       });
 
       return {
         success: true,
         command_uuid: commandUuid,
         delivery: 'direct_lan_http',
-        message: 'Command executed instantly via LAN HTTP'
+        message: 'Command executed instantly via LAN HTTP',
+        result: parsedDirectResult
       };
     }
 
@@ -714,11 +782,12 @@ class NodeManager {
   }
 
   async sendDirectLanHttp(ip, command, nodeId = null) {
-    const timeoutMs = this.config.direct_http_timeout_ms || 500;
+    const timeoutMs = this.config.direct_http_timeout_ms || 1500;
     const node = nodeId ? this.db.getNode(nodeId) : (this.db.getNodeByIp ? this.db.getNodeByIp(ip) : null);
     const user = node?.auth_username || this.config.node_auth?.username || 'admin';
     const pass = node?.auth_password || this.config.node_auth?.password || 'admin';
     const basicAuth = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
+    const authHeaders = node ? this.getNodeAuthHeaders(node) : {};
 
     // Helper for making HTTP POST
     const makeRequest = (path, bodyObj, token) => {
@@ -726,11 +795,12 @@ class NodeManager {
         const payload = JSON.stringify(bodyObj);
         const headers = {
           'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(payload)
+          'Content-Length': Buffer.byteLength(payload),
+          ...authHeaders
         };
         if (token) {
           headers['Authorization'] = `Bearer ${token}`;
-        } else if (user && pass) {
+        } else if (!authHeaders['X-Server-Key'] && user && pass) {
           headers['Authorization'] = basicAuth;
         }
 
@@ -1010,15 +1080,16 @@ class NodeManager {
   }
 
   async syncAllOnlineNodesPins() {
-    const nodes = this.db.getNodes();
+    const nodes = this.db.getNodes().filter(n => {
+      const isBreaker = n.node_id === 'NODE-30487DE85D5C' || n.hardware_type?.includes('Tuya');
+      return Boolean(n.is_online) && !isBreaker && Boolean(n.ip_address || n.ip);
+    });
     const results = {};
     for (const node of nodes) {
-      if (node.ip_address) {
-        try {
-          results[node.node_id] = await this.syncNodePins(node.node_id);
-        } catch (e) {
-          results[node.node_id] = { success: false, error: e.message };
-        }
+      try {
+        results[node.node_id] = await this.syncNodePins(node.node_id);
+      } catch (e) {
+        results[node.node_id] = { success: false, error: e.message };
       }
     }
     return results;
@@ -1035,18 +1106,20 @@ class NodeManager {
 
     const relay = this.db.getRelay(nodeId, channelId);
     const nodeIp = node.ip || node.ip_address;
-    const headers = this.getNodeAuthHeaders(node);
-    headers['Content-Type'] = 'application/json';
+    const baseHeaders = this.getNodeAuthHeaders(node);
+    baseHeaders['Content-Type'] = 'application/json';
 
     // 1. Dual-Path: Direct LAN HTTP push (Fast path)
     if (nodeIp && node.is_online) {
       try {
         if (!relay) {
           // Channel was deleted / unassigned -> notify node to remove from flash
+          const deleteBody = JSON.stringify({ id: Number(channelId) });
+          const delHeaders = { ...baseHeaders, 'Content-Length': Buffer.byteLength(deleteBody) };
           await fetch(`http://${nodeIp}/api/gpio/delete`, {
             method: 'POST',
-            headers,
-            body: JSON.stringify({ id: Number(channelId) }),
+            headers: delHeaders,
+            body: deleteBody,
             signal: AbortSignal.timeout(3000)
           });
           this.db.logAudit('PIN_SYNC_HTTP', nodeId, `Pushed pin CH${channelId} deletion to ${nodeIp} via HTTP`);
@@ -1060,28 +1133,32 @@ class NodeManager {
             activeLow: Boolean(relay.active_low),
             enabled: Boolean(relay.enabled)
           };
+          const updateBody = JSON.stringify(updatePayload);
+          const updateHeaders = { ...baseHeaders, 'Content-Length': Buffer.byteLength(updateBody) };
           const res = await fetch(`http://${nodeIp}/api/gpio/update`, {
             method: 'POST',
-            headers,
-            body: JSON.stringify(updatePayload),
+            headers: updateHeaders,
+            body: updateBody,
             signal: AbortSignal.timeout(3000)
           });
 
-          if (res.status === 400) {
+          if (res.status === 400 || res.status === 404) {
             const errBody = await res.text();
-            if (errBody.includes('Channel ID not found')) {
+            if (errBody.includes('Channel ID not found') || errBody.includes('not found')) {
               // Channel does not exist on node yet -> add it
+              const addBody = JSON.stringify({
+                pin: relay.pin,
+                name: relay.name,
+                room: relay.room || 'General',
+                function: relay.function || 'Relay',
+                activeLow: Boolean(relay.active_low),
+                initialMode: relay.initial_mode || 0
+              });
+              const addHeaders = { ...baseHeaders, 'Content-Length': Buffer.byteLength(addBody) };
               await fetch(`http://${nodeIp}/api/gpio`, {
                 method: 'POST',
-                headers,
-                body: JSON.stringify({
-                  pin: relay.pin,
-                  name: relay.name,
-                  room: relay.room || 'General',
-                  function: relay.function || 'Relay',
-                  activeLow: Boolean(relay.active_low),
-                  initialMode: relay.initial_mode || 0
-                }),
+                headers: addHeaders,
+                body: addBody,
                 signal: AbortSignal.timeout(3000)
               });
               this.db.logAudit('PIN_SYNC_HTTP', nodeId, `Created new pin GPIO ${relay.pin} as CH${channelId} on ${nodeIp} via HTTP`);
