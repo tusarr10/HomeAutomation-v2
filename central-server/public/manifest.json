@@ -1,0 +1,21 @@
+{
+  "name": "SmartHome Central Management Platform",
+  "short_name": "SmartHome",
+  "description": "SmartHome Local Edge Broker, Fleet Management & Progressive Room Automation Platform",
+  "start_url": "/",
+  "id": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0f19",
+  "theme_color": "#0b0f19",
+  "categories": ["utilities", "productivity", "smarthome"],
+  "icons": [
+    {
+      "src": "/assets/logo.svg",
+      "sizes": "64x64 128x128 256x256 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

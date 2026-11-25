@@ -315,11 +315,33 @@ async function submitPasswordChange() {
   }
 }
 
+function toggleMobileSidebar(force) {
+  const sidebar = document.getElementById('sidebar');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  if (!sidebar) return;
+  const shouldOpen = force !== undefined ? force : !sidebar.classList.contains('mobile-open');
+  if (shouldOpen) {
+    sidebar.classList.add('mobile-open');
+    if (backdrop) backdrop.classList.add('active');
+  } else {
+    sidebar.classList.remove('mobile-open');
+    if (backdrop) backdrop.classList.remove('active');
+  }
+}
+
+window.addEventListener('resize', () => {
+  if (window.innerWidth > 992) {
+    toggleMobileSidebar(false);
+  }
+});
+
 function switchView(view) {
   if (!currentUser) {
     showLoginScreen();
     return;
   }
+  // Auto close mobile drawer when user navigates
+  toggleMobileSidebar(false);
   const item = document.querySelector(`.nav-item[data-view="${view}"]`);
   if (item) {
     document.querySelectorAll(".nav-item").forEach(i => i.classList.remove("active"));
@@ -5345,10 +5367,10 @@ function renderActiveRoomGui(room, home, relays, nodes) {
       ` : ''}
 
       <!-- Main Room View Grid (8 cols Stage, 4 cols Remote Dock) -->
-      <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start;">
+      <div class="room-gui-main-split">
         
         <!-- ROOM CANVAS (2D ARCHITECTURAL OR 3D ISOMETRIC) -->
-        <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.15); border-radius: 16px; padding: 18px; position: relative; min-height: 520px; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+        <div class="room-canvas-container" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(56, 189, 248, 0.15); border-radius: 16px; padding: 18px; position: relative; min-height: 520px; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center;">
           
           <!-- Edit Notice -->
           <div id="room-edit-notice" style="display: ${isRoomLayoutEditMode ? 'flex' : 'none'}; position: absolute; top: 14px; left: 14px; right: 14px; z-index: 45; padding: 8px 14px; border-radius: 8px; background: rgba(15, 23, 42, 0.95); border: 1px solid rgba(245, 158, 11, 0.5); color: #f59e0b; font-size: 11.5px; font-weight: 600; align-items: center; justify-content: space-between; box-shadow: 0 8px 25px rgba(0,0,0,0.6);">
@@ -6328,7 +6350,14 @@ function handleRoomAppliancePointerDown(e, nodeId, channelId, roomId) {
 function onRoomAppliancePointerMove(e) {
   if (!activeDraggingRelay) return;
   const is2D = currentRoomViewMode === '2d';
-  const mult = is2D ? 1.0 : 1.25;
+  let scale = 1.0;
+  const stageEl = document.getElementById(is2D ? 'room-floor-canvas' : 'room-floor-iso-stage');
+  if (stageEl) {
+    const rect = stageEl.getBoundingClientRect();
+    const baseW = is2D ? 520 : 440;
+    scale = (rect.width / baseW) || 1.0;
+  }
+  const mult = (is2D ? 1.0 : 1.25) / Math.max(0.2, scale);
   const dx = (e.clientX - roomDragStartPos.x) * mult;
   const dy = (e.clientY - roomDragStartPos.y) * mult;
   if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {

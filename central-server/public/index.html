@@ -2,13 +2,20 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f19">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SmartHome">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>SmartHome Central Management Platform</title>
+  <link rel="manifest" href="/manifest.json">
   <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
-  <link rel="stylesheet" href="/assets/style.css?v=2.6.0">
+  <link rel="apple-touch-icon" href="/assets/logo.svg">
+  <link rel="stylesheet" href="/assets/style.css?v=2.7.0">
 </head>
 <body>
   <!-- DEDICATED FULLSCREEN LOGIN SCREEN -->
@@ -56,16 +63,20 @@
       </div>
     </div>
   </div>
+  <!-- MOBILE SIDEBAR BACKDROP OVERLAY -->
+  <div id="sidebar-backdrop" class="sidebar-backdrop" onclick="toggleMobileSidebar(false)"></div>
+
   <!-- SIDEBAR NAVIGATION (RBAC, LittleFS, Config Sync, Commands, Fleet) -->
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
     <div class="sidebar-header">
       <div class="brand-icon">
         <img src="/assets/logo.svg" alt="SmartHome Logo" class="brand-logo-img">
       </div>
-      <div>
+      <div style="flex: 1;">
         <div class="brand-title">SmartHome Relay Server</div>
         <div class="brand-sub">Edge Broker v1.0.0</div>
       </div>
+      <button class="sidebar-close-btn" onclick="toggleMobileSidebar(false)" aria-label="Close Navigation">✕</button>
     </div>
 
     <ul class="nav-list">
@@ -142,6 +153,9 @@
   <div class="main-wrapper">
     <header class="topbar">
       <div class="topbar-left" style="display: flex; align-items: center; gap: 12px;">
+        <button class="mobile-menu-btn" id="mobile-menu-btn" onclick="toggleMobileSidebar()" aria-label="Toggle Navigation">
+          <span>☰</span>
+        </button>
         <div class="dash-topbar-title-wrap">
           <h1 class="view-title dash-topbar-title" id="view-title">Relay Server Dashboard</h1>
           <span class="dash-topbar-sub" id="view-subtitle">SmartHome Edge Broker &bull; Local Control &bull; High Performance</span>
@@ -213,6 +227,18 @@
   <!-- Floating Toast Notification Container -->
   <div id="toast-container" class="toast-container"></div>
 
-  <script src="/assets/app.js?v=2.6.0"></script>
+  <script src="/assets/app.js?v=2.7.0"></script>
+  <script>
+    // Progressive Web App Service Worker Registration
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').then((reg) => {
+          console.log('[PWA] ServiceWorker registered with scope:', reg.scope);
+        }).catch((err) => {
+          console.warn('[PWA] ServiceWorker registration failed:', err);
+        });
+      });
+    }
+  </script>
 </body>
 </html>
