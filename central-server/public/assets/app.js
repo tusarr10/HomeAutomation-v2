@@ -507,6 +507,8 @@ function setupNavigation() {
   document.querySelectorAll(".nav-item").forEach(item => {
     item.addEventListener("click", e => {
       e.preventDefault();
+      // Auto close mobile drawer when any navigation item is tapped
+      toggleMobileSidebar(false);
       if (!currentUser) {
         showLoginScreen();
         return;
