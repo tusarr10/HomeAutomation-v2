@@ -937,6 +937,9 @@ function getIconForAppliance(name = '', func = '', iconKey = '') {
     tv: '📺',
     ac: '❄️',
     porch: '🏮',
+    chandelier: '🏮',
+    lamp: '🛋️',
+    exhaust: '💨',
     garden: '🌳',
     breaker: '⚡',
     bell: '🔔',
@@ -947,21 +950,29 @@ function getIconForAppliance(name = '', func = '', iconKey = '') {
     temp: '🌡️',
     sensor: '🔬'
   };
-  if (iconKey && iconMap[iconKey]) return iconMap[iconKey];
+  if (iconKey) {
+    const k = String(iconKey).trim().toLowerCase();
+    if (iconMap[k]) return iconMap[k];
+    // If iconKey is an emoji or unicode character, return it directly
+    if (iconKey.length <= 4 || /\p{Emoji}/u.test(iconKey)) return iconKey;
+  }
 
   const s = (name + ' ' + func).toLowerCase();
   if (s.includes('fan') || s.includes('exhaust')) return '🌀';
-  if (s.includes('socket') || s.includes('tv') || s.includes('plug')) return '🔌';
-  if (s.includes('decor') || s.includes('lamp') || s.includes('bed')) return '🏮';
+  if (s.includes('tv') || s.includes('television') || s.includes('oled') || s.includes('screen')) return '📺';
+  if (s.includes('socket') || s.includes('plug')) return '🔌';
+  if (s.includes('chandelier') || s.includes('pendant') || s.includes('decor') || s.includes('porch')) return '🏮';
+  if (s.includes('lamp') || s.includes('ambient') || s.includes('bedside') || s.includes('desk lamp')) return '🛋️';
   if (s.includes('pump') || s.includes('water')) return '🚰';
   if (s.includes('voltage') || s.includes('mains')) return '📊';
   if (s.includes('ir') || s.includes('remote')) return '📡';
   if (s.includes('motion') || s.includes('pir')) return '🚶';
   if (s.includes('temp') || s.includes('humid')) return '🌡️';
-  if (s.includes('gate') || s.includes('door') || s.includes('motor')) return '🚪';
+  if (s.includes('gate') || s.includes('door') || s.includes('motor') || s.includes('curtain')) return '🚪';
   if (s.includes('breaker')) return '⚡';
   if (s.includes('garden')) return '🌳';
-  if (s.includes('ac') || s.includes('cool')) return '❄️';
+  if (s.includes('ac') || s.includes('cool') || s.includes('air cond')) return '❄️';
+  if (s.includes('heater') || s.includes('geyser')) return '♨️';
   return '💡';
 }
 
@@ -5479,18 +5490,28 @@ function renderActiveRoomGui(room, home, relays, nodes) {
                 <span style="font-size: 12px; font-weight: 700; color: #ffffff; text-transform: uppercase; letter-spacing: 0.5px;">Room Appliances</span>
                 <span style="font-size: 11px; color: #38bdf8; font-weight: 600; margin-left: 6px;">(${roomRelays.length})</span>
               </div>
-              <button class="btn btn-secondary" style="font-size: 10.5px; padding: 3px 8px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);" onclick="openAssignHardwareToRoomModal(${room.id})">
-                + Assign Devices
-              </button>
+              <div style="display: flex; gap: 6px;">
+                <button class="btn btn-secondary" style="font-size: 10px; padding: 3px 8px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.35); font-weight: 600;" onclick="openAddRoomApplianceModal(${room.id})">
+                  + Add Appliance
+                </button>
+                <button class="btn btn-secondary" style="font-size: 10px; padding: 3px 8px; color: #94a3b8; border-color: rgba(255, 255, 255, 0.15);" onclick="openAssignHardwareToRoomModal(${room.id})">
+                  🔗 Assign
+                </button>
+              </div>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto;">
               ${roomRelays.length === 0 ? `
                 <div style="padding: 20px; text-align: center; color: #64748b; font-size: 12px;">
                   No hardware devices mapped to '${escapeHtml(room.name)}' yet.<br>
-                  <button class="btn btn-primary" onclick="openAssignHardwareToRoomModal(${room.id})" style="margin-top: 10px; font-size: 11px; padding: 6px 14px;">
-                    ➕ Assign Node / Relays Now
-                  </button>
+                  <div style="display: flex; justify-content: center; gap: 8px; margin-top: 10px;">
+                    <button class="btn btn-primary" onclick="openAddRoomApplianceModal(${room.id})" style="font-size: 11px; padding: 6px 14px; background: #0284c7; border: none;">
+                      ➕ Add Appliance
+                    </button>
+                    <button class="btn btn-secondary" onclick="openAssignHardwareToRoomModal(${room.id})" style="font-size: 11px; padding: 6px 14px;">
+                      🔗 Assign Discovered Node
+                    </button>
+                  </div>
                 </div>
               ` : roomRelays.map(r => {
                 const isOn = Boolean(r.current_state);
@@ -5498,24 +5519,29 @@ function renderActiveRoomGui(room, home, relays, nodes) {
                 return `
                   <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; background: rgba(11, 17, 32, 0.7); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px;">
                     <div style="display: flex; align-items: center; gap: 8px;">
-                      <span style="font-size: 16px;">${getIconForAppliance(r.name, r.function, r.icon)}</span>
+                      <span style="font-size: 18px; width: 26px; text-align: center;">${getIconForAppliance(r.name, r.function, r.icon)}</span>
                       <div>
-                        <div style="font-size: 12px; font-weight: 600; color: #ffffff;">${escapeHtml(r.name)}</div>
-                        <div style="font-size: 10px; color: #64748b;">CH${r.channel_id} • Pin ${r.pin} • ${escapeHtml(r.node_id)}</div>
+                        <div style="font-size: 12px; font-weight: 600; color: #ffffff;">${escapeHtml(r.name || 'Output ' + r.channel_id)}</div>
+                        <div style="font-size: 10px; color: #64748b;">${escapeHtml(r.function || 'Relay')} • CH${r.channel_id} (Pin ${r.pin != null ? r.pin : r.channel_id}) • ${escapeHtml(r.node_id)}</div>
                       </div>
                     </div>
-                    ${isSensor ? `
-                      <span style="font-size: 10.5px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.25); padding: 3px 8px; border-radius: 6px;">
-                        Sensor
-                      </span>
-                    ` : `
-                      <button id="room-gui-relay-btn-${r.node_id}-${r.channel_id}" 
-                              class="dash-relay-toggle-btn ${isOn ? 'btn-on' : 'btn-off'}" 
-                              style="width: 54px; padding: 4px 0;"
-                              onclick="toggleRealQuickRelay('${r.node_id}', ${r.channel_id}, ${isOn})">
-                        ${isOn ? 'ON' : 'OFF'}
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <button class="btn btn-secondary" style="padding: 3px 7px; font-size: 11px; color: #94a3b8; border-color: rgba(255,255,255,0.15);" title="Edit Appliance Icon, Type & Relay" onclick="openEditRoomApplianceModal('${r.node_id}', ${r.channel_id}, ${room.id})">
+                        ✏️
                       </button>
-                    `}
+                      ${isSensor ? `
+                        <span style="font-size: 10.5px; font-weight: 700; color: #38bdf8; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.25); padding: 3px 8px; border-radius: 6px;">
+                          Sensor
+                        </span>
+                      ` : `
+                        <button id="room-gui-relay-btn-${r.node_id}-${r.channel_id}" 
+                                class="dash-relay-toggle-btn ${isOn ? 'btn-on' : 'btn-off'}" 
+                                style="width: 54px; padding: 4px 0;"
+                                onclick="toggleRealQuickRelay('${r.node_id}', ${r.channel_id}, ${isOn})">
+                          ${isOn ? 'ON' : 'OFF'}
+                        </button>
+                      `}
+                    </div>
                   </div>
                 `;
               }).join('')}
@@ -5585,8 +5611,8 @@ function renderRoomAppliancesOnFloor(roomRelays, layoutData, defaultPositions, r
     const defaultPos = defaultPositions[idx % defaultPositions.length];
     const savedPos = layoutData[r.channel_id] || { x: r.pos_x || defaultPos.x, y: r.pos_y || defaultPos.y };
     const isOn = Boolean(r.current_state);
-    const isFan = (r.function && r.function.toLowerCase().includes('fan')) || (r.name && r.name.toLowerCase().includes('fan'));
-    const isLight = !isFan && ((r.function && r.function.toLowerCase().includes('light')) || (r.name && r.name.toLowerCase().includes('light')) || (r.icon && r.icon.includes('light')));
+    const isFan = (r.function && r.function.toLowerCase().includes('fan')) || (r.name && r.name.toLowerCase().includes('fan')) || r.icon === 'fan' || r.icon === '🌀' || r.icon === 'exhaust' || r.icon === '💨';
+    const isLight = !isFan && ((r.function && (r.function.toLowerCase().includes('light') || r.function.toLowerCase().includes('lamp') || r.function.toLowerCase().includes('chandelier') || r.function.toLowerCase().includes('porch'))) || (r.name && (r.name.toLowerCase().includes('light') || r.name.toLowerCase().includes('lamp') || r.name.toLowerCase().includes('bulb') || r.name.toLowerCase().includes('chandelier'))) || r.icon === 'light' || r.icon === '💡' || r.icon === 'lamp' || r.icon === '🛋️' || r.icon === 'chandelier' || r.icon === '🏮' || (!r.function && !r.icon));
 
     return `
       <div id="room-node-${r.node_id}-${r.channel_id}" 
@@ -5594,8 +5620,15 @@ function renderRoomAppliancesOnFloor(roomRelays, layoutData, defaultPositions, r
            data-state="${isOn ? '1' : '0'}"
            style="left: ${savedPos.x}px; top: ${savedPos.y}px;"
            onpointerdown="handleRoomAppliancePointerDown(event, '${r.node_id}', ${r.channel_id}, ${roomId})"
-           onclick="handleRoomApplianceClick(event, '${r.node_id}', ${r.channel_id}, ${isOn})">
+           onclick="handleRoomApplianceClick(event, '${r.node_id}', ${r.channel_id}, ${isOn})"
+           oncontextmenu="event.preventDefault(); openEditRoomApplianceModal('${r.node_id}', ${r.channel_id}, ${roomId})">
         
+        <button class="room-appliance-gear-btn" 
+                title="Configure Appliance & Relay" 
+                onclick="event.stopPropagation(); openEditRoomApplianceModal('${r.node_id}', ${r.channel_id}, ${roomId})">
+          ⚙️
+        </button>
+
         ${isLight ? `
           <div id="room-glow-${r.node_id}-${r.channel_id}" class="room-light-glow" style="opacity: ${isOn ? '1' : '0'};"></div>
         ` : ''}
@@ -5616,6 +5649,372 @@ function renderRoomAppliancesOnFloor(roomRelays, layoutData, defaultPositions, r
     `;
   }).join('');
 }
+
+// --------------------------------------------------------------------------
+// 🛋️ APPLIANCE PRESETS & CUSTOMIZATION MODALS (ICON, TYPE & RELAY ASSIGNMENT)
+// --------------------------------------------------------------------------
+const APPLIANCE_PRESETS = [
+  { type: 'light', name: 'Ceiling Light', icon: '💡', label: '💡 Light / Bulb' },
+  { type: 'chandelier', name: 'Chandelier', icon: '🏮', label: '🏮 Chandelier / Pendant' },
+  { type: 'lamp', name: 'Table / Ambient Lamp', icon: '🛋️', label: '🛋️ Table / Ambient Lamp' },
+  { type: 'fan', name: 'Ceiling Fan', icon: '🌀', label: '🌀 Ceiling Fan' },
+  { type: 'exhaust', name: 'Exhaust Fan', icon: '💨', label: '💨 Exhaust Fan' },
+  { type: 'tv', name: 'Smart Television', icon: '📺', label: '📺 Television / TV' },
+  { type: 'ac', name: 'Air Conditioner', icon: '❄️', label: '❄️ AC / Climate' },
+  { type: 'heater', name: 'Water Heater / Geyser', icon: '♨️', label: '♨️ Heater / Geyser' },
+  { type: 'socket', name: 'Wall Socket / Plug', icon: '🔌', label: '🔌 Smart Socket / Plug' },
+  { type: 'pump', name: 'Water Pump', icon: '🚰', label: '🚰 Water Pump' },
+  { type: 'gate', name: 'Motorized Curtain / Gate', icon: '🚪', label: '🚪 Curtain / Gate / Blinds' },
+  { type: 'bell', name: 'Doorbell / Buzzer', icon: '🔔', label: '🔔 Doorbell / Alarm' },
+  { type: 'breaker', name: 'Circuit Breaker', icon: '⚡', label: '⚡ Breaker / Switch' },
+  { type: 'voltage', name: 'Voltage Sensor', icon: '📊', label: '📊 Voltage / Sensor' },
+  { type: 'ir', name: 'IR Blaster', icon: '📡', label: '📡 IR Remote Transmit' }
+];
+
+const QUICK_ICONS = ['💡', '🏮', '🛋️', '🌀', '💨', '📺', '❄️', '♨️', '🔌', '🚰', '🚪', '🔔', '⚡', '📊', '📡', '📻', '🖨️', '💻', '🎮', '☕', '🚿', '🔥', '🌳', '🔒', '🔊'];
+
+function selectApplianceIcon(emoji) {
+  const input = document.getElementById('edit-appliance-icon');
+  const preview = document.getElementById('edit-appliance-icon-preview');
+  if (input) input.value = emoji;
+  if (preview) preview.textContent = emoji;
+
+  document.querySelectorAll('.icon-pill-choice').forEach(el => {
+    el.classList.toggle('selected', el.getAttribute('data-icon') === emoji);
+  });
+}
+window.selectApplianceIcon = selectApplianceIcon;
+
+function onApplianceTypeChange() {
+  const typeSel = document.getElementById('edit-appliance-type');
+  const nameInput = document.getElementById('edit-appliance-name');
+  if (!typeSel || !nameInput) return;
+  const val = typeSel.value;
+  const preset = APPLIANCE_PRESETS.find(p => p.type === val);
+  if (preset) {
+    selectApplianceIcon(preset.icon);
+    if (!nameInput.value || APPLIANCE_PRESETS.some(p => p.name === nameInput.value)) {
+      nameInput.value = preset.name;
+    }
+  }
+}
+window.onApplianceTypeChange = onApplianceTypeChange;
+
+function onApplianceIconInputChange(val) {
+  const preview = document.getElementById('edit-appliance-icon-preview');
+  if (preview) preview.textContent = val || '💡';
+  document.querySelectorAll('.icon-pill-choice').forEach(el => {
+    el.classList.toggle('selected', el.getAttribute('data-icon') === val);
+  });
+}
+window.onApplianceIconInputChange = onApplianceIconInputChange;
+
+function openEditRoomApplianceModal(nodeId, channelId, roomId) {
+  const room = (cachedRoomsList || []).find(r => r.id === roomId);
+  if (!room) return showToast('Room not found', 'error');
+
+  const allRelays = cachedRelaysList || fleetData.relays || [];
+  const relay = allRelays.find(r => r.node_id === nodeId && r.channel_id === channelId) || {
+    node_id: nodeId,
+    channel_id: channelId,
+    name: 'Output ' + channelId,
+    function: 'light',
+    icon: '💡',
+    room: room.name
+  };
+
+  const currentIcon = getIconForAppliance(relay.name, relay.function, relay.icon);
+  const currentFunc = (relay.function || 'light').toLowerCase();
+
+  const matchingPreset = APPLIANCE_PRESETS.find(p => p.type === currentFunc || currentFunc.includes(p.type));
+  const activeType = matchingPreset ? matchingPreset.type : 'light';
+  const currentRelayKey = `${nodeId}:${channelId}`;
+
+  const html = `
+    <div class="modal-box" style="max-width: 520px; width: 92%;">
+      <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div id="edit-appliance-icon-preview" style="width: 40px; height: 40px; border-radius: 50%; background: #0f172a; border: 2px solid #38bdf8; display: flex; align-items: center; justify-content: center; font-size: 22px; box-shadow: 0 0 15px rgba(56, 189, 248, 0.4);">
+            ${currentIcon}
+          </div>
+          <div>
+            <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #ffffff;">Configure Appliance</h3>
+            <p style="margin: 2px 0 0 0; font-size: 11px; color: #94a3b8;">${escapeHtml(room.name)} • ${escapeHtml(nodeId)} CH${channelId}</p>
+          </div>
+        </div>
+        <button class="modal-close-btn" onclick="closeModal()">✕</button>
+      </div>
+
+      <div class="modal-body" style="padding: 16px 20px; display: flex; flex-direction: column; gap: 14px;">
+        
+        <!-- Appliance Name -->
+        <div class="form-group">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Appliance Name *</label>
+          <input id="edit-appliance-name" type="text" class="search-input" value="${escapeHtml(relay.name || 'Output ' + channelId)}" style="width: 100%; box-sizing: border-box;" placeholder="e.g. Master Chandelier, Reading Lamp, Samsung TV" />
+        </div>
+
+        <!-- Appliance Type & Category -->
+        <div class="form-group">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Appliance Type & Behavior</label>
+          <select id="edit-appliance-type" class="filter-select" style="width: 100%;" onchange="onApplianceTypeChange()">
+            ${APPLIANCE_PRESETS.map(p => `
+              <option value="${p.type}" ${p.type === activeType ? 'selected' : ''}>${p.label}</option>
+            `).join('')}
+          </select>
+        </div>
+
+        <!-- Icon Customization & Grid -->
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label style="font-size: 12px; color: #94a3b8;">Appliance Icon (Choose or Custom Emoji)</label>
+            <input id="edit-appliance-icon" type="text" value="${escapeHtml(currentIcon)}" style="width: 60px; text-align: center; font-size: 16px; padding: 3px 6px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #fff;" oninput="onApplianceIconInputChange(this.value)" />
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px; padding: 10px; background: rgba(11, 17, 32, 0.7); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; max-height: 120px; overflow-y: auto;">
+            ${QUICK_ICONS.map(ic => `
+              <div class="icon-pill-choice ${ic === currentIcon ? 'selected' : ''}" data-icon="${ic}" onclick="selectApplianceIcon('${ic}')">
+                ${ic}
+              </div>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Assigned Relay Channel -->
+        <div class="form-group">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">
+            Assigned Relay Channel (Microcontroller Pin)
+          </label>
+          <select id="edit-appliance-relay" class="filter-select" style="width: 100%;">
+            <optgroup label="📍 Currently Assigned Relay">
+              <option value="${currentRelayKey}" selected>
+                ${relay.node_id} • CH${relay.channel_id} (Pin ${relay.pin != null ? relay.pin : relay.channel_id}) • "${escapeHtml(relay.name || 'Output ' + relay.channel_id)}"
+              </option>
+            </optgroup>
+            <optgroup label="❌ Detach Option">
+              <option value="__unassign__">❌ Unassign from ${escapeHtml(room.name)} (Move to General)</option>
+            </optgroup>
+            <optgroup label="⚡ Other Fleet Relays to Switch to">
+              ${allRelays.filter(r => `${r.node_id}:${r.channel_id}` !== currentRelayKey).map(r => `
+                <option value="${r.node_id}:${r.channel_id}">
+                  ${r.node_id} • CH${r.channel_id} (Pin ${r.pin != null ? r.pin : r.channel_id}) • ${escapeHtml(r.name || 'Output ' + r.channel_id)} [Currently: ${escapeHtml(r.room || 'General')}]
+                </option>
+              `).join('')}
+            </optgroup>
+          </select>
+        </div>
+
+      </div>
+
+      <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid rgba(255,255,255,0.08); padding: 14px 20px;">
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-danger" style="font-size: 11px; padding: 6px 12px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); color: #f87171;" onclick="handleUnassignApplianceDirect('${nodeId}', ${channelId}, ${roomId})">
+            Unassign Relay
+          </button>
+          <button id="btn-save-appliance" class="btn btn-primary" style="font-size: 11.5px; padding: 6px 18px; background: #0284c7; border: none; font-weight: 700;" onclick="handleSaveRoomAppliance('${nodeId}', ${channelId}, ${roomId}, false)">
+            💾 Save Appliance
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+  openModal(html);
+}
+window.openEditRoomApplianceModal = openEditRoomApplianceModal;
+
+function openAddRoomApplianceModal(roomId) {
+  const room = (cachedRoomsList || []).find(r => r.id === roomId);
+  if (!room) return showToast('Room not found', 'error');
+
+  const allRelays = cachedRelaysList || fleetData.relays || [];
+  const availableRelays = allRelays.filter(r => (r.room || '').toLowerCase() !== (room.name || '').toLowerCase());
+
+  const html = `
+    <div class="modal-box" style="max-width: 520px; width: 92%;">
+      <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div id="edit-appliance-icon-preview" style="width: 40px; height: 40px; border-radius: 50%; background: #0f172a; border: 2px solid #10b981; display: flex; align-items: center; justify-content: center; font-size: 22px; box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);">
+            💡
+          </div>
+          <div>
+            <h3 style="margin: 0; font-size: 16px; font-weight: 700; color: #ffffff;">+ Add Appliance to Room</h3>
+            <p style="margin: 2px 0 0 0; font-size: 11px; color: #94a3b8;">Assign an available relay to ${escapeHtml(room.name)}</p>
+          </div>
+        </div>
+        <button class="modal-close-btn" onclick="closeModal()">✕</button>
+      </div>
+
+      <div class="modal-body" style="padding: 16px 20px; display: flex; flex-direction: column; gap: 14px;">
+        
+        <!-- Appliance Name -->
+        <div class="form-group">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Appliance Name *</label>
+          <input id="edit-appliance-name" type="text" class="search-input" value="Ceiling Light" style="width: 100%; box-sizing: border-box;" placeholder="e.g. Master Chandelier, Reading Lamp, Samsung TV" />
+        </div>
+
+        <!-- Appliance Type & Category -->
+        <div class="form-group">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">Appliance Type & Behavior</label>
+          <select id="edit-appliance-type" class="filter-select" style="width: 100%;" onchange="onApplianceTypeChange()">
+            ${APPLIANCE_PRESETS.map((p, idx) => `
+              <option value="${p.type}" ${idx === 0 ? 'selected' : ''}>${p.label}</option>
+            `).join('')}
+          </select>
+        </div>
+
+        <!-- Icon Customization & Grid -->
+        <div class="form-group">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label style="font-size: 12px; color: #94a3b8;">Appliance Icon (Choose or Custom Emoji)</label>
+            <input id="edit-appliance-icon" type="text" value="💡" style="width: 60px; text-align: center; font-size: 16px; padding: 3px 6px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #fff;" oninput="onApplianceIconInputChange(this.value)" />
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px; padding: 10px; background: rgba(11, 17, 32, 0.7); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 8px; max-height: 120px; overflow-y: auto;">
+            ${QUICK_ICONS.map((ic, idx) => `
+              <div class="icon-pill-choice ${idx === 0 ? 'selected' : ''}" data-icon="${ic}" onclick="selectApplianceIcon('${ic}')">
+                ${ic}
+              </div>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Assigned Relay Channel -->
+        <div class="form-group">
+          <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 6px;">
+            Select Relay Channel to Assign *
+          </label>
+          <select id="edit-appliance-relay" class="filter-select" style="width: 100%;">
+            ${allRelays.length === 0 ? `
+              <option value="" disabled>No relays available in fleet</option>
+            ` : allRelays.map((r, idx) => `
+              <option value="${r.node_id}:${r.channel_id}" ${idx === 0 ? 'selected' : ''}>
+                ${r.node_id} • CH${r.channel_id} (Pin ${r.pin != null ? r.pin : r.channel_id}) • "${escapeHtml(r.name || 'Output ' + r.channel_id)}" [Room: ${escapeHtml(r.room || 'General')}]
+              </option>
+            `).join('')}
+          </select>
+        </div>
+
+      </div>
+
+      <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid rgba(255,255,255,0.08); padding: 14px 20px;">
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button id="btn-save-appliance" class="btn btn-primary" style="font-size: 11.5px; padding: 6px 18px; background: #10b981; border: none; font-weight: 700;" onclick="handleSaveRoomAppliance('', null, ${roomId}, true)">
+          ➕ Add Appliance to Room
+        </button>
+      </div>
+    </div>
+  `;
+  openModal(html);
+}
+window.openAddRoomApplianceModal = openAddRoomApplianceModal;
+
+async function handleSaveRoomAppliance(oldNodeId, oldChannelId, roomId, isNew = false) {
+  const room = (cachedRoomsList || []).find(rm => rm.id === roomId);
+  if (!room) return showToast('Room not found', 'error');
+
+  const name = document.getElementById('edit-appliance-name').value.trim();
+  const applianceType = document.getElementById('edit-appliance-type').value;
+  const icon = document.getElementById('edit-appliance-icon').value.trim() || '💡';
+  const targetRelayVal = document.getElementById('edit-appliance-relay').value;
+  const btn = document.getElementById('btn-save-appliance');
+
+  if (!name) {
+    alert('Please enter an appliance name.');
+    return;
+  }
+  if (!targetRelayVal) {
+    alert('Please select a relay channel.');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  try {
+    if (targetRelayVal === '__unassign__') {
+      if (oldNodeId && oldChannelId != null) {
+        await fetchWithAuth(`${API_BASE}/relays/${oldNodeId}/${oldChannelId}/advanced-config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ room: 'General' })
+        });
+        const match = (cachedRelaysList || []).find(rel => rel.node_id === oldNodeId && rel.channel_id === oldChannelId);
+        if (match) match.room = 'General';
+      }
+      showToast(`Appliance unassigned from ${room.name}`, 'success');
+    } else {
+      const [targetNodeId, targetChannelStr] = targetRelayVal.split(':');
+      const targetChannelId = Number(targetChannelStr);
+
+      if (!isNew && oldNodeId && oldChannelId != null && (oldNodeId !== targetNodeId || oldChannelId !== targetChannelId)) {
+        await fetchWithAuth(`${API_BASE}/relays/${oldNodeId}/${oldChannelId}/advanced-config`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ room: 'General' })
+        });
+        const oldMatch = (cachedRelaysList || []).find(rel => rel.node_id === oldNodeId && rel.channel_id === oldChannelId);
+        if (oldMatch) oldMatch.room = 'General';
+      }
+
+      const res = await fetchWithAuth(`${API_BASE}/relays/${targetNodeId}/${targetChannelId}/advanced-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name,
+          icon: icon,
+          function: applianceType,
+          room: room.name
+        })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Failed to update appliance');
+
+      const targetMatch = (cachedRelaysList || []).find(rel => rel.node_id === targetNodeId && rel.channel_id === targetChannelId);
+      if (targetMatch) {
+        targetMatch.name = name;
+        targetMatch.icon = icon;
+        targetMatch.function = applianceType;
+        targetMatch.room = room.name;
+      }
+      if (fleetData.relays) {
+        const fMatch = fleetData.relays.find(rel => rel.node_id === targetNodeId && rel.channel_id === targetChannelId);
+        if (fMatch) {
+          fMatch.name = name;
+          fMatch.icon = icon;
+          fMatch.function = applianceType;
+          fMatch.room = room.name;
+        }
+      }
+
+      showToast(`Appliance "${name}" (${icon}) updated successfully!`, 'success');
+    }
+
+    closeModal();
+    loadRoomsAndHomes();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Save Appliance';
+    alert('Error saving appliance: ' + err.message);
+  }
+}
+window.handleSaveRoomAppliance = handleSaveRoomAppliance;
+
+async function handleUnassignApplianceDirect(nodeId, channelId, roomId) {
+  if (!confirm('Unassign this appliance from this room?')) return;
+  try {
+    await fetchWithAuth(`${API_BASE}/relays/${nodeId}/${channelId}/advanced-config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room: 'General' })
+    });
+    const match = (cachedRelaysList || []).find(rel => rel.node_id === nodeId && rel.channel_id === channelId);
+    if (match) match.room = 'General';
+    showToast('Appliance unassigned from room', 'success');
+    closeModal();
+    loadRoomsAndHomes();
+  } catch (err) {
+    alert('Error unassigning: ' + err.message);
+  }
+}
+window.handleUnassignApplianceDirect = handleUnassignApplianceDirect;
 
 // Helper to toggle Home Common Utilities drawer inside room canvas
 let isRoomCommonDrawerOpen = false;
@@ -5720,9 +6119,14 @@ function openAssignHardwareToRoomModal(roomId) {
                       </div>
                     </div>
                   </div>
-                  <span style="font-size: 10px; padding: 2px 6px; border-radius: 4px; background: ${isAssignedToRoom ? 'rgba(16, 185, 129, 0.15)' : (isCommon ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255,255,255,0.05)')}; color: ${isAssignedToRoom ? '#10b981' : (isCommon ? '#f59e0b' : '#64748b')};">
-                    ${isAssignedToRoom ? 'In this Room' : (isCommon ? '⚡ Home Common (' + (r.room || 'General') + ')' : (r.room || 'General'))}
-                  </span>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 10px; padding: 2px 6px; border-radius: 4px; background: ${isAssignedToRoom ? 'rgba(16, 185, 129, 0.15)' : (isCommon ? 'rgba(245, 158, 11, 0.15)' : 'rgba(255,255,255,0.05)')}; color: ${isAssignedToRoom ? '#10b981' : (isCommon ? '#f59e0b' : '#64748b')};">
+                      ${isAssignedToRoom ? 'In this Room' : (isCommon ? '⚡ Home Common (' + (r.room || 'General') + ')' : (r.room || 'General'))}
+                    </span>
+                    <button type="button" class="btn btn-secondary" style="padding: 2px 6px; font-size: 10px;" title="Customize Icon & Appliance Type" onclick="event.preventDefault(); event.stopPropagation(); const m = document.getElementById('assign-hardware-modal'); if (m) m.remove(); openEditRoomApplianceModal('${r.node_id}', ${r.channel_id}, ${room.id});">
+                      ✏️
+                    </button>
+                  </div>
                 </label>
               `;
             }).join('')}
