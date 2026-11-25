@@ -29,29 +29,16 @@ All node-side `P0` / `P1` / `P2` items are now implemented and verified live on 
 
 ## Bugs & Follow-Up Fixes Found During Verification (Commit `83f2954`)
 
-- [ ] **Fix `showToast(...)` String Signature Mismatch in `public/assets/app.js` (`L695`, `L3855`)**
-  - **Problem:** `showToast(notif)` (`L378–L403`) expects an object `{ title, message, severity, category }` and ignores any 2nd parameter. Both `handleRealtimeIrEvent()` (`L695`: `showToast(\`📡 IR Signal Received...\`, 'info')`) and `saveRelayChannelConfig()` (`L3855`: `showToast(data.message || 'Pin configured successfully', 'success')`) pass a string instead, causing toasts to display title **`Notification`** with an **empty body**.
-  - **Fix:** Pass structured toast objects, e.g.:
-    ```javascript
-    showToast({ title: '📡 IR Signal Received', message: `${code} (${protocol}) from ${nodeId}`, severity: 'INFO', category: 'IR' });
-    showToast({ title: 'Pin Configured', message: data.message || 'Pin configured successfully', severity: 'SUCCESS', category: 'PIN' });
-    ```
-
-- [ ] **Fix `updatePinSensorReading()` Calibration Wipe & `OR pin = ?` Collision in `src/database.js` (`L1518–L1546`)**
-  - **Problem 1 (Config Wipe):** Updating `sensor_config_json = JSON.stringify(meta)` overwrites `sensor_config_json` with `{ dcVoltage, acRms, rawAdc, protocol, code }` on every heartbeat/telemetry packet, wiping user-saved `interval_ms`, `multiplier`, `offset`, `ir_protocol`, and `voltage_mode` configured in the Pin Modal (`app.js:3824–3830`).
-  - **Problem 2 (`OR pin = ?` Cross-Channel Overwrite):** `WHERE node_id = ? AND (channel_id = ? OR pin = ?)` mixes `channel_id` and `pin` namespaces. For example, telemetry from `A0` on `CH 12` (GPIO `17`) also overwrites any channel wired to `GPIO 12` (`D6`).
-  - **Fix:** Merge `meta` into the existing parsed `sensor_config_json` object before persisting, and add an explicit `byPin = false` parameter so channel-based calls match strictly on `channel_id = ?` while pin-only fallbacks (`nodeManager.js:511, 524`) match `pin = ?` only when `channel_id` is absent.
-
-- [ ] **Fix `sendDirectLanHttp()` `401` Retry Path in `src/nodeManager.js` (`L845–L865`)**
-  - **Problem:** When `POST /api/commands/execute` returns `401` (e.g., stale cached Bearer token on an unpaired node), `L859–L865` calls `authenticateNode(ip)` and retries **`/api/gpio/state`** instead of retrying **`/api/commands/execute`**. This causes `read_sensor`, `send_ir`, and `configure_pin` commands to fail after re-authentication.
-  - **Fix:** Retry `makeRequest('/api/commands/execute', command, token)` after `authenticateNode(ip)` before falling back to `/api/gpio/state` for relay `setState`/`toggle` only.
-
-- [ ] **Auto-Refresh Relays / Sensor Badges on WebSocket `telemetry_update` in `public/assets/app.js` (`L619–L627`)**
-  - **Problem:** Incoming `telemetry_update` / `sensor_telemetry` frames only call `updateOverviewTelemetrySilently()` when `currentView === "overview"`. Live `AC | DC` voltage badges and IR/sensor strings on the Relays / Pin Matrix view stay stale until manual tab switch or page reload.
-  - **Fix:** Refresh relay/sensor badge DOM nodes (or call `loadRelays()` throttled) when `currentView === "relays"` and `telemetry_update` / `sensor_telemetry` arrives.
-
-- [ ] **Operational Check: Enable Telemetry Push on `NODE-8C4F00565D72` (`192.168.1.28`)**
-  - **Observed:** Live `GET http://192.168.1.28/api/receiver` reports `"enabled": false` (`"serverHost": "192.168.1.10"`, `"serverPort": 2000`, `"packetsSent": 0`). Push config from Central Server (`Nodes -> Push Config`) or enable on node `/api/receiver` to activate real-time `sensor_event` pushes to `192.168.1.10:2000`.
+- [x] **Fix `showToast(...)` String Signature Mismatch in `public/assets/app.js` (`L695`, `L3855`)** *(Implemented & Verified)*
+  - **Status:** Made `showToast(notif, optSeverity, optCategory, optTitle)` polymorphic so both structured objects `{ title, message, severity, category }` and plain strings `showToast(msg, 'success')` render with proper icons, titles, and styles. Updated `handleRealtimeIrEvent` and `saveRelayChannelConfig` call sites.
+- [x] **Fix `updatePinSensorReading()` Calibration Wipe & `OR pin = ?` Collision in `src/database.js` (`L1518–L1546`)** *(Implemented & Verified)*
+  - **Status:** Fixed in both `database.js:updatePinSensorReading` and `database.js:upsertRelayFromChannel`. Merges incoming telemetry metrics into the existing `sensor_config_json` without overwriting user-configured calibration (`interval_ms`, `multiplier`, `offset`, `voltage_mode`). Added `byPin` boolean parameter to eliminate cross-channel namespace collisions. Verified live: user calibration on CH12 remained intact after live telemetry push.
+- [x] **Fix `sendDirectLanHttp()` `401` Retry Path in `src/nodeManager.js` (`L845–L865`)** *(Implemented & Verified)*
+  - **Status:** On HTTP 401 from `/api/commands/execute`, `nodeManager.sendDirectLanHttp` re-authenticates and retries `/api/commands/execute`, only falling back to `/api/gpio/state` if the action is a relay state change (`setState`, `toggle`). Verified live with `read_sensor` executing directly via LAN HTTP.
+- [x] **Auto-Refresh Relays / Sensor Badges on WebSocket `telemetry_update` in `public/assets/app.js` (`L619–L627`)** *(Implemented & Verified)*
+  - **Status:** Added `updateRelaysViewTelemetrySilently(data)` to update in-memory `fleetData.relays` and perform targeted DOM updates on `<td id="sensor-reading-${nodeId}-${channelId}">` for live AC RMS / DC voltages and IR strings with zero screen flicker and zero input focus loss.
+- [x] **Operational Check: Enable Telemetry Push on `NODE-8C4F00565D72` (`192.168.1.28`)** *(Configured & Live-Verified)*
+  - **Status:** Configured receiver on physical node (`192.168.1.28`) pointing to `192.168.1.10:2000` via TCP. Fixed `strVal` typo in `nodeManager.js:488`. Tested `POST /api/receiver/push`: telemetry successfully delivered to port 2000 and ingested into SQLite database with 200 OK.
 
 ---
 

@@ -485,7 +485,7 @@ class NodeManager {
         if (Number.isFinite(channelId) && channelId > 0) {
           this.db.updateSensorReading(nodeId, channelId, {
             value: numVal,
-            strValue,
+            strValue: strVal,
             unit: s.unit || '',
             meta: {
               dcVoltage: s.dcVoltage,
@@ -494,7 +494,7 @@ class NodeManager {
               protocol: s.protocol,
               code: s.code,
             }
-          });
+          }, false);
         }
       }
       this.broadcast('sensor_telemetry', { nodeId, sensors: data.sensors });
@@ -508,10 +508,12 @@ class NodeManager {
         value: 1,
         unit: 'HEX'
       });
-      this.db.updatePinSensorReading(nodeId, data.channel_id || data.pin || 0, 1, code, {
+      const hasCh = data.channel_id != null && Number(data.channel_id) > 0;
+      const targetChOrPin = hasCh ? Number(data.channel_id) : (Number(data.pin) || 0);
+      this.db.updatePinSensorReading(nodeId, targetChOrPin, 1, code, {
         code,
         protocol
-      });
+      }, !hasCh);
       this.broadcast('sensor_telemetry', { nodeId, type: 'IR_RECEIVER', code, protocol });
     } else if (data.voltage !== undefined) {
       this.db.upsertSensor({
@@ -521,9 +523,11 @@ class NodeManager {
         value: Number(data.voltage),
         unit: 'V'
       });
-      this.db.updatePinSensorReading(nodeId, data.channel_id || data.pin || 0, Number(data.voltage), `${data.voltage} V`, {
+      const hasCh = data.channel_id != null && Number(data.channel_id) > 0;
+      const targetChOrPin = hasCh ? Number(data.channel_id) : (Number(data.pin) || 0);
+      this.db.updatePinSensorReading(nodeId, targetChOrPin, Number(data.voltage), `${data.voltage} V`, {
         dcVoltage: data.voltage
-      });
+      }, !hasCh);
       this.broadcast('sensor_telemetry', { nodeId, type: 'VOLTAGE', value: data.voltage });
     }
 
@@ -845,6 +849,14 @@ class NodeManager {
     // 1. Try unified firmware /api/commands/execute endpoint
     let token = this.nodeAuthTokens.get(ip);
     let res = await makeRequest('/api/commands/execute', command, token);
+    if (res.statusCode === 401) {
+      // Authenticate and retry /api/commands/execute
+      token = await this.authenticateNode(ip);
+      if (token) {
+        res = await makeRequest('/api/commands/execute', command, token);
+      }
+    }
+
     if (res.statusCode === 200) {
       return { success: true, message: res.data || 'OK' };
     }
@@ -853,21 +865,25 @@ class NodeManager {
       return { success: false, message: res.error };
     }
 
-    // 2. Fallback to legacy /api/gpio/state endpoint
-    res = await makeRequest('/api/gpio/state', command, token);
+    // 2. Fallback to legacy /api/gpio/state endpoint ONLY for relay toggle or setState actions
+    const isRelayAction = command.action === 'setState' || command.action === 'toggle' || command.state !== undefined;
+    if (isRelayAction) {
+      res = await makeRequest('/api/gpio/state', command, token);
 
-    if (res.statusCode === 401) {
-      // Authenticate and retry
-      token = await this.authenticateNode(ip);
-      if (token) {
-        res = await makeRequest('/api/gpio/state', command, token);
+      if (res.statusCode === 401) {
+        // Authenticate and retry
+        token = await this.authenticateNode(ip);
+        if (token) {
+          res = await makeRequest('/api/gpio/state', command, token);
+        }
+      }
+
+      if (res.statusCode === 200) {
+        return { success: true, message: 'OK' };
       }
     }
 
-    if (res.statusCode === 200) {
-      return { success: true, message: 'OK' };
-    }
-    return { success: false, message: res.error || `HTTP ${res.statusCode}` };
+    return { success: false, message: res.error || (typeof res.data === 'string' ? res.data : JSON.stringify(res.data)) || `HTTP ${res.statusCode}` };
   }
 
   async authenticateNode(ip, customUser = null, customPass = null) {
@@ -1240,7 +1256,10 @@ class NodeManager {
 
     const receiverPayload = {
       enabled: true,
-      server: `${hostIp}:${this.config.tcp_port || 2000}`
+      server: `${hostIp}:${this.config.tcp_port || 2000}`,
+      protocol: 0,
+      reportIntervalSec: 15,
+      sendOnStateChange: true
     };
 
     const user = node.auth_username || this.config.node_auth?.username || 'admin';
@@ -1251,12 +1270,14 @@ class NodeManager {
       token = await this.authenticateNode(nodeIp, user, pass);
     }
 
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64')
-    };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+    const headers = this.getNodeAuthHeaders(node);
+    headers['Content-Type'] = 'application/json';
+    if (!headers['Authorization']) {
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      } else {
+        headers['Authorization'] = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
+      }
     }
 
     const results = {};
@@ -1264,17 +1285,21 @@ class NodeManager {
     // 1. Sync all channels individually via HTTP
     for (const ch of channelsPayload) {
       try {
+        const bodyStr = JSON.stringify({
+          id: ch.id,
+          name: ch.name,
+          room: ch.room || 'General',
+          function: ch.function || 'Relay',
+          activeLow: Boolean(ch.activeLow),
+          enabled: Boolean(ch.enabled)
+        });
         const rUpdate = await fetch(`http://${nodeIp}/api/gpio/update`, {
           method: 'POST',
-          headers,
-          body: JSON.stringify({
-            id: ch.id,
-            name: ch.name,
-            room: ch.room || 'General',
-            function: ch.function || 'Relay',
-            activeLow: Boolean(ch.activeLow),
-            enabled: Boolean(ch.enabled)
-          }),
+          headers: {
+            ...headers,
+            'Content-Length': String(Buffer.byteLength(bodyStr))
+          },
+          body: bodyStr,
           signal: AbortSignal.timeout(3000)
         });
         results[`ch_${ch.id}`] = { status: rUpdate.status, ok: rUpdate.ok };
@@ -1297,10 +1322,14 @@ class NodeManager {
 
     // 3. Configure receiver
     try {
+      const rxStr = JSON.stringify(receiverPayload);
       const r2 = await fetch(`http://${nodeIp}/api/receiver`, {
         method: 'POST',
-        headers,
-        body: JSON.stringify(receiverPayload),
+        headers: {
+          ...headers,
+          'Content-Length': String(Buffer.byteLength(rxStr))
+        },
+        body: rxStr,
         signal: AbortSignal.timeout(3000)
       });
       results.receiver = { status: r2.status, ok: r2.ok };

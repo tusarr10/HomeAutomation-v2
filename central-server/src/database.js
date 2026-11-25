@@ -1020,7 +1020,7 @@ class FleetDatabase {
       });
     }
 
-    const existingRelay = this.db.prepare('SELECT current_state, name, room, pin, function, icon, pin_mode, active_low, enabled FROM relays WHERE node_id = ? AND channel_id = ?').get(nodeId, chId);
+    const existingRelay = this.db.prepare('SELECT current_state, name, room, pin, function, icon, pin_mode, active_low, enabled, sensor_config_json FROM relays WHERE node_id = ? AND channel_id = ?').get(nodeId, chId);
 
     let changed = false;
     let oldState = 0;
@@ -1039,6 +1039,24 @@ class FleetDatabase {
       const finalFunc = func || existingRelay.function;
       const finalIcon = existingRelay.icon || (isSensor ? (sensorType?.includes('ADC') ? 'voltage' : 'sensor') : 'light');
 
+      // Merge incoming telemetry sensorMetaJson into existing calibration without wiping user config
+      let finalConfigJson = null;
+      if (sensorMetaJson || existingRelay.sensor_config_json) {
+        let existingCfg = {};
+        if (existingRelay.sensor_config_json) {
+          try {
+            existingCfg = JSON.parse(existingRelay.sensor_config_json) || {};
+          } catch (_) {}
+        }
+        if (sensorMetaJson) {
+          try {
+            const incomingMeta = JSON.parse(sensorMetaJson) || {};
+            existingCfg = { ...existingCfg, ...incomingMeta };
+          } catch (_) {}
+        }
+        finalConfigJson = JSON.stringify(existingCfg);
+      }
+
       const updateStmt = this.db.prepare(`
         UPDATE relays SET
           pin = ?, name = ?, room = ?, function = ?, icon = ?,
@@ -1056,7 +1074,7 @@ class FleetDatabase {
         state, state, nowStr,
         pinMode, sensorType, sensorUnit,
         sensorVal, sensorStr,
-        sensorMetaJson, sensorMetaJson,
+        finalConfigJson, finalConfigJson,
         nodeId, chId
       );
     } else {
@@ -1515,34 +1533,79 @@ class FleetDatabase {
     };
   }
 
-  updatePinSensorReading(nodeId, channelId, value, strValue = null, meta = null) {
+  updatePinSensorReading(nodeId, channelIdOrPin, value, strValue = null, meta = null, byPin = false) {
     const nowStr = new Date().toISOString();
     try {
+      const targetId = Number(channelIdOrPin) || 0;
+      let mergedConfigJson = null;
+
       if (meta) {
-        this.db.prepare(`
-          UPDATE relays SET
-            last_sensor_value = ?,
-            last_sensor_str = ?,
-            sensor_config_json = ?,
-            last_changed_at = ?
-          WHERE node_id = ? AND (channel_id = ? OR pin = ?)
-        `).run(Number(value) || 0, strValue ? String(strValue) : String(value), typeof meta === 'object' ? JSON.stringify(meta) : String(meta), nowStr, nodeId, Number(channelId) || 0, Number(channelId) || 0);
+        // Fetch existing config from the targeted row to preserve user calibration
+        const row = byPin
+          ? this.db.prepare(`SELECT sensor_config_json FROM relays WHERE node_id = ? AND pin = ? LIMIT 1`).get(nodeId, targetId)
+          : this.db.prepare(`SELECT sensor_config_json FROM relays WHERE node_id = ? AND channel_id = ? LIMIT 1`).get(nodeId, targetId);
+
+        let existing = {};
+        if (row && row.sensor_config_json) {
+          try {
+            existing = JSON.parse(row.sensor_config_json) || {};
+          } catch (_) {}
+        }
+        if (typeof meta === 'object' && meta !== null) {
+          existing = { ...existing, ...meta };
+        }
+        mergedConfigJson = JSON.stringify(existing);
+      }
+
+      const numVal = Number(value) || 0;
+      const sVal = strValue ? String(strValue) : String(value);
+
+      if (byPin) {
+        if (mergedConfigJson !== null) {
+          this.db.prepare(`
+            UPDATE relays SET
+              last_sensor_value = ?,
+              last_sensor_str = ?,
+              sensor_config_json = ?,
+              last_changed_at = ?
+            WHERE node_id = ? AND pin = ?
+          `).run(numVal, sVal, mergedConfigJson, nowStr, nodeId, targetId);
+        } else {
+          this.db.prepare(`
+            UPDATE relays SET
+              last_sensor_value = ?,
+              last_sensor_str = ?,
+              last_changed_at = ?
+            WHERE node_id = ? AND pin = ?
+          `).run(numVal, sVal, nowStr, nodeId, targetId);
+        }
       } else {
-        this.db.prepare(`
-          UPDATE relays SET
-            last_sensor_value = ?,
-            last_sensor_str = ?,
-            last_changed_at = ?
-          WHERE node_id = ? AND (channel_id = ? OR pin = ?)
-        `).run(Number(value) || 0, strValue ? String(strValue) : String(value), nowStr, nodeId, Number(channelId) || 0, Number(channelId) || 0);
+        if (mergedConfigJson !== null) {
+          this.db.prepare(`
+            UPDATE relays SET
+              last_sensor_value = ?,
+              last_sensor_str = ?,
+              sensor_config_json = ?,
+              last_changed_at = ?
+            WHERE node_id = ? AND channel_id = ?
+          `).run(numVal, sVal, mergedConfigJson, nowStr, nodeId, targetId);
+        } else {
+          this.db.prepare(`
+            UPDATE relays SET
+              last_sensor_value = ?,
+              last_sensor_str = ?,
+              last_changed_at = ?
+            WHERE node_id = ? AND channel_id = ?
+          `).run(numVal, sVal, nowStr, nodeId, targetId);
+        }
       }
     } catch (e) {
       console.warn('[Database] updatePinSensorReading error:', e.message);
     }
   }
 
-  updateSensorReading(nodeId, channelId, { value = 0, strValue = null, unit = '', meta = null } = {}) {
-    this.updatePinSensorReading(nodeId, channelId, value, strValue, meta);
+  updateSensorReading(nodeId, channelId, { value = 0, strValue = null, unit = '', meta = null } = {}, byPin = false) {
+    this.updatePinSensorReading(nodeId, channelId, value, strValue, meta, byPin);
   }
 
   updateRelayState(nodeId, channelId, state) {

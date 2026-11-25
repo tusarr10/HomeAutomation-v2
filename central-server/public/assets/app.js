@@ -375,21 +375,46 @@ function updateNotificationBadges(delta) {
   setNotificationBadges(unreadNotifCount + delta);
 }
 
-function showToast(notif) {
+function showToast(notif, optSeverity = "INFO", optCategory = "SYSTEM", optTitle = null) {
   const container = document.getElementById("toast-container");
   if (!container) return;
+
+  if (typeof notif === "string") {
+    let title = optTitle;
+    if (!title) {
+      const sevUpper = String(optSeverity).toUpperCase();
+      if (sevUpper === "SUCCESS") title = "Success";
+      else if (sevUpper === "ERROR") title = "Error";
+      else if (sevUpper === "WARNING") title = "Warning";
+      else title = "Notification";
+    }
+    notif = {
+      title,
+      message: notif,
+      severity: optSeverity,
+      category: optCategory,
+    };
+  } else if (!notif || typeof notif !== "object") {
+    return;
+  }
 
   const toast = document.createElement("div");
   const severity = (notif.severity || "INFO").toLowerCase();
   toast.className = `toast-item toast-${severity}`;
 
   let icon = "🔔";
+  if (severity === "success") icon = "✅";
+  else if (severity === "error") icon = "❌";
+  else if (severity === "warning") icon = "⚠️";
+
   if (notif.category === "PIN" || (notif.title && notif.title.includes("Pin"))) {
-    icon = notif.title.includes("ON") ? "⚡" : "⚪";
+    icon = notif.title.includes("ON") ? "⚡" : (notif.title.includes("OFF") ? "⚪" : "🔌");
   } else if (notif.category === "NODE" || (notif.title && notif.title.includes("Node"))) {
     icon = notif.title.includes("Online") ? "🟢" : "🔴";
   } else if (notif.category === "RESTART" || (notif.title && (notif.title.includes("Reboot") || notif.title.includes("Restart")))) {
     icon = "🔄";
+  } else if (notif.category === "IR" || (notif.title && notif.title.includes("IR"))) {
+    icon = "📡";
   }
 
   const timeStr = notif.timestamp ? new Date(notif.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
@@ -620,6 +645,7 @@ function handleLiveEvent(type, data) {
     if (currentView === "telemetry") appendTelemetryLog(data);
     // Silent in-place metrics refresh without wiping DOM
     if (currentView === "overview") updateOverviewTelemetrySilently();
+    if (currentView === "relays") updateRelaysViewTelemetrySilently(data);
     // Real-time IR / Sensor Event dispatch
     const sEvt = data.sensorEvent || (type === "sensor_event" ? data : null);
     if (sEvt && (sEvt.sensor_type === "IR_RECEIVER" || sEvt.ir_code)) {
@@ -692,7 +718,80 @@ function handleRealtimeIrEvent(nodeId, evt) {
     if (saveContainer) saveContainer.style.display = 'flex';
   }
 
-  showToast(`📡 IR Signal Received: ${code} (${protocol}) from ${nodeId}`, 'info');
+  showToast({
+    title: '📡 IR Signal Received',
+    message: `${code} (${protocol}) from ${nodeId}`,
+    severity: 'INFO',
+    category: 'IR'
+  });
+}
+
+function updateRelaysViewTelemetrySilently(data) {
+  const nodeId = data.nodeId || data.node_id;
+  if (!nodeId) return;
+
+  // Update channels state if provided
+  if (Array.isArray(data.channels)) {
+    for (const ch of data.channels) {
+      const chId = ch.id ?? ch.channel_id;
+      if (chId != null && ch.state !== undefined) {
+        updateRelayUiState(nodeId, chId, Boolean(ch.state));
+      }
+    }
+  }
+
+  // Update sensor readings if provided
+  if (Array.isArray(data.sensors)) {
+    for (const s of data.sensors) {
+      const chId = s.channel_id ?? s.id;
+      if (chId == null) continue;
+
+      const r = (fleetData.relays || []).find(relay => relay.node_id === nodeId && (relay.channel_id == chId || relay.pin == s.pin));
+      if (r) {
+        if (s.value !== undefined) r.last_sensor_value = s.value;
+        if (s.strValue) r.last_sensor_str = s.strValue;
+        if (!r.sensor_meta) r.sensor_meta = {};
+        if (s.dcVoltage !== undefined) r.sensor_meta.dcVoltage = s.dcVoltage;
+        if (s.acRms !== undefined) r.sensor_meta.acRms = s.acRms;
+        if (s.rawAdc !== undefined) r.sensor_meta.rawAdc = s.rawAdc;
+        if (s.code) r.sensor_meta.code = s.code;
+        if (s.protocol) r.sensor_meta.protocol = s.protocol;
+        if (r.sensor_config) {
+          Object.assign(r.sensor_config, r.sensor_meta);
+        }
+      }
+
+      const sensorEl = document.getElementById(`sensor-reading-${nodeId}-${chId}`);
+      if (sensorEl) {
+        let badgeHtml = '';
+        if (s.type === 'VOLTAGE_ADC' || s.type === 'VOLTAGE' || (r && (r.sensor_type === 'VOLTAGE' || r.sensor_type === 'VOLTAGE_ADC' || r.function?.toLowerCase().includes('voltage')))) {
+          const dc = s.dcVoltage != null ? s.dcVoltage : s.value;
+          const rms = s.acRms;
+          const rawAdc = s.rawAdc;
+          let badgeText = '';
+          if (rms != null && Number(rms) > 0.005) {
+            badgeText = `⚡ AC ${Number(rms).toFixed(2)}V | DC ${Number(dc ?? 0).toFixed(2)}V`;
+          } else if (dc != null) {
+            badgeText = `⚡ ${Number(dc).toFixed(3)} V`;
+          } else {
+            badgeText = `⚡ -- V`;
+          }
+          const tooltip = `title="DC: ${dc != null ? Number(dc).toFixed(3) : '--'}V | AC RMS: ${rms != null ? Number(rms).toFixed(3) : '--'}V | Raw ADC: ${rawAdc ?? '--'}"`;
+          badgeHtml = `<span ${tooltip} style="font-weight: 700; color: #f59e0b; font-family: monospace; font-size: 11px; background: rgba(245, 158, 11, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(245, 158, 11, 0.3); cursor: help;">${badgeText}</span>`;
+        } else if (s.type === 'IR_RECEIVER' || (r && (r.sensor_type === 'IR_RECEIVER' || r.function === 'IR Receiver'))) {
+          const irStr = s.strValue || s.code || (r ? r.last_sensor_str : null) || 'Listening...';
+          badgeHtml = `<span style="font-weight: 700; color: #c084fc; font-family: monospace; font-size: 11px; background: rgba(168, 85, 247, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(168, 85, 247, 0.3);">📡 ${escapeHtml(irStr)}</span>`;
+        } else if (s.type === 'PIR_MOTION' || (r && (r.sensor_type === 'PIR_MOTION' || r.function === 'PIR Motion'))) {
+          const mState = s.strValue || (s.value ? 'ACTIVE' : 'Clear');
+          badgeHtml = `<span style="font-weight: 700; color: #4ade80; font-family: monospace; font-size: 11px; background: rgba(34, 197, 94, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(34, 197, 94, 0.3);">🚶 ${escapeHtml(mState)}</span>`;
+        } else {
+          const valText = s.strValue || (s.value != null ? s.value + ' ' + (s.unit || '') : 'Active');
+          badgeHtml = `<span style="font-weight: 700; color: #38bdf8; font-family: monospace; font-size: 11px; background: rgba(56, 189, 248, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(56, 189, 248, 0.3);">${escapeHtml(valText)}</span>`;
+        }
+        sensorEl.innerHTML = badgeHtml;
+      }
+    }
+  }
 }
 
 // --- 1. OVERVIEW / RELAY SERVER DASHBOARD (v2.0) ---
@@ -3461,7 +3560,7 @@ function renderRelaysPinMatrixView(nodes, relays, homes = []) {
                 <td><span class="gpio-badge" style="font-family: monospace;">${pinLabel}</span></td>
                 <td>${roleBadgeHtml}</td>
                 <td>${configDetailHtml}</td>
-                <td>${liveControlHtml}</td>
+                <td ${isSensor ? `id="sensor-reading-${r.node_id}-${r.channel_id}"` : ''}>${liveControlHtml}</td>
                 <td style="text-align: right; white-space: nowrap;">
                   <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px; margin-right: 4px;" onclick="openRelayChannelConfigModal('${r.node_id}', ${r.channel_id})">⚙ Configure</button>
                   <button class="btn btn-danger" style="font-size: 11px; padding: 4px 7px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); color: #f87171;" title="Unassign pin" onclick="handleUnassignPin('${r.node_id}', ${r.channel_id}, '${escapeHtml(r.name)}')">🗑️</button>
@@ -3852,11 +3951,15 @@ async function saveRelayChannelConfig(nodeId, channelId) {
       })
     });
     const data = await res.json();
-    showToast(data.message || 'Pin configured successfully', 'success');
-    closeModal();
-    loadRelays();
+    if (data.success || data.status === 'ok') {
+      showToast({ title: 'Pin Configured', message: data.message || 'Pin configured successfully', severity: 'SUCCESS', category: 'PIN' });
+      closeModal();
+      loadRelays();
+    } else {
+      showToast({ title: 'Config Error', message: data.error || 'Failed to save configuration', severity: 'ERROR', category: 'PIN' });
+    }
   } catch (err) {
-    showToast('Failed to save pin config: ' + err.message, 'error');
+    showToast({ title: 'Config Failed', message: 'Failed to save pin config: ' + err.message, severity: 'ERROR', category: 'PIN' });
   }
 }
 
