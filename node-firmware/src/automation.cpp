@@ -90,7 +90,9 @@ void AutomationEngine::saveToStorage() {}
 AutomationEngine::AutomationEngine()
     : _nextId(1),
       _tzOffsetSec(19800), // Default to Indian Standard Time (IST UTC+5:30)
-      _lastNtpSyncAttempt(0) {}
+      _lastNtpSyncAttempt(0) {
+    _rules.reserve(MAX_AUTOMATION_RULES);
+}
 
 AutomationEngine& AutomationEngine::getInstance() {
     static AutomationEngine instance;
@@ -105,7 +107,7 @@ bool AutomationEngine::begin() {
 
 void AutomationEngine::syncNtp() {
     if (WifiManager::getInstance().isSTAConnected()) {
-        Serial.printf("[AUTO] Configuring NTP time synchronization (Offset: %+ld sec = %+0.1fh)...\n",
+        Serial.printf_P(PSTR("[AUTO] Configuring NTP time synchronization (Offset: %+ld sec = %+0.1fh)...\n"),
                       (long)_tzOffsetSec, (float)_tzOffsetSec / 3600.0f);
         // Use Google and reliable Asian/Indian NTP pools
         configTime(_tzOffsetSec, 0, "time.google.com", "in.pool.ntp.org", "asia.pool.ntp.org");
@@ -143,14 +145,14 @@ void AutomationEngine::notifyGpioStateChanged(uint8_t gpioId, bool newState) {
             if (rule.targetGpioId == gpioId) {
                 if (newState) {
                     rule.timerExpiry = millis() + ((unsigned long)rule.param1 * 1000UL);
-                    Serial.printf("[AUTO] Timer rule '%s' started: %u sec\n", rule.name.c_str(), rule.param1);
+                    Serial.printf_P(PSTR("[AUTO] Timer rule '%s' started: %u sec\n"), rule.name, rule.param1);
                 } else {
                     rule.timerExpiry = 0; // Cancel if turned off manually
                 }
             }
         } else if (rule.type == RULE_INTERLOCK) {
             if (rule.sourceGpioId == gpioId && newState == rule.conditionState) {
-                Serial.printf("[AUTO] Interlock rule '%s' triggered\n", rule.name.c_str());
+                Serial.printf_P(PSTR("[AUTO] Interlock rule '%s' triggered\n"), rule.name);
                 GpioManager::getInstance().setState(rule.targetGpioId, rule.targetState);
                 rule.executionCount++;
                 saveToStorage();
@@ -178,7 +180,7 @@ void AutomationEngine::loop() {
         if (rule.type == RULE_TIMER_AUTO_OFF && rule.timerExpiry > 0) {
             if (nowMs >= rule.timerExpiry) {
                 rule.timerExpiry = 0;
-                Serial.printf("[AUTO] Auto-off timer expired for '%s'\n", rule.name.c_str());
+                Serial.printf_P(PSTR("[AUTO] Auto-off timer expired for '%s'\n"), rule.name);
                 GpioManager::getInstance().setState(rule.targetGpioId, false);
                 rule.executionCount++;
                 saveToStorage();
@@ -202,8 +204,8 @@ void AutomationEngine::loop() {
                 if (rule.param1 == currentMinOfDay) {
                     if (rule.lastTriggeredDay != tinfo->tm_yday) {
                         rule.lastTriggeredDay = tinfo->tm_yday;
-                        Serial.printf("[AUTO] Schedule rule '%s' triggered at %02d:%02d\n",
-                                      rule.name.c_str(), tinfo->tm_hour, tinfo->tm_min);
+                        Serial.printf_P(PSTR("[AUTO] Schedule rule '%s' triggered at %02d:%02d\n"),
+                                      rule.name, tinfo->tm_hour, tinfo->tm_min);
                         GpioManager::getInstance().setState(rule.targetGpioId, rule.targetState);
                         rule.executionCount++;
                         saveToStorage();
@@ -228,7 +230,12 @@ bool AutomationEngine::addRule(const String& name, uint8_t type, uint8_t sourceI
 
     AutomationRule r;
     r.id = _nextId++;
-    r.name = (name.length() > 0) ? name : String(F("Rule ")) + String(r.id);
+    if (name.length() > 0) {
+        strncpy(r.name, name.c_str(), sizeof(r.name) - 1);
+        r.name[sizeof(r.name) - 1] = '\0';
+    } else {
+        snprintf_P(r.name, sizeof(r.name), PSTR("Rule %u"), r.id);
+    }
     r.type = type;
     r.enabled = true;
     r.sourceGpioId = sourceId;
@@ -242,7 +249,7 @@ bool AutomationEngine::addRule(const String& name, uint8_t type, uint8_t sourceI
 
     _rules.push_back(r);
     saveToStorage();
-    Serial.printf("[AUTO] Added Rule ID %u: %s\n", r.id, r.name.c_str());
+    Serial.printf_P(PSTR("[AUTO] Added Rule ID %u: %s\n"), r.id, r.name);
     return true;
 }
 
@@ -250,7 +257,10 @@ bool AutomationEngine::updateRule(uint8_t id, const String& name, bool enabled, 
                                  bool condState, bool targetState, uint32_t param1, String& outError) {
     for (auto& r : _rules) {
         if (r.id == id) {
-            r.name = name;
+            if (name.length() > 0) {
+                strncpy(r.name, name.c_str(), sizeof(r.name) - 1);
+                r.name[sizeof(r.name) - 1] = '\0';
+            }
             r.enabled = enabled;
             r.sourceGpioId = sourceId;
             r.targetGpioId = targetId;
@@ -270,7 +280,7 @@ bool AutomationEngine::removeRule(uint8_t id) {
         if (it->id == id) {
             _rules.erase(it);
             saveToStorage();
-            Serial.printf("[AUTO] Removed Rule ID %u\n", id);
+            Serial.printf_P(PSTR("[AUTO] Removed Rule ID %u\n"), id);
             return true;
         }
     }
@@ -329,7 +339,9 @@ void AutomationEngine::loadFromStorage() {
     for (JsonObject obj : arr) {
         AutomationRule r;
         r.id = obj["id"] | 1;
-        r.name = obj["name"] | "Rule";
+        const char* rName = obj["name"] | "Rule";
+        strncpy(r.name, rName, sizeof(r.name) - 1);
+        r.name[sizeof(r.name) - 1] = '\0';
         r.type = obj["type"] | 0;
         r.enabled = obj["enabled"] | true;
         r.sourceGpioId = obj["sourceGpioId"] | 0;

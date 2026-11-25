@@ -1075,13 +1075,30 @@ static void sampleAnalogA0(float& outDcVolt, float& outAcRmsVolt, int& outRawAvg
     outAcRmsVolt = (sqrtf(sumSq / (float)kSamples) * 3.3f) / 1024.0f;
 }
 
+static inline void copyField(char* dst, size_t dstSize, const char* src) {
+    if (!src) { dst[0] = '\0'; return; }
+    strncpy(dst, src, dstSize - 1);
+    dst[dstSize - 1] = '\0';
+}
+
+static bool containsIgnoreCase(const char* hay, const char* needle) {
+    if (!hay || !needle || !*needle) return false;
+    size_t nlen = strlen(needle);
+    for (; *hay; hay++) {
+        if (strncasecmp(hay, needle, nlen) == 0) return true;
+    }
+    return false;
+}
+
 GpioManager::GpioManager()
     : _stateCallback(nullptr),
       _nextId(1),
       _i2cEnabled(false),
       _i2cSdaPin(4),
       _i2cSclPin(5),
-      _i2cAddress(0x27) {}
+      _i2cAddress(0x27) {
+    _channels.reserve(MAX_GPIO_CHANNELS);
+}
 
 GpioManager& GpioManager::getInstance() {
     static GpioManager instance;
@@ -1123,41 +1140,38 @@ bool GpioManager::isPinAssigned(uint8_t pin, uint8_t excludeId) {
     return false;
 }
 
-static void classifyChannel(uint8_t pin, const String& function, bool& isSensor, const char*& type, const char*& unit) {
-    String fn = function;
-    fn.toLowerCase();
-
+static void classifyChannel(uint8_t pin, const char* fn, bool& isSensor, const char*& type, const char*& unit) {
     isSensor = (pin == 17) ||
-               (fn.indexOf("voltage") >= 0) ||
-               (fn.indexOf("ir receiver") >= 0) ||
-               (fn.indexOf("pir") >= 0) ||
-               (fn.indexOf("motion") >= 0) ||
-               (fn.indexOf("door") >= 0) ||
-               (fn.indexOf("window") >= 0) ||
-               (fn.indexOf("sensor") >= 0);
+               containsIgnoreCase(fn, "voltage") ||
+               containsIgnoreCase(fn, "ir receiver") ||
+               containsIgnoreCase(fn, "pir") ||
+               containsIgnoreCase(fn, "motion") ||
+               containsIgnoreCase(fn, "door") ||
+               containsIgnoreCase(fn, "window") ||
+               containsIgnoreCase(fn, "sensor");
 
     type = "RELAY";
     unit = "BOOL";
 
-    if (pin == 17 || fn.indexOf("voltage") >= 0) {
+    if (pin == 17 || containsIgnoreCase(fn, "voltage")) {
         type = "VOLTAGE_ADC";
         unit = "V";
-    } else if (fn.indexOf("ir receiver") >= 0) {
+    } else if (containsIgnoreCase(fn, "ir receiver")) {
         type = "IR_RECEIVER";
         unit = "HEX";
-    } else if (fn.indexOf("ir transmitter") >= 0) {
+    } else if (containsIgnoreCase(fn, "ir transmitter")) {
         type = "IR_TRANSMITTER";
         unit = "HEX";
-    } else if (fn.indexOf("pir") >= 0 || fn.indexOf("motion") >= 0) {
+    } else if (containsIgnoreCase(fn, "pir") || containsIgnoreCase(fn, "motion")) {
         type = "PIR_MOTION";
         unit = "STATE";
-    } else if (fn.indexOf("door") >= 0 || fn.indexOf("window") >= 0) {
+    } else if (containsIgnoreCase(fn, "door") || containsIgnoreCase(fn, "window")) {
         type = "DOOR_SENSOR";
         unit = "STATE";
-    } else if (fn == "light") {
+    } else if (fn && strcasecmp(fn, "light") == 0) {
         type = "LIGHT";
         unit = "BOOL";
-    } else if (fn == "fan") {
+    } else if (fn && strcasecmp(fn, "fan") == 0) {
         type = "FAN";
         unit = "BOOL";
     }
@@ -1186,7 +1200,7 @@ void GpioManager::applyPhysicalPin(const GpioChannel& channel) {
     if (isSensor) {
         if (!IS_PCF_PIN(channel.pin) && channel.pin <= 16) {
             pinMode(channel.pin, (channel.pin == 17) ? INPUT : INPUT_PULLUP);
-            if (channel.function.equalsIgnoreCase("IR Receiver")) {
+            if (strcasecmp(channel.function, "IR Receiver") == 0) {
                 IrManager::getInstance().setReceiverPin(channel.pin);
             }
         }
@@ -1242,12 +1256,12 @@ bool GpioManager::begin() {
 
 #if FEATURE_PCF8574
     if (_i2cEnabled) {
-        Serial.printf("[GPIO] Initializing I2C Bus: SDA=GPIO%u, SCL=GPIO%u, defaultAddr=0x%02X\n",
+        Serial.printf_P(PSTR("[GPIO] Initializing I2C Bus: SDA=GPIO%u, SCL=GPIO%u, defaultAddr=0x%02X\n"),
                       _i2cSdaPin, _i2cSclPin, _i2cAddress);
         Pcf8574Driver::getInstance().begin(_i2cSdaPin, _i2cSclPin, _i2cAddress);
         if (Pcf8574Driver::getInstance().isDetected()) {
             _i2cAddress = Pcf8574Driver::getInstance().getAddress();
-            Serial.printf("[GPIO] PCF8574 Expander active at 0x%02X\n", _i2cAddress);
+            Serial.printf_P(PSTR("[GPIO] PCF8574 Expander active at 0x%02X\n"), _i2cAddress);
             if (!i2cDoc.containsKey("address") || i2cDoc["address"].as<uint8_t>() != _i2cAddress) {
                 i2cDoc["address"] = _i2cAddress;
                 StorageManager::getInstance().saveJsonFile(FILE_I2C_CONFIG, i2cDoc);
@@ -1280,7 +1294,7 @@ bool GpioManager::begin() {
         for (auto& ch : _channels) {
             if (_i2cEnabled && (ch.pin == _i2cSdaPin || ch.pin == _i2cSclPin)) {
                 ch.enabled = false;
-                Serial.printf("[GPIO] Channel %u pin GPIO%u conflicts with I2C bus; deactivated.\n", ch.id, ch.pin);
+                Serial.printf_P(PSTR("[GPIO] Channel %u pin GPIO%u conflicts with I2C bus; deactivated.\n"), ch.id, ch.pin);
             }
 
             if (ch.initialMode == INITIAL_MODE_OFF) {
@@ -1289,8 +1303,8 @@ bool GpioManager::begin() {
                 ch.currentState = true;
             } else if (ch.initialMode == INITIAL_MODE_RESTORE_LAST) {
                 // ch.currentState loaded from LittleFS (/config/gpio.json) persists across reboots
-                Serial.printf("[GPIO] Channel %u (%s): Restored last state -> %s\n",
-                              ch.id, ch.name.c_str(), ch.currentState ? "ON" : "OFF");
+                Serial.printf_P(PSTR("[GPIO] Channel %u (%s): Restored last state -> %s\n"),
+                              ch.id, ch.name, ch.currentState ? "ON" : "OFF");
             }
             applyPhysicalPin(ch);
         }
@@ -1305,7 +1319,7 @@ void GpioManager::loop() {
             ch.pulseEndTime = 0;
             ch.currentState = false;
             applyPhysicalPin(ch);
-            Serial.printf("[GPIO] Channel %u (%s) pulse expired -> OFF\n", ch.id, ch.name.c_str());
+            Serial.printf_P(PSTR("[GPIO] Channel %u (%s) pulse expired -> OFF\n"), ch.id, ch.name);
             if (_stateCallback) {
                 _stateCallback(ch.id, false);
             }
@@ -1330,7 +1344,7 @@ void GpioManager::loop() {
             bool logical = ch.activeLow ? !raw : raw;
             if (logical != ch.currentState) {
                 ch.currentState = logical;
-                Serial.printf("[SENSOR] Channel %u (%s) -> %s\n", ch.id, ch.name.c_str(), logical ? "ACTIVE" : "IDLE");
+                Serial.printf_P(PSTR("[SENSOR] Channel %u (%s) -> %s\n"), ch.id, ch.name, logical ? "ACTIVE" : "IDLE");
                 if (_stateCallback) {
                     _stateCallback(ch.id, logical);
                 }
@@ -1361,9 +1375,10 @@ bool GpioManager::addChannel(uint8_t pin, const String& name, const String& room
     GpioChannel ch;
     ch.id = _nextId++;
     ch.pin = pin;
-    ch.name = (name.length() > 0) ? name : String(F("Output ")) + String(ch.id);
-    ch.room = (room.length() > 0) ? room : F("General");
-    ch.function = (function.length() > 0) ? function : F("Relay");
+    if (name.length() > 0) copyField(ch.name, sizeof(ch.name), name.c_str());
+    else snprintf_P(ch.name, sizeof(ch.name), PSTR("Output %u"), ch.id);
+    copyField(ch.room, sizeof(ch.room), (room.length() > 0) ? room.c_str() : "General");
+    copyField(ch.function, sizeof(ch.function), (function.length() > 0) ? function.c_str() : "Relay");
     ch.activeLow = activeLow;
     ch.initialMode = initialMode;
     ch.enabled = true;
@@ -1374,7 +1389,7 @@ bool GpioManager::addChannel(uint8_t pin, const String& name, const String& room
     _channels.push_back(ch);
     saveToStorage();
 
-    Serial.printf("[GPIO] Added Channel ID %u: Pin GPIO%u, Name: %s\n", ch.id, ch.pin, ch.name.c_str());
+    Serial.printf_P(PSTR("[GPIO] Added Channel ID %u: Pin GPIO%u, Name: %s\n"), ch.id, ch.pin, ch.name);
     return true;
 }
 
@@ -1382,9 +1397,9 @@ bool GpioManager::updateChannel(uint8_t id, const String& name, const String& ro
                                bool activeLow, uint8_t initialMode, bool enabled, String& outError) {
     for (auto& ch : _channels) {
         if (ch.id == id) {
-            if (name.length() > 0) ch.name = name;
-            if (room.length() > 0) ch.room = room;
-            if (function.length() > 0) ch.function = function;
+            if (name.length() > 0) copyField(ch.name, sizeof(ch.name), name.c_str());
+            if (room.length() > 0) copyField(ch.room, sizeof(ch.room), room.c_str());
+            if (function.length() > 0) copyField(ch.function, sizeof(ch.function), function.c_str());
             ch.activeLow = activeLow;
             ch.initialMode = initialMode;
             ch.enabled = enabled;
@@ -1404,7 +1419,7 @@ bool GpioManager::removeChannel(uint8_t id) {
             pinMode(it->pin, INPUT);
             _channels.erase(it);
             saveToStorage();
-            Serial.printf("[GPIO] Removed Channel ID %u\n", id);
+            Serial.printf_P(PSTR("[GPIO] Removed Channel ID %u\n"), id);
             return true;
         }
     }
@@ -1422,7 +1437,7 @@ bool GpioManager::setState(uint8_t id, bool logicalState) {
             ch.pulseEndTime = 0; // Cancel any active pulse
             ch.currentState = logicalState;
             applyPhysicalPin(ch);
-            Serial.printf("[GPIO] Channel %u (%s) -> %s\n", ch.id, ch.name.c_str(), logicalState ? "ON" : "OFF");
+            Serial.printf_P(PSTR("[GPIO] Channel %u (%s) -> %s\n"), ch.id, ch.name, logicalState ? "ON" : "OFF");
             if (_stateCallback) {
                 _stateCallback(ch.id, logicalState);
             }
@@ -1448,7 +1463,7 @@ bool GpioManager::pulse(uint8_t id, unsigned long durationMs) {
             ch.currentState = true;
             applyPhysicalPin(ch);
             ch.pulseEndTime = millis() + ((durationMs > 0) ? durationMs : 500);
-            Serial.printf("[GPIO] Channel %u (%s) pulsed for %lu ms\n", ch.id, ch.name.c_str(), durationMs);
+            Serial.printf_P(PSTR("[GPIO] Channel %u (%s) pulsed for %lu ms\n"), ch.id, ch.name, durationMs);
             if (_stateCallback) {
                 _stateCallback(ch.id, true);
             }
@@ -1479,9 +1494,9 @@ void GpioManager::toJson(JsonArray& arr, bool sensorsOnly) {
         obj["enabled"] = ch.enabled;
         obj["state"] = ch.currentState;
 
-        obj["name"] = (ch.name.length() > 0) ? ch.name : String(F("Output ")) + String(ch.id);
-        obj["room"] = (ch.room.length() > 0) ? ch.room : F("General");
-        obj["function"] = (ch.function.length() > 0) ? ch.function : F("Relay");
+        obj["name"] = (ch.name[0] != '\0') ? String(ch.name) : String(F("Output ")) + String(ch.id);
+        obj["room"] = (ch.room[0] != '\0') ? ch.room : "General";
+        obj["function"] = (ch.function[0] != '\0') ? ch.function : "Relay";
         obj["activeLow"] = ch.activeLow;
         obj["initialMode"] = ch.initialMode;
 
@@ -1506,9 +1521,7 @@ void GpioManager::toJson(JsonArray& arr, bool sensorsOnly) {
                 float dcVolt = 0.0f, acRms = 0.0f;
                 int rawAdc = 0;
                 sampleAnalogA0(dcVolt, acRms, rawAdc);
-                String fnLower = ch.function;
-                fnLower.toLowerCase();
-                bool useRms = (fnLower.indexOf("rms") >= 0 || fnLower.indexOf("ac") >= 0);
+                bool useRms = (containsIgnoreCase(ch.function, "rms") || containsIgnoreCase(ch.function, "ac"));
                 obj["value"] = useRms ? acRms : dcVolt;
                 obj["dcVoltage"] = dcVolt;
                 obj["acRms"] = acRms;
@@ -1611,12 +1624,13 @@ void GpioManager::loadFromStorage() {
         GpioChannel ch;
         ch.id = obj["id"] | (uint8_t)(obj["channel_id"] | (maxId + 1));
         ch.pin = obj["pin"] | D1;
-        String loadedName = obj["name"] | "";
-        ch.name = (loadedName.length() > 0) ? loadedName : String(F("Output ")) + String(ch.id);
-        String loadedRoom = obj["room"] | "";
-        ch.room = (loadedRoom.length() > 0) ? loadedRoom : F("General");
-        String loadedFunc = obj["function"] | "";
-        ch.function = (loadedFunc.length() > 0) ? loadedFunc : F("Relay");
+        const char* loadedName = obj["name"] | "";
+        if (loadedName[0] != '\0') copyField(ch.name, sizeof(ch.name), loadedName);
+        else snprintf_P(ch.name, sizeof(ch.name), PSTR("Output %u"), ch.id);
+        const char* loadedRoom = obj["room"] | "";
+        copyField(ch.room, sizeof(ch.room), (loadedRoom[0] != '\0') ? loadedRoom : "General");
+        const char* loadedFunc = obj["function"] | "";
+        copyField(ch.function, sizeof(ch.function), (loadedFunc[0] != '\0') ? loadedFunc : "Relay");
         ch.activeLow = obj.containsKey("activeLow") ? obj["activeLow"].as<bool>() : (obj.containsKey("active_low") ? obj["active_low"].as<bool>() : true);
         ch.initialMode = obj.containsKey("initialMode") ? obj["initialMode"].as<uint8_t>() : (obj.containsKey("initial_mode") ? obj["initial_mode"].as<uint8_t>() : 0);
         ch.enabled = obj.containsKey("enabled") ? obj["enabled"].as<bool>() : true;
@@ -1627,7 +1641,7 @@ void GpioManager::loadFromStorage() {
         _channels.push_back(ch);
     }
     _nextId = maxId + 1;
-    Serial.printf("[GPIO] Loaded %u channel(s) from LittleFS storage.\n", (unsigned int)_channels.size());
+    Serial.printf_P(PSTR("[GPIO] Loaded %u channel(s) from LittleFS storage.\n"), (unsigned int)_channels.size());
 }
 
 void GpioManager::saveToStorage() {
@@ -1655,12 +1669,13 @@ bool GpioManager::fromJson(JsonArray& arr) {
         GpioChannel ch;
         ch.id = obj["id"] | (uint8_t)(obj["channel_id"] | (maxId + 1));
         ch.pin = obj["pin"] | D1;
-        String loadedName = obj["name"] | "";
-        ch.name = (loadedName.length() > 0) ? loadedName : String(F("Output ")) + String(ch.id);
-        String loadedRoom = obj["room"] | "";
-        ch.room = (loadedRoom.length() > 0) ? loadedRoom : F("General");
-        String loadedFunc = obj["function"] | "";
-        ch.function = (loadedFunc.length() > 0) ? loadedFunc : F("Relay");
+        const char* loadedName = obj["name"] | "";
+        if (loadedName[0] != '\0') copyField(ch.name, sizeof(ch.name), loadedName);
+        else snprintf_P(ch.name, sizeof(ch.name), PSTR("Output %u"), ch.id);
+        const char* loadedRoom = obj["room"] | "";
+        copyField(ch.room, sizeof(ch.room), (loadedRoom[0] != '\0') ? loadedRoom : "General");
+        const char* loadedFunc = obj["function"] | "";
+        copyField(ch.function, sizeof(ch.function), (loadedFunc[0] != '\0') ? loadedFunc : "Relay");
         ch.activeLow = obj.containsKey("activeLow") ? obj["activeLow"].as<bool>() : (obj.containsKey("active_low") ? obj["active_low"].as<bool>() : true);
         ch.initialMode = obj.containsKey("initialMode") ? obj["initialMode"].as<uint8_t>() : (obj.containsKey("initial_mode") ? obj["initial_mode"].as<uint8_t>() : 0);
         ch.enabled = obj.containsKey("enabled") ? obj["enabled"].as<bool>() : true;
@@ -1717,7 +1732,7 @@ bool GpioManager::setI2cConfig(bool enabled, uint8_t sdaPin, uint8_t sclPin, uin
         if (Pcf8574Driver::getInstance().isDetected()) {
             _i2cAddress = Pcf8574Driver::getInstance().getAddress();
         }
-        Serial.printf("[GPIO] I2C Enabled at 0x%02X (SDA=%u, SCL=%u, Detected=%s)\n",
+        Serial.printf_P(PSTR("[GPIO] I2C Enabled at 0x%02X (SDA=%u, SCL=%u, Detected=%s)\n"),
                       _i2cAddress, _i2cSdaPin, _i2cSclPin,
                       Pcf8574Driver::getInstance().isDetected() ? "YES" : "NO");
 
@@ -1732,7 +1747,7 @@ bool GpioManager::setI2cConfig(bool enabled, uint8_t sdaPin, uint8_t sclPin, uin
         // I2C Disabled: release pins so they can be driven as normal GPIO outputs
         pinMode(_i2cSdaPin, INPUT);
         pinMode(_i2cSclPin, INPUT);
-        Serial.printf("[GPIO] I2C Disabled. Pins %u and %u released for regular GPIO use.\n", _i2cSdaPin, _i2cSclPin);
+        Serial.printf_P(PSTR("[GPIO] I2C Disabled. Pins %u and %u released for regular GPIO use.\n"), _i2cSdaPin, _i2cSclPin);
     }
 #endif
 

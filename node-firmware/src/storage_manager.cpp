@@ -447,7 +447,7 @@ bool StorageManager::begin() {
 
     FSInfo fs_info;
     LittleFS.info(fs_info);
-    Serial.printf("[STORAGE] LittleFS mounted. Total: %u KB, Used: %u KB\n",
+    Serial.printf_P(PSTR("[STORAGE] LittleFS mounted. Total: %u KB, Used: %u KB\n"),
                   (unsigned int)(fs_info.totalBytes / 1024),
                   (unsigned int)(fs_info.usedBytes / 1024));
 
@@ -471,7 +471,7 @@ void StorageManager::incrementBootCount() {
     _bootCount++;
     doc["bootCount"] = _bootCount;
     saveJsonFile(FILE_SYSTEM_CONFIG, doc);
-    Serial.printf("[STORAGE] Device Boot Count: %u\n", _bootCount);
+    Serial.printf_P(PSTR("[STORAGE] Device Boot Count: %u\n"), _bootCount);
 }
 
 bool StorageManager::saveJsonFile(const char* path, const JsonDocument& doc) {
@@ -480,7 +480,7 @@ bool StorageManager::saveJsonFile(const char* path, const JsonDocument& doc) {
     String tmpPath = String(path) + ".tmp";
     File file = LittleFS.open(tmpPath.c_str(), "w");
     if (!file) {
-        Serial.printf("[STORAGE] Failed to open %s for write\n", tmpPath.c_str());
+        Serial.printf_P(PSTR("[STORAGE] Failed to open %s for write\n"), tmpPath.c_str());
         return false;
     }
 
@@ -489,7 +489,7 @@ bool StorageManager::saveJsonFile(const char* path, const JsonDocument& doc) {
     file.close();
 
     if (bytesWritten == 0) {
-        Serial.printf("[STORAGE] Error serializing JSON to %s\n", tmpPath.c_str());
+        Serial.printf_P(PSTR("[STORAGE] Error serializing JSON to %s\n"), tmpPath.c_str());
         LittleFS.remove(tmpPath.c_str());
         return false;
     }
@@ -499,7 +499,7 @@ bool StorageManager::saveJsonFile(const char* path, const JsonDocument& doc) {
         LittleFS.remove(path);
     }
     if (!LittleFS.rename(tmpPath.c_str(), path)) {
-        Serial.printf("[STORAGE] Failed to rename %s to %s, falling back to direct write\n", tmpPath.c_str(), path);
+        Serial.printf_P(PSTR("[STORAGE] Failed to rename %s to %s, falling back to direct write\n"), tmpPath.c_str(), path);
         File directFile = LittleFS.open(path, "w");
         if (directFile) {
             serializeJson(doc, directFile);
@@ -521,7 +521,7 @@ bool StorageManager::loadJsonFile(const char* path, DynamicJsonDocument& doc) {
 
     File file = LittleFS.open(path, "r");
     if (!file) {
-        Serial.printf("[STORAGE] Failed to open %s for read\n", path);
+        Serial.printf_P(PSTR("[STORAGE] Failed to open %s for read\n"), path);
         return false;
     }
 
@@ -529,7 +529,7 @@ bool StorageManager::loadJsonFile(const char* path, DynamicJsonDocument& doc) {
     file.close();
 
     if (error) {
-        Serial.printf("[STORAGE] Failed to parse %s: %s\n", path, error.c_str());
+        Serial.printf_P(PSTR("[STORAGE] Failed to parse %s: %s\n"), path, error.c_str());
         return false;
     }
 

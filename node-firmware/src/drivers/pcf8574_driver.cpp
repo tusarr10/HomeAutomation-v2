@@ -111,14 +111,14 @@ bool Pcf8574Driver::begin(uint8_t sdaPin, uint8_t sclPin, uint8_t defaultAddr) {
     if (foundAddr != 0) {
         _i2cAddress = foundAddr;
         _detected = true;
-        Serial.printf("[PCF8574] Expander detected at I2C address 0x%02X (SDA=GPIO%u, SCL=GPIO%u)\n",
+        Serial.printf_P(PSTR("[PCF8574] Expander detected at I2C address 0x%02X (SDA=GPIO%u, SCL=GPIO%u)\n"),
                       _i2cAddress, _sdaPin, _sclPin);
         // Apply initial output state (0xFF = all HIGH / relays de-energized)
         writeByte(_outputByte);
     } else {
         _i2cAddress = defaultAddr;
         _detected = false;
-        Serial.printf("[PCF8574] Warning: No PCF8574 found at 0x%02X (SDA=GPIO%u, SCL=GPIO%u). Will retry on access.\n",
+        Serial.printf_P(PSTR("[PCF8574] Warning: No PCF8574 found at 0x%02X (SDA=GPIO%u, SCL=GPIO%u). Will retry on access.\n"),
                       defaultAddr, _sdaPin, _sclPin);
     }
 

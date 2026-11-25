@@ -477,9 +477,9 @@ void setup() {
                    WiFi.softAPIP().toString().c_str(),
                    WifiManager::getInstance().getApSsid().c_str());
     if (WifiManager::getInstance().isSTAConnected()) {
-        Serial.printf("[INIT] Home Router IP: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf_P(PSTR("[INIT] Home Router IP: %s\n"), WiFi.localIP().toString().c_str());
     }
-    Serial.printf("[INIT] Free Heap: %u bytes\n", ESP.getFreeHeap());
+    Serial.printf_P(PSTR("[INIT] Free Heap: %u bytes\n"), ESP.getFreeHeap());
 }
 
 void loop() {
@@ -502,7 +502,7 @@ void loop() {
             delay(500);
             ESP.restart();
         } else if (c == 'h' || c == 'H') {
-            Serial.printf("[HEAP] Free: %u bytes, Max Block: %u bytes, Frag: %u%%\n",
+            Serial.printf_P(PSTR("[HEAP] Free: %u bytes, Max Block: %u bytes, Frag: %u%%\n"),
                           ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(), ESP.getHeapFragmentation());
         } else if (c == 'i' || c == 'I' || c == 's' || c == 'S') {
             Serial.println(F("\n=================================================="));
@@ -524,16 +524,16 @@ void loop() {
                 std::vector<uint8_t> devs = Pcf8574Driver::getInstance().scanBus(p.sda, p.scl);
                 if (!devs.empty()) {
                     anyFound = true;
-                    Serial.printf("[I2C] >>> DEVICE FOUND on %s! Count: %u\n", p.name, (unsigned int)devs.size());
+                    Serial.printf_P(PSTR("[I2C] >>> DEVICE FOUND on %s! Count: %u\n"), p.name, (unsigned int)devs.size());
                     for (uint8_t a : devs) {
                         const char* type = (a >= 0x20 && a <= 0x27) ? "PCF8574 (Standard 8-Ch Expander)" :
                                            ((a >= 0x38 && a <= 0x3F) ? "PCF8574A (High-Address 8-Ch Expander)" :
                                            ((a == 0x3C || a == 0x3D) ? "OLED Display (SSD1306)" :
                                            ((a == 0x68) ? "RTC (DS3231/DS1307) or MPU6050" :
                                            ((a == 0x48) ? "ADS1115 ADC" : "Generic I2C Device"))));
-                        Serial.printf("      * Address: 0x%02X (%u decimal) -> %s\n", a, a, type);
+                        Serial.printf_P(PSTR("      * Address: 0x%02X (%u decimal) -> %s\n"), a, a, type);
                     }
-                    Serial.printf("      (Tip: Use Web UI to enable/disable or change pins as needed)\n");
+                    Serial.printf_P(PSTR("      (Tip: Use Web UI to enable/disable or change pins as needed)\n"));
                 }
             }
             if (!anyFound) {

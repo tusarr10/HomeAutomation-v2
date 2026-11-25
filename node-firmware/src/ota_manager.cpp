@@ -136,11 +136,11 @@ bool OtaManager::begin(const String& hostname) {
     });
 
     ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-        Serial.printf("[OTA] Progress: %u%%\r", (progress / (total / 100)));
+        Serial.printf_P(PSTR("[OTA] Progress: %u%%\r"), (progress / (total / 100)));
     });
 
     ArduinoOTA.onError([](ota_error_t error) {
-        Serial.printf("[OTA] Error [%u]: ", error);
+        Serial.printf_P(PSTR("[OTA] Error [%u]: "), error);
         if (error == OTA_AUTH_ERROR) Serial.println(F("Auth Failed"));
         else if (error == OTA_BEGIN_ERROR) Serial.println(F("Begin Failed"));
         else if (error == OTA_CONNECT_ERROR) Serial.println(F("Connect Failed"));
@@ -149,7 +149,7 @@ bool OtaManager::begin(const String& hostname) {
     });
 
     ArduinoOTA.begin();
-    Serial.printf("[OTA] ArduinoOTA ready on hostname: %s\n", hostname.c_str());
+    Serial.printf_P(PSTR("[OTA] ArduinoOTA ready on hostname: %s\n"), hostname.c_str());
     return true;
 }
 
@@ -160,7 +160,7 @@ void OtaManager::loop() {
 void OtaManager::setExpectedMD5(const String& md5) {
     if (md5.length() == 32) {
         Update.setMD5(md5.c_str());
-        Serial.printf("[OTA] Expected MD5 registered: %s\n", md5.c_str());
+        Serial.printf_P(PSTR("[OTA] Expected MD5 registered: %s\n"), md5.c_str());
     }
 }
 
@@ -170,7 +170,7 @@ void OtaManager::handleUploadStart(const String& filename, const String& targetT
     _writtenSize = 0;
     _updateSuccess = false;
     _targetType = targetType;
-    Serial.printf("[OTA] Web upload started: %s (Type: %s)\n", filename.c_str(), targetType.c_str());
+    Serial.printf_P(PSTR("[OTA] Web upload started: %s (Type: %s)\n"), filename.c_str(), targetType.c_str());
 
     String lower = filename;
     lower.toLowerCase();
@@ -181,11 +181,11 @@ void OtaManager::handleUploadStart(const String& filename, const String& targetT
         _command = U_FS;
         LittleFS.end();
         maxSpace = ((size_t)&_FS_end - (size_t)&_FS_start);
-        Serial.printf("[OTA] Initializing Filesystem Update (U_FS) max space: %u bytes\n", (unsigned int)maxSpace);
+        Serial.printf_P(PSTR("[OTA] Initializing Filesystem Update (U_FS) max space: %u bytes\n"), (unsigned int)maxSpace);
     } else {
         _command = U_FLASH;
         maxSpace = (ESP.getFreeSketchSpace() - 0x1000) & ~0xFFF;
-        Serial.printf("[OTA] Initializing Firmware Update (U_FLASH) max space: %u bytes\n", (unsigned int)maxSpace);
+        Serial.printf_P(PSTR("[OTA] Initializing Firmware Update (U_FLASH) max space: %u bytes\n"), (unsigned int)maxSpace);
     }
 
     if (!Update.begin(maxSpace, _command)) {
@@ -202,7 +202,7 @@ void OtaManager::handleUploadWrite(uint8_t* data, size_t len) {
         if (_command == U_FLASH) {
             if (data[0] != 0xE9) {
                 _lastError = F("Verification failed: Magic byte 0xE9 not found. This is not a valid ESP8266 firmware binary.");
-                Serial.printf("[OTA] ERROR: First byte is 0x%02X, expected 0xE9\n", data[0]);
+                Serial.printf_P(PSTR("[OTA] ERROR: First byte is 0x%02X, expected 0xE9\n"), data[0]);
                 Update.end();
                 return;
             }
@@ -234,7 +234,7 @@ void OtaManager::handleUploadFinish() {
         _updateSuccess = true;
         _isUpdating = false;
         String typeStr = (_command == U_FS) ? F("Filesystem (LittleFS)") : F("Application Firmware");
-        Serial.printf("[OTA] %s successfully verified and flashed: %u bytes!\n", typeStr.c_str(), (unsigned int)_writtenSize);
+        Serial.printf_P(PSTR("[OTA] %s successfully verified and flashed: %u bytes!\n"), typeStr.c_str(), (unsigned int)_writtenSize);
     } else {
         _lastError = String(F("Verification/Flash failed: ")) + String(Update.getErrorString());
         Update.printError(Serial);

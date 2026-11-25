@@ -1190,7 +1190,7 @@ void ReceiverClient::fillTelemetryDoc(DynamicJsonDocument& doc, const char* even
     if (GpioManager::getInstance().isI2cEnabled()) {
         doc["pcf8574Detected"] = GpioManager::getInstance().isPcfDetected();
         char addrHex[8];
-        snprintf(addrHex, sizeof(addrHex), "0x%02X", GpioManager::getInstance().getPcfAddress());
+        snprintf_P(addrHex, sizeof(addrHex), PSTR("0x%02X"), GpioManager::getInstance().getPcfAddress());
         doc["pcf8574Address"] = addrHex;
         doc["pcf8574Output"] = GpioManager::getInstance().getPcfOutputByte();
     }

@@ -15,7 +15,7 @@ enum RuleType {
 
 struct AutomationRule {
     uint8_t id;
-    String name;
+    char name[32];
     uint8_t type;               // RuleType
     bool enabled;
     uint8_t sourceGpioId;       // Used for Interlock
