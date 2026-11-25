@@ -20,6 +20,8 @@ All node-side `P0` / `P1` / `P2` items are now implemented and verified live on 
   - **Status:** Implemented in `src/littlefsService.js` with direct fast-path (`<= 5KB`) to `POST /api/fs/save-content`, verified live with `directFastPath: true`.
 
 ### P2 — Dashboard UX & Fleet Polish
+- [x] **Add Dedicated Sensors & Telemetry Tab & Decouple from Relay Actuators** *(Implemented & Verified)*
+  - **Status:** Added dedicated `📡 Sensors & Telemetry` sidebar navigation tab and view module (`loadSensors()`, `renderSensorsView()`). Separated relay actuators (controllable switches) from sensor inputs (`VOLTAGE`, `IR_RECEIVER`, `IR_TRANSMITTER`, etc.). In Relays view, relays are presented as toggles, and sensors are grouped in a dedicated telemetry section. In Sensors view, channels show live voltage/IR badges, instant `🚀 Read` buttons, `⚙ Configure` calibration controls, and sub-views (By Device, By Room, By Sensor Type, and Sensor Pins Matrix).
 - [x] **Add AC RMS vs DC Mode Toggle in Channel Editor (`configure_pin`)** *(Implemented & Verified)*
   - **Status:** Added `Analog Sampling Mode (A0 / ADC)` dropdown to Pin Configuration modal in `public/assets/app.js` with `⚡ AC RMS Voltage` and `🔋 DC Voltage` modes.
 - [x] **Real-Time IR Learned Code Toast & Auto-Bind Flow** *(Implemented & Verified)*

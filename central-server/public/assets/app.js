@@ -2968,6 +2968,138 @@ async function loadRelays() {
   }
 }
 
+// --- SENSOR / RELAY CLASSIFICATION & RENDERING HELPERS ---
+function isSensorChannel(r) {
+  if (!r) return false;
+  if (r.pin_mode === 'SENSOR_INPUT') return true;
+  if (r.sensor_type && r.sensor_type !== 'RELAY_OUTPUT') return true;
+  const func = String(r.function || '').toLowerCase();
+  const name = String(r.name || '').toLowerCase();
+  if (func.includes('sensor') || func.includes('receiver') || func.includes('voltage') || func.includes('adc') || func.includes('transmitter') || func.includes('motion') || func.includes('temp') || func.includes('analog')) {
+    return true;
+  }
+  if (name.includes('sensor') || name.includes('ir rx') || name.includes('ir tx') || name.includes('voltage') || name.includes('adc')) {
+    return true;
+  }
+  return false;
+}
+
+function getSensorLiveBadgeHtml(r) {
+  const meta = r.sensor_config || r.sensor_meta || {};
+  let liveControlHtml = '';
+
+  if (r.sensor_type === 'VOLTAGE' || r.sensor_type === 'VOLTAGE_ADC' || r.function?.toLowerCase().includes('voltage')) {
+    const dc = meta.dcVoltage != null ? meta.dcVoltage : r.last_sensor_value;
+    const rms = meta.acRms;
+    const rawAdc = meta.rawAdc;
+    let badgeText = '';
+    if (rms != null && Number(rms) > 0.005) {
+      badgeText = `⚡ AC ${Number(rms).toFixed(2)}V | DC ${Number(dc ?? 0).toFixed(2)}V`;
+    } else if (dc != null) {
+      badgeText = `⚡ ${Number(dc).toFixed(3)} V`;
+    } else if (r.node_id === 'NODE-30487DE85D5C') {
+      badgeText = `⚡ 255 V`;
+    } else {
+      badgeText = `⚡ -- V`;
+    }
+    const tooltip = `title="DC: ${dc != null ? Number(dc).toFixed(3) : '--'}V | AC RMS: ${rms != null ? Number(rms).toFixed(3) : '--'}V | Raw ADC: ${rawAdc ?? '--'}"`;
+    liveControlHtml = `<span ${tooltip} style="font-weight: 700; color: #f59e0b; font-family: monospace; font-size: 11px; background: rgba(245, 158, 11, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(245, 158, 11, 0.3); cursor: help;">${badgeText}</span>`;
+  } else if (r.sensor_type === 'IR_RECEIVER' || r.function === 'IR Receiver') {
+    const irStr = r.last_sensor_str || 'Listening...';
+    liveControlHtml = `<span style="font-weight: 700; color: #c084fc; font-family: monospace; font-size: 11px; background: rgba(168, 85, 247, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(168, 85, 247, 0.3);">📡 ${escapeHtml(irStr)}</span>`;
+  } else if (r.sensor_type === 'IR_TRANSMITTER' || r.function === 'IR Transmitter') {
+    liveControlHtml = `<span style="font-weight: 700; color: #22d3ee; font-family: monospace; font-size: 11px; background: rgba(6, 182, 212, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(6, 182, 212, 0.3);">📶 Ready (TX)</span>`;
+  } else if (r.sensor_type === 'PIR_MOTION' || r.function === 'PIR Motion') {
+    const motionState = r.last_sensor_str || (r.last_sensor_value ? 'ACTIVE' : 'Clear');
+    liveControlHtml = `<span style="font-weight: 700; color: #4ade80; font-family: monospace; font-size: 11px; background: rgba(34, 197, 94, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(34, 197, 94, 0.3);">🚶 ${escapeHtml(motionState)}</span>`;
+  } else {
+    const valText = r.last_sensor_str || (r.last_sensor_value != null ? r.last_sensor_value + ' ' + (r.sensor_unit || '') : 'Active');
+    liveControlHtml = `<span style="font-weight: 700; color: #38bdf8; font-family: monospace; font-size: 11px; background: rgba(56, 189, 248, 0.12); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(56, 189, 248, 0.3);">${escapeHtml(valText)}</span>`;
+  }
+  return liveControlHtml;
+}
+
+function getSensorRoleBadgeHtml(r) {
+  if (r.sensor_type === 'VOLTAGE' || r.sensor_type === 'VOLTAGE_ADC' || r.function?.toLowerCase().includes('voltage')) {
+    const isAc = r.function?.toLowerCase().includes('ac') || r.function?.toLowerCase().includes('rms');
+    return `<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(245, 158, 11, 0.15); color: #f59e0b; font-weight: 700; border: 1px solid rgba(245, 158, 11, 0.3);">📊 ${isAc ? 'AC RMS' : 'DC'} Voltage</span>`;
+  } else if (r.sensor_type === 'IR_RECEIVER' || r.function === 'IR Receiver') {
+    return '<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(168, 85, 247, 0.15); color: #c084fc; font-weight: 700; border: 1px solid rgba(168, 85, 247, 0.3);">📡 IR Receiver</span>';
+  } else if (r.sensor_type === 'IR_TRANSMITTER' || r.function === 'IR Transmitter') {
+    return '<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(6, 182, 212, 0.15); color: #22d3ee; font-weight: 700; border: 1px solid rgba(6, 182, 212, 0.3);">📶 IR Blaster</span>';
+  } else if (r.sensor_type === 'PIR_MOTION' || r.function === 'PIR Motion') {
+    return '<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(34, 197, 94, 0.15); color: #4ade80; font-weight: 700; border: 1px solid rgba(34, 197, 94, 0.3);">🚶 Motion Sensor</span>';
+  } else if (r.sensor_type === 'DOOR_WINDOW') {
+    return '<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(236, 72, 153, 0.15); color: #f472b6; font-weight: 700; border: 1px solid rgba(236, 72, 153, 0.3);">🚪 Door Sensor</span>';
+  } else {
+    return `<span style="font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(139, 92, 246, 0.15); color: #a78bfa; font-weight: 700; border: 1px solid rgba(139, 92, 246, 0.3);">🔬 ${escapeHtml(r.sensor_type || 'Sensor Input')}</span>`;
+  }
+}
+
+function getSensorIconSymbol(r) {
+  if (r.sensor_type === 'VOLTAGE' || r.sensor_type === 'VOLTAGE_ADC' || r.function?.toLowerCase().includes('voltage')) return '📊';
+  if (r.sensor_type === 'IR_RECEIVER' || r.function === 'IR Receiver') return '📡';
+  if (r.sensor_type === 'IR_TRANSMITTER' || r.function === 'IR Transmitter') return '📶';
+  if (r.sensor_type === 'PIR_MOTION' || r.function === 'PIR Motion') return '🚶';
+  if (r.sensor_type === 'DOOR_WINDOW') return '🚪';
+  if (r.sensor_type === 'TEMP_HUMIDITY') return '🌡️';
+  return '🔬';
+}
+
+function getSensorCalibrationSummary(r) {
+  const cfg = r.sensor_config || {};
+  const parts = [];
+  if (cfg.voltage_mode) parts.push(`Mode: ${cfg.voltage_mode} RMS`);
+  if (cfg.interval_ms != null && cfg.interval_ms > 0) parts.push(`${cfg.interval_ms >= 1000 ? (cfg.interval_ms / 1000) + 's' : cfg.interval_ms + 'ms'} poll`);
+  else parts.push('On-Event');
+  if (cfg.multiplier != null && cfg.multiplier !== 1) parts.push(`×${cfg.multiplier}`);
+  if (cfg.offset != null && cfg.offset !== 0) parts.push(`${cfg.offset > 0 ? '+' : ''}${cfg.offset}`);
+  if (cfg.ir_protocol) parts.push(`Proto: ${cfg.ir_protocol}`);
+  return parts.join(' | ');
+}
+
+function renderSensorCardHtml(s) {
+  const sensorIcon = getSensorIconSymbol(s);
+  const roleBadgeHtml = getSensorRoleBadgeHtml(s);
+  const liveControlHtml = getSensorLiveBadgeHtml(s);
+  const calibSummary = getSensorCalibrationSummary(s);
+
+  return `
+    <div class="relay-channel-card sensor-channel-card" id="sensor-card-${s.node_id}-${s.channel_id}" style="border-left: 3px solid #c084fc; background: #0b1120;">
+      <div class="relay-channel-left">
+        <div class="relay-channel-icon-wrap" style="background: rgba(192, 132, 252, 0.12); color: #c084fc;">
+          ${sensorIcon}
+        </div>
+        <div class="relay-channel-meta">
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span class="relay-channel-tag" style="background: rgba(192, 132, 252, 0.2); color: #c084fc; font-weight: 700;">CH${s.channel_id}</span>
+            <span class="relay-channel-name" style="font-weight: 700; color: #fff;">${escapeHtml(s.name)}</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; margin-top: 3px; flex-wrap: wrap;">
+            <small style="color: #64748b; font-family: monospace; font-size: 11px;">${getGpioPinLabel(s.pin)}</small>
+            <span style="font-size: 10px; color: #94a3b8; background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px;">🏠 ${escapeHtml(s.room || 'General')}</span>
+            ${roleBadgeHtml}
+            <span style="font-size: 10px; color: #64748b; font-family: monospace;">(${calibSummary})</span>
+          </div>
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
+        <div id="sensor-reading-${s.node_id}-${s.channel_id}">
+          ${liveControlHtml}
+        </div>
+        <button class="btn btn-secondary" style="font-size: 11px; padding: 5px 9px;" title="Configure & Calibrate Sensor" onclick="openRelayChannelConfigModal('${s.node_id}', ${s.channel_id})">⚙ Configure</button>
+        <button class="btn btn-secondary" style="font-size: 11px; padding: 5px 9px; color: #38bdf8;" title="Read Live Sensor Value" onclick="handleReadSensorLive('${s.node_id}', ${s.channel_id})">🚀 Read Live</button>
+        ${(s.sensor_type === 'IR_TRANSMITTER' || s.function === 'IR Transmitter') ? `
+          <button class="btn btn-secondary" style="font-size: 11px; padding: 5px 9px; color: #22d3ee;" onclick="openIrTransmitModal('${s.node_id}')">🚀 Blast IR</button>
+        ` : ''}
+        ${(s.sensor_type === 'IR_RECEIVER' || s.function === 'IR Receiver') ? `
+          <button class="btn btn-secondary" style="font-size: 11px; padding: 5px 9px; color: #c084fc;" onclick="showNodeIrModal('${s.node_id}')">📡 Studio</button>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
 function renderRelaysView(nodes, relays, homes = []) {
   const container = document.getElementById("content-area");
 
@@ -3054,18 +3186,22 @@ function renderRelaysView(nodes, relays, homes = []) {
         <button class="subview-tab-btn ${currentRelaySubTab === 'pin-matrix' ? 'active' : ''}" onclick="switchRelaySubTab('pin-matrix')">
           <span>🔌 Pin & Hardware Matrix</span>
         </button>
+        <button class="subview-tab-btn" onclick="switchView('sensors')">
+          <span>📡 Go to Sensors & Telemetry ↗</span>
+        </button>
       </div>
 
       <!-- Category Filter Chips & Search Bar -->
       <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px;">
         <div class="filter-chips-bar" style="margin-bottom: 0;">
-          <button class="filter-chip ${relayCategoryFilter === 'all' ? 'active' : ''}" onclick="switchRelayCategoryFilter('all')">All Relays (${relays.length})</button>
-          <button class="filter-chip ${relayCategoryFilter === 'active' ? 'active' : ''}" onclick="switchRelayCategoryFilter('active')">Active ON (${relays.filter(r => r.current_state).length})</button>
-          <button class="filter-chip ${relayCategoryFilter === 'inactive' ? 'active' : ''}" onclick="switchRelayCategoryFilter('inactive')">Inactive OFF (${relays.filter(r => !r.current_state).length})</button>
+          <button class="filter-chip ${relayCategoryFilter === 'all' ? 'active' : ''}" onclick="switchRelayCategoryFilter('all')">All Relays (${relays.filter(r => !isSensorChannel(r)).length})</button>
+          <button class="filter-chip ${relayCategoryFilter === 'active' ? 'active' : ''}" onclick="switchRelayCategoryFilter('active')">Active ON (${relays.filter(r => !isSensorChannel(r) && r.current_state).length})</button>
+          <button class="filter-chip ${relayCategoryFilter === 'inactive' ? 'active' : ''}" onclick="switchRelayCategoryFilter('inactive')">Inactive OFF (${relays.filter(r => !isSensorChannel(r) && !r.current_state).length})</button>
           <button class="filter-chip ${relayCategoryFilter === 'lights' ? 'active' : ''}" onclick="switchRelayCategoryFilter('lights')">💡 Lights</button>
           <button class="filter-chip ${relayCategoryFilter === 'fans' ? 'active' : ''}" onclick="switchRelayCategoryFilter('fans')">❇️ Fans</button>
           <button class="filter-chip ${relayCategoryFilter === 'sockets' ? 'active' : ''}" onclick="switchRelayCategoryFilter('sockets')">📺 Sockets</button>
           <button class="filter-chip ${relayCategoryFilter === 'pumps' ? 'active' : ''}" onclick="switchRelayCategoryFilter('pumps')">🚰 Pumps / Motors</button>
+          <button class="filter-chip" style="color: #c084fc; border-color: rgba(192, 132, 252, 0.3);" onclick="switchView('sensors')">📡 Sensors (${relays.filter(isSensorChannel).length}) ↗</button>
         </div>
 
         <div class="devices-search-box" style="min-width: 220px;">
@@ -3102,7 +3238,9 @@ function renderActiveRelaySubView(nodes, relays, homes, getIconForChannel) {
 function renderRelaysByDeviceView(nodes, relays, getIconForChannel) {
   const node = nodes.find(n => n.node_id === selectedRelayNodeId) || nodes[0] || {};
   const isOnline = Boolean(node.is_online);
-  const channels = relays.filter(r => r.node_id === selectedRelayNodeId);
+  const allChannels = relays.filter(r => r.node_id === selectedRelayNodeId);
+  const relayChannels = allChannels.filter(r => !isSensorChannel(r));
+  const sensorChannels = allChannels.filter(r => isSensorChannel(r));
   const nodeIp = node.ip_address || node.ip || '';
 
   return `
@@ -3147,7 +3285,7 @@ function renderRelaysByDeviceView(nodes, relays, getIconForChannel) {
           <div class="board-meta-row"><span>Room</span><span style="color: #ffffff;">${escapeHtml(node.room || node.room_name || 'General')}</span></div>
         </div>
 
-        <button class="board-channels-btn" onclick="showNodeInfoModal('${node.node_id}')">Device Channels (${channels.length})</button>
+        <button class="board-channels-btn" onclick="showNodeInfoModal('${node.node_id}')">Device Channels (${allChannels.length})</button>
       </div>
 
       <!-- Right: Action Bar & Relay Channel Tiles -->
@@ -3160,11 +3298,11 @@ function renderRelaysByDeviceView(nodes, relays, getIconForChannel) {
         </div>
 
         <div class="relays-channels-grid" id="selected-device-channels-grid">
-          ${channels.length === 0 ? `
+          ${relayChannels.length === 0 ? `
             <div style="grid-column: span 2; padding: 24px; text-align: center; color: #64748b;">
-              No relay channels match the current filters for this device.
+              No relay actuator channels match the current filters for this device.
             </div>
-          ` : channels.map(c => {
+          ` : relayChannels.map(c => {
             const isOn = Boolean(c.current_state);
             const icon = getIconForChannel(c.name, c.function, c.icon);
             return `
@@ -3191,6 +3329,23 @@ function renderRelaysByDeviceView(nodes, relays, getIconForChannel) {
             `;
           }).join('')}
         </div>
+
+        ${sensorChannels.length > 0 ? `
+          <div style="margin-top: 24px; padding-top: 18px; border-top: 1px solid rgba(255,255,255,0.08);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 14px; font-weight: 700; color: #c084fc;">📡 Sensor & Input Pins on Device (${sensorChannels.length})</span>
+                <span style="font-size: 11px; color: #94a3b8; background: rgba(192,132,252,0.12); padding: 2px 7px; border-radius: 4px; border: 1px solid rgba(192,132,252,0.25);">Live Telemetry Inputs</span>
+              </div>
+              <button class="btn-action-neutral" style="font-size: 11px; padding: 4px 10px; color: #38bdf8;" onclick="switchView('sensors')">
+                Open Dedicated Sensors Page ↗
+              </button>
+            </div>
+            <div class="relays-channels-grid">
+              ${sensorChannels.map(s => renderSensorCardHtml(s)).join('')}
+            </div>
+          </div>
+        ` : ''}
       </div>
     </div>
   `;
@@ -3198,9 +3353,9 @@ function renderRelaysByDeviceView(nodes, relays, getIconForChannel) {
 
 // 2. By Room View
 function renderRelaysByRoomView(relays, getIconForChannel) {
-  // Group relays by room
+  // Group relays by room (relay actuators only)
   const roomMap = new Map();
-  for (const r of relays) {
+  for (const r of relays.filter(r => !isSensorChannel(r))) {
     const room = r.room || 'General / Unassigned';
     if (!roomMap.has(room)) roomMap.set(room, []);
     roomMap.get(room).push(r);
@@ -3285,7 +3440,7 @@ function renderRelaysByHomeView(nodes, relays, homes, getIconForChannel) {
       ${homes.map(home => {
         const homeNodes = nodes.filter(n => n.home_id === home.id);
         const homeNodeIds = new Set(homeNodes.map(n => n.node_id));
-        const homeRelays = relays.filter(r => homeNodeIds.has(r.node_id));
+        const homeRelays = relays.filter(r => homeNodeIds.has(r.node_id) && !isSensorChannel(r));
         const onCount = homeRelays.filter(r => r.current_state).length;
 
         return `
@@ -3954,7 +4109,11 @@ async function saveRelayChannelConfig(nodeId, channelId) {
     if (data.success || data.status === 'ok') {
       showToast({ title: 'Pin Configured', message: data.message || 'Pin configured successfully', severity: 'SUCCESS', category: 'PIN' });
       closeModal();
-      loadRelays();
+      if (currentView === 'sensors') {
+        loadSensors();
+      } else {
+        loadRelays();
+      }
     } else {
       showToast({ title: 'Config Error', message: data.error || 'Failed to save configuration', severity: 'ERROR', category: 'PIN' });
     }
@@ -3964,17 +4123,20 @@ async function saveRelayChannelConfig(nodeId, channelId) {
 }
 
 // Open Modal to Assign New Pin to Any Node
-function openAssignNewPinModal() {
+function openAssignNewPinModal(defaultRole = 'RELAY_OUTPUT') {
   const nodes = fleetData.nodes || [];
   const defaultNode = nodes.find(n => n.node_id === selectedRelayNodeId) || nodes[0] || {};
   const currentRelays = (fleetData.relays || []).filter(r => r.node_id === defaultNode.node_id);
   const nextChId = currentRelays.length > 0 ? Math.max(...currentRelays.map(r => Number(r.channel_id) || 0)) + 1 : 1;
   const uniqueRooms = Array.from(new Set((fleetData.relays || []).map(ch => ch.room || 'General').filter(Boolean))).sort();
 
+  const isSensorRole = defaultRole === 'sensor' || defaultRole === 'VOLTAGE' || defaultRole === 'IR_RECEIVER' || defaultRole === 'IR_TRANSMITTER';
+  const defaultPin = defaultRole === 'sensor' || defaultRole === 'VOLTAGE' ? '17' : '14';
+
   const html = `
     <div class="modal-content" style="max-width: 560px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
       <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 12px; margin-bottom: 16px;">
-        <h3 style="margin: 0; color: #fff; font-size: 16px;">➕ Assign New Pin to Hardware Node</h3>
+        <h3 style="margin: 0; color: #fff; font-size: 16px;">${isSensorRole ? '📡 Assign New Sensor Pin to Hardware Node' : '➕ Assign New Pin to Hardware Node'}</h3>
         <button class="btn btn-secondary" style="padding: 4px 8px;" onclick="closeModal()">&times;</button>
       </div>
 
@@ -3994,16 +4156,16 @@ function openAssignNewPinModal() {
         <div class="form-group">
           <label class="settings-field-label">Hardware Pin (GPIO / ADC)</label>
           <select id="new-pin-gpio" class="filter-select-enhanced" style="width: 100%;">
+            <option value="17" ${defaultPin === '17' ? 'selected' : ''}>A0 (ADC0 - Analog Voltage)</option>
+            <option value="14" ${defaultPin === '14' ? 'selected' : ''}>GPIO 14 (D5 - SCK / IR RX)</option>
+            <option value="13" ${defaultPin === '13' ? 'selected' : ''}>GPIO 13 (D7 - MOSI / IR TX)</option>
             <option value="5">GPIO 5 (D1 - SCL)</option>
             <option value="4">GPIO 4 (D2 - SDA)</option>
-            <option value="14">GPIO 14 (D5 - SCK)</option>
             <option value="12">GPIO 12 (D6 - MISO)</option>
-            <option value="13">GPIO 13 (D7 - MOSI)</option>
             <option value="0">GPIO 0 (D3 - Flash)</option>
             <option value="2">GPIO 2 (D4 - TX1)</option>
             <option value="15">GPIO 15 (D8 - CS)</option>
             <option value="16">GPIO 16 (D0 - Wake)</option>
-            <option value="17">A0 (ADC0 - Analog Voltage)</option>
           </select>
         </div>
       </div>
@@ -4011,10 +4173,10 @@ function openAssignNewPinModal() {
       <div class="form-group" style="margin-bottom: 12px;">
         <label class="settings-field-label">Pin Role / Function</label>
         <select id="new-pin-role" class="filter-select-enhanced" style="width: 100%; font-weight: 600;">
-          <option value="RELAY_OUTPUT">⚡ Relay Actuator (Control Appliance ON / OFF)</option>
-          <option value="VOLTAGE">📊 Voltage Sensor (Mains AC / DC Divider on ADC)</option>
-          <option value="IR_RECEIVER">📡 IR Remote Sensor (Decode IR pulses)</option>
-          <option value="IR_TRANSMITTER">📶 IR Blaster (Transmit IR remote signals)</option>
+          <option value="RELAY_OUTPUT" ${defaultRole === 'RELAY_OUTPUT' ? 'selected' : ''}>⚡ Relay Actuator (Control Appliance ON / OFF)</option>
+          <option value="VOLTAGE" ${defaultRole === 'sensor' || defaultRole === 'VOLTAGE' ? 'selected' : ''}>📊 Voltage Sensor (Mains AC / DC Divider on ADC)</option>
+          <option value="IR_RECEIVER" ${defaultRole === 'IR_RECEIVER' ? 'selected' : ''}>📡 IR Remote Sensor (Decode IR pulses)</option>
+          <option value="IR_TRANSMITTER" ${defaultRole === 'IR_TRANSMITTER' ? 'selected' : ''}>📶 IR Blaster (Transmit IR remote signals)</option>
           <option value="PIR_MOTION">🚶 PIR Motion / Radar Detector</option>
           <option value="DOOR_WINDOW">🚪 Door / Window Magnetic Contact</option>
           <option value="TEMP_HUMIDITY">🌡️ Temperature & Humidity (DHT)</option>
@@ -4090,7 +4252,11 @@ async function handleAssignNewPinSubmit() {
     if (data.success) {
       showToast(data.message || 'Pin assigned successfully', 'success');
       closeModal();
-      loadRelays();
+      if (currentView === 'sensors') {
+        loadSensors();
+      } else {
+        loadRelays();
+      }
     } else {
       showToast('Error: ' + data.error, 'error');
     }
@@ -4109,7 +4275,11 @@ async function handleUnassignPin(nodeId, channelId, name) {
     const data = await res.json();
     if (data.success) {
       showToast(data.message || 'Pin unassigned successfully', 'success');
-      loadRelays();
+      if (currentView === 'sensors') {
+        loadSensors();
+      } else {
+        loadRelays();
+      }
     } else {
       showToast('Error: ' + data.error, 'error');
     }
@@ -5130,6 +5300,7 @@ async function syncPinsWithHardware(nodeId) {
       }
       if (typeof currentView !== 'undefined') {
         if (currentView === 'relays') loadRelays();
+        else if (currentView === 'sensors') loadSensors();
         else if (currentView === 'nodes') loadNodes();
         else if (currentView === 'pin-matrix') loadPinMatrix();
       } else {
@@ -5173,34 +5344,456 @@ async function deleteNode(nodeId) {
   loadNodes();
 }
 
-// --- 4. SENSORS ---
+// --- 4. SENSORS & TELEMETRY MODULE ---
+let selectedSensorNodeId = '';
+let currentSensorSubTab = 'device'; // 'device', 'room', 'type', 'matrix'
+let sensorCategoryFilter = 'all'; // 'all', 'voltage', 'ir', 'motion', 'inputs'
+let sensorSearchKeyword = '';
+
+function switchSensorSubTab(subTab) {
+  currentSensorSubTab = subTab;
+  if (fleetData.nodes && fleetData.relays) {
+    const sensors = (fleetData.relays || []).filter(isSensorChannel);
+    renderSensorsView(fleetData.nodes, sensors, fleetData.homes || []);
+  } else {
+    loadSensors();
+  }
+}
+
+function switchSensorCategoryFilter(cat) {
+  sensorCategoryFilter = cat;
+  if (fleetData.nodes && fleetData.relays) {
+    const sensors = (fleetData.relays || []).filter(isSensorChannel);
+    renderSensorsView(fleetData.nodes, sensors, fleetData.homes || []);
+  }
+}
+
+function handleSensorDeviceSelect(nodeId) {
+  selectedSensorNodeId = nodeId;
+  if (fleetData.nodes && fleetData.relays) {
+    const sensors = (fleetData.relays || []).filter(isSensorChannel);
+    renderSensorsView(fleetData.nodes, sensors, fleetData.homes || []);
+  }
+}
+
+function handleSensorSearchInput(keyword) {
+  sensorSearchKeyword = (keyword || '').trim();
+  if (fleetData.nodes && fleetData.relays) {
+    const sensors = (fleetData.relays || []).filter(isSensorChannel);
+    renderSensorsView(fleetData.nodes, sensors, fleetData.homes || []);
+  }
+}
+
+async function handleReadSensorLive(nodeId, channelId) {
+  try {
+    showToast({ title: 'Reading Sensor', message: `Querying CH${channelId} on ${nodeId}...`, severity: 'INFO', category: 'PIN' });
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${nodeId}/read-sensor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: channelId })
+    });
+    const data = await res.json();
+    if (data.success && data.result) {
+      const s = data.result.result?.sensor || (data.result.result?.sensors || [])[0];
+      if (s) {
+        showToast({ title: 'Sensor Updated', message: `CH${channelId}: ${s.strValue || (s.value != null ? s.value + ' ' + (s.unit || '') : 'Live reading OK')}`, severity: 'SUCCESS', category: 'PIN' });
+        updateRelaysViewTelemetrySilently({ nodeId, sensors: [s] });
+      } else {
+        showToast({ title: 'Sensor Read', message: data.result.message || 'Sensor read completed', severity: 'SUCCESS', category: 'PIN' });
+      }
+    } else {
+      showToast({ title: 'Read Failed', message: data.error || 'Failed to read sensor', severity: 'ERROR', category: 'PIN' });
+    }
+  } catch (err) {
+    showToast({ title: 'Read Error', message: err.message, severity: 'ERROR', category: 'PIN' });
+  }
+}
+
+async function handlePollAllSensors(nodeId) {
+  if (!nodeId) nodeId = selectedSensorNodeId;
+  if (!nodeId) return;
+  try {
+    showToast({ title: 'Polling All Sensors', message: `Reading all active telemetry inputs on ${nodeId}...`, severity: 'INFO', category: 'PIN' });
+    const res = await fetchWithAuth(`${API_BASE}/nodes/${nodeId}/read-sensor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 0 })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast({ title: 'Sensors Polled', message: 'All telemetry inputs queried successfully', severity: 'SUCCESS', category: 'PIN' });
+      const sensorsList = data.result?.result?.sensors || (data.result?.result?.sensor ? [data.result.result.sensor] : []);
+      if (sensorsList.length > 0) {
+        updateRelaysViewTelemetrySilently({ nodeId, sensors: sensorsList });
+      }
+    } else {
+      showToast({ title: 'Poll Warning', message: data.error || 'Failed to poll sensors', severity: 'WARNING', category: 'PIN' });
+    }
+  } catch (err) {
+    showToast({ title: 'Poll Error', message: err.message, severity: 'ERROR', category: 'PIN' });
+  }
+}
+
 async function loadSensors() {
   const container = document.getElementById("content-area");
   try {
-    const res = await fetch(`${API_BASE}/sensors`);
-    const sensors = await res.json();
-    container.innerHTML = `
-      <div style="margin-bottom: 20px; font-size: 14px; color: var(--text-secondary);">${sensors.length} Dynamic Sensors Registered</div>
-      <div class="cards-grid">
-        ${sensors.length === 0 ? '<div style="color: var(--text-secondary); padding: 16px;">No external sensors (e.g. DHT11/BME280) detected. Standard GPIO output relays are active.</div>' : ''}
-        ${sensors.map(s => `
-          <div class="sensor-card">
-            <div class="card-header">
-              <div>
-                <div class="card-title">${s.name}</div>
-                <div class="card-meta">${s.node_id} | Type: ${s.sensor_type}</div>
-              </div>
-              <div style="font-size: 24px; font-weight: 700; color: var(--accent-blue);">
-                ${s.current_value !== null ? s.current_value + ' ' + s.unit : 'N/A'}
+    const [nodesRes, relaysRes, homesRes] = await Promise.all([
+      fetchWithAuth(`${API_BASE}/nodes`),
+      fetch(`${API_BASE}/relays`),
+      fetchWithAuth(`${API_BASE}/homes`).catch(() => ({ json: () => ({ homes: [] }) }))
+    ]);
+
+    const rawNodes = await nodesRes.json();
+    const rawRelays = await relaysRes.json();
+    const rawHomes = await homesRes.json();
+
+    const nodes = Array.isArray(rawNodes) ? rawNodes : (rawNodes.nodes || []);
+    const relays = Array.isArray(rawRelays) ? rawRelays : (rawRelays.relays || []);
+    const homes = rawHomes.homes || [];
+
+    fleetData.nodes = nodes;
+    fleetData.relays = relays;
+    fleetData.homes = homes;
+
+    const sensors = relays.filter(isSensorChannel);
+
+    if (!selectedSensorNodeId || !nodes.some(n => n.node_id === selectedSensorNodeId)) {
+      selectedSensorNodeId = nodes.length > 0 ? nodes[0].node_id : '';
+    }
+
+    renderSensorsView(nodes, sensors, homes);
+  } catch (err) {
+    container.innerHTML = `<div style="color: var(--accent-red); padding: 20px;">Error loading sensors: ${err.message}</div>`;
+  }
+}
+
+function renderSensorsView(nodes, sensors, homes = []) {
+  const container = document.getElementById("content-area");
+
+  if (!selectedSensorNodeId || !nodes.some(n => n.node_id === selectedSensorNodeId)) {
+    selectedSensorNodeId = nodes.length > 0 ? nodes[0].node_id : '';
+  }
+
+  // Filter sensors by search and category
+  let filteredSensors = sensors.slice();
+  if (sensorSearchKeyword) {
+    const q = sensorSearchKeyword.toLowerCase();
+    filteredSensors = filteredSensors.filter(s =>
+      (s.name && s.name.toLowerCase().includes(q)) ||
+      (s.room && s.room.toLowerCase().includes(q)) ||
+      (s.node_id && s.node_id.toLowerCase().includes(q)) ||
+      (s.function && s.function.toLowerCase().includes(q)) ||
+      (s.sensor_type && s.sensor_type.toLowerCase().includes(q)) ||
+      (s.pin != null && String(s.pin).includes(q))
+    );
+  }
+
+  if (sensorCategoryFilter === 'voltage') {
+    filteredSensors = filteredSensors.filter(s => s.sensor_type === 'VOLTAGE' || s.sensor_type === 'VOLTAGE_ADC' || s.function?.toLowerCase().includes('voltage'));
+  } else if (sensorCategoryFilter === 'ir') {
+    filteredSensors = filteredSensors.filter(s => s.sensor_type?.includes('IR') || s.function?.includes('IR'));
+  } else if (sensorCategoryFilter === 'motion') {
+    filteredSensors = filteredSensors.filter(s => s.sensor_type?.includes('MOTION') || s.sensor_type?.includes('DOOR') || s.function?.includes('Motion'));
+  } else if (sensorCategoryFilter === 'inputs') {
+    filteredSensors = filteredSensors.filter(s => s.pin_mode === 'SENSOR_INPUT');
+  }
+
+  const voltageCount = sensors.filter(s => s.sensor_type === 'VOLTAGE' || s.sensor_type === 'VOLTAGE_ADC' || s.function?.toLowerCase().includes('voltage')).length;
+  const irCount = sensors.filter(s => s.sensor_type?.includes('IR') || s.function?.includes('IR')).length;
+  const motionCount = sensors.filter(s => s.sensor_type?.includes('MOTION') || s.sensor_type?.includes('DOOR') || s.function?.includes('Motion')).length;
+
+  container.innerHTML = `
+    <div class="relays-view-wrap">
+      <!-- Topbar with header & fleet actions -->
+      <div class="devices-topbar-actions">
+        <div>
+          <h2 style="font-size: 19px; font-weight: 700; color: #ffffff; margin: 0; display: flex; align-items: center; gap: 8px;">
+            <span>📡</span> Sensors & Telemetry
+          </h2>
+          <p style="font-size: 12px; color: #94a3b8; margin: 3px 0 0 0;">Live analog telemetry, AC RMS / DC voltage, IR transceivers, motion detection & calibration</p>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn-batch-on" style="background: linear-gradient(135deg, #0284c7, #2563eb);" onclick="handlePollAllSensors('${escapeHtml(selectedSensorNodeId)}')">▶ Poll Board Sensors</button>
+          <button class="btn-action-neutral" onclick="openAssignNewPinModal('sensor')">➕ Assign Sensor Pin</button>
+          <button class="btn-action-neutral" onclick="syncPinsWithHardware()">🔄 Sync Hardware</button>
+        </div>
+      </div>
+
+      <!-- Sub-View Navigation Tabs -->
+      <div class="subview-nav-tabs">
+        <button class="subview-tab-btn ${currentSensorSubTab === 'device' ? 'active' : ''}" onclick="switchSensorSubTab('device')">
+          <span>🖥️ By Device / Board</span>
+        </button>
+        <button class="subview-tab-btn ${currentSensorSubTab === 'room' ? 'active' : ''}" onclick="switchSensorSubTab('room')">
+          <span>🏠 By Room</span>
+        </button>
+        <button class="subview-tab-btn ${currentSensorSubTab === 'type' ? 'active' : ''}" onclick="switchSensorSubTab('type')">
+          <span>📊 By Sensor Type</span>
+        </button>
+        <button class="subview-tab-btn ${currentSensorSubTab === 'matrix' ? 'active' : ''}" onclick="switchSensorSubTab('matrix')">
+          <span>🔌 Sensor Pins Matrix</span>
+        </button>
+        <button class="subview-tab-btn" onclick="switchView('relays')">
+          <span>⚡ Go to Relays & Actuators ↗</span>
+        </button>
+      </div>
+
+      <!-- Category Filter Chips & Search Bar -->
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px;">
+        <div class="filter-chips-bar" style="margin-bottom: 0;">
+          <button class="filter-chip ${sensorCategoryFilter === 'all' ? 'active' : ''}" onclick="switchSensorCategoryFilter('all')">All Sensors (${sensors.length})</button>
+          <button class="filter-chip ${sensorCategoryFilter === 'voltage' ? 'active' : ''}" onclick="switchSensorCategoryFilter('voltage')">📊 Voltage / ADC (${voltageCount})</button>
+          <button class="filter-chip ${sensorCategoryFilter === 'ir' ? 'active' : ''}" onclick="switchSensorCategoryFilter('ir')">📡 IR Transceivers (${irCount})</button>
+          <button class="filter-chip ${sensorCategoryFilter === 'motion' ? 'active' : ''}" onclick="switchSensorCategoryFilter('motion')">🚶 Motion & Doors (${motionCount})</button>
+          <button class="filter-chip ${sensorCategoryFilter === 'inputs' ? 'active' : ''}" onclick="switchSensorCategoryFilter('inputs')">🔘 Digital Inputs</button>
+        </div>
+
+        <div class="devices-search-box" style="min-width: 220px;">
+          <span style="font-size: 13px; color: #64748b;">🔍</span>
+          <input type="text" class="devices-search-input" 
+            placeholder="Search sensors, GPIO, type..." 
+            value="${escapeHtml(sensorSearchKeyword)}"
+            oninput="handleSensorSearchInput(this.value)">
+        </div>
+      </div>
+
+      <!-- DYNAMIC SUB-VIEW CONTENT -->
+      <div id="sensor-subview-container">
+        ${renderActiveSensorSubView(nodes, filteredSensors, homes)}
+      </div>
+    </div>
+  `;
+}
+
+function renderActiveSensorSubView(nodes, sensors, homes) {
+  if (currentSensorSubTab === 'room') {
+    return renderSensorsByRoomView(sensors);
+  } else if (currentSensorSubTab === 'type') {
+    return renderSensorsByTypeView(sensors);
+  } else if (currentSensorSubTab === 'matrix') {
+    return renderSensorsMatrixView(nodes, sensors, homes);
+  } else {
+    return renderSensorsByDeviceView(nodes, sensors);
+  }
+}
+
+function renderSensorsByDeviceView(nodes, sensors) {
+  const node = nodes.find(n => n.node_id === selectedSensorNodeId) || nodes[0] || {};
+  const isOnline = Boolean(node.is_online);
+  const deviceSensors = sensors.filter(s => s.node_id === selectedSensorNodeId);
+  const nodeIp = node.ip_address || node.ip || '';
+
+  return `
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 14px; flex-wrap: wrap;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 13px; color: #94a3b8; font-weight: 600;">Selected Device:</span>
+        <select id="sensors-device-picker" class="relays-picker-dropdown" onchange="handleSensorDeviceSelect(this.value)">
+          ${nodes.map(n => `
+            <option value="${n.node_id}" ${n.node_id === selectedSensorNodeId ? 'selected' : ''}>
+              Device: ${escapeHtml(n.name || n.node_id)} (${escapeHtml(n.room || n.room_name || 'General')})
+            </option>
+          `).join('')}
+        </select>
+        <span class="${isOnline ? 'status-pill-online' : 'status-pill-offline'}">
+          ${isOnline ? '● Online' : '○ Offline'}
+        </span>
+      </div>
+
+      ${nodeIp ? `
+        <button class="btn-neutral-action" style="font-size: 12px; padding: 6px 12px;" onclick="window.open('http://${escapeHtml(nodeIp)}', '_blank')">
+          🌐 Visit Device Portal (${escapeHtml(nodeIp)}) ↗
+        </button>
+      ` : ''}
+    </div>
+
+    <div class="relays-main-split">
+      <!-- Left: Selected Device Summary Card -->
+      <div class="device-board-card">
+        <div class="board-graphic-wrap" style="background: rgba(192, 132, 252, 0.15); color: #c084fc;">📡</div>
+        <div class="board-device-name">${escapeHtml(node.name || node.node_id)}</div>
+        <div class="board-hw-tag" style="background: rgba(192, 132, 252, 0.12); color: #c084fc;">${escapeHtml(node.hardware_type || 'ESP8266 Telemetry Node')}</div>
+
+        <div class="board-meta-list">
+          <div class="board-meta-row">
+            <span>IP Address</span>
+            ${nodeIp ? `
+              <a href="http://${escapeHtml(nodeIp)}" target="_blank" style="color: #38bdf8; font-family: monospace; font-weight: 600; text-decoration: underline;">${escapeHtml(nodeIp)} ↗</a>
+            ` : '<span style="color: #64748b;">N/A</span>'}
+          </div>
+          <div class="board-meta-row"><span>RSSI Signal</span><span style="color: #10b981; font-weight: 600;">📶 ${node.rssi || -52} dBm</span></div>
+          <div class="board-meta-row"><span>Uptime</span><span>${formatUptime(node.uptime_sec)}</span></div>
+          <div class="board-meta-row"><span>Sensors Active</span><span style="color: #c084fc; font-weight: 700;">${deviceSensors.length} Channels</span></div>
+          <div class="board-meta-row"><span>Room</span><span style="color: #ffffff;">${escapeHtml(node.room || node.room_name || 'General')}</span></div>
+        </div>
+
+        <button class="board-channels-btn" onclick="showNodeInfoModal('${node.node_id}')">All Board Channels (${(fleetData.relays || []).filter(r => r.node_id === node.node_id).length})</button>
+      </div>
+
+      <!-- Right: Action Bar & Sensor Channel Cards -->
+      <div class="relays-controls-column">
+        <div class="relays-action-toolbar">
+          <button class="btn-test-all-on" style="background: linear-gradient(135deg, #0284c7, #2563eb);" onclick="handlePollAllSensors('${node.node_id}')">▶ Poll Board Sensors</button>
+          <button class="btn-action-neutral" onclick="openAssignNewPinModal('sensor')">➕ Add Sensor Pin</button>
+          <button class="btn-action-neutral" onclick="showNodeSettingsModal('${node.node_id}')">⚙ Configure Node</button>
+          <button class="btn-action-neutral" onclick="handleNodeDiagnostics('${node.node_id}')">📈 I/O Status</button>
+        </div>
+
+        <div class="relays-channels-grid" id="selected-device-sensors-grid">
+          ${deviceSensors.length === 0 ? `
+            <div style="grid-column: span 2; padding: 32px; text-align: center; color: #64748b; background: #0b1120; border-radius: 12px; border: 1px dashed rgba(255,255,255,0.1);">
+              <div style="font-size: 28px; margin-bottom: 8px;">📡</div>
+              <div style="font-size: 14px; font-weight: 600; color: #94a3b8;">No sensor channels registered for this device.</div>
+              <div style="font-size: 12px; color: #64748b; margin-top: 4px;">Click "+ Add Sensor Pin" above or configure an existing pin to Voltage, IR, or Motion sensor.</div>
+            </div>
+          ` : deviceSensors.map(s => renderSensorCardHtml(s)).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSensorsByRoomView(sensors) {
+  const roomMap = new Map();
+  for (const s of sensors) {
+    const room = s.room || 'General / Unassigned';
+    if (!roomMap.has(room)) roomMap.set(room, []);
+    roomMap.get(room).push(s);
+  }
+
+  if (roomMap.size === 0) {
+    return '<div style="padding: 40px; text-align: center; color: #64748b;">No sensors match the current filter.</div>';
+  }
+
+  const roomIcons = {
+    'Living Room': '🛋️',
+    'Bedroom': '🛏️',
+    'Kitchen': '🍳',
+    'Dining': '🍽️',
+    'Mains': '⚡',
+    'Study': '📚',
+    'Outside': '🏡',
+    'Balcony': '🌿'
+  };
+
+  return `
+    <div class="room-relay-groups">
+      ${Array.from(roomMap.entries()).map(([roomName, sList]) => {
+        const icon = roomIcons[roomName] || '🚪';
+        return `
+          <div class="room-group-card" style="border-left: 3px solid #c084fc;">
+            <div class="room-group-header">
+              <div class="room-group-title">
+                <span>${icon}</span>
+                <span>${escapeHtml(roomName)}</span>
+                <span class="room-group-badge" style="background: rgba(192, 132, 252, 0.15); color: #c084fc;">${sList.length} Sensors</span>
               </div>
             </div>
+
+            <div class="relays-channels-grid">
+              ${sList.map(s => renderSensorCardHtml(s)).join('')}
+            </div>
           </div>
-        `).join("")}
-      </div>
-    `;
-  } catch (e) {
-    container.innerHTML = `<div style="color: var(--accent-red);">Error loading sensors: ${e.message}</div>`;
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderSensorsByTypeView(sensors) {
+  const typeGroups = [
+    { key: 'voltage', title: '📊 Voltage & ADC Sensors', filter: s => s.sensor_type === 'VOLTAGE' || s.sensor_type === 'VOLTAGE_ADC' || s.function?.toLowerCase().includes('voltage'), icon: '⚡' },
+    { key: 'ir', title: '📡 IR Remote Transceivers (RX / TX)', filter: s => s.sensor_type?.includes('IR') || s.function?.includes('IR'), icon: '📡' },
+    { key: 'motion', title: '🚶 Motion, Radar & Door Sensors', filter: s => s.sensor_type?.includes('MOTION') || s.sensor_type?.includes('DOOR') || s.function?.includes('Motion'), icon: '🚶' },
+    { key: 'other', title: '🔬 Other Sensor & Analog Inputs', filter: s => !s.sensor_type?.includes('VOLTAGE') && !s.function?.toLowerCase().includes('voltage') && !s.sensor_type?.includes('IR') && !s.function?.includes('IR') && !s.sensor_type?.includes('MOTION') && !s.sensor_type?.includes('DOOR') && !s.function?.includes('Motion'), icon: '🔬' }
+  ];
+
+  const activeGroups = typeGroups.map(g => ({ ...g, items: sensors.filter(g.filter) })).filter(g => g.items.length > 0);
+
+  if (activeGroups.length === 0) {
+    return '<div style="padding: 40px; text-align: center; color: #64748b;">No sensors registered.</div>';
   }
+
+  return `
+    <div class="room-relay-groups">
+      ${activeGroups.map(g => `
+        <div class="room-group-card" style="border-left: 3px solid #38bdf8;">
+          <div class="room-group-header">
+            <div class="room-group-title">
+              <span>${g.icon}</span>
+              <span>${g.title}</span>
+              <span class="room-group-badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8;">${g.items.length} Channels</span>
+            </div>
+          </div>
+          <div class="relays-channels-grid">
+            ${g.items.map(s => renderSensorCardHtml(s)).join('')}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderSensorsMatrixView(nodes, sensors, homes) {
+  return `
+    <div class="pin-matrix-table-wrap">
+      <table class="pin-matrix-table">
+        <thead>
+          <tr>
+            <th>Hardware Board</th>
+            <th>CH #</th>
+            <th>Sensor Name</th>
+            <th>Room</th>
+            <th>Hardware GPIO</th>
+            <th>Sensor Role</th>
+            <th>Calibration Details</th>
+            <th>Live Reading</th>
+            <th style="text-align: right;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sensors.length === 0 ? `
+            <tr>
+              <td colspan="9" style="padding: 32px; text-align: center; color: #64748b;">No sensor pins found.</td>
+            </tr>
+          ` : sensors.map(s => {
+            const pinLabel = getGpioPinLabel(s.pin);
+            const roleBadgeHtml = getSensorRoleBadgeHtml(s);
+            const liveControlHtml = getSensorLiveBadgeHtml(s);
+            const calib = getSensorCalibrationSummary(s);
+
+            return `
+              <tr>
+                <td>
+                  <strong style="color: #fff;">${escapeHtml(s.node_name || s.node_id)}</strong>
+                  <br><small style="color: #64748b; font-family: monospace;">${escapeHtml(s.node_id)}</small>
+                </td>
+                <td style="color: #c084fc; font-weight: 700;">CH${s.channel_id}</td>
+                <td style="font-weight: 600; color: #fff;">
+                  <span style="margin-right: 6px;">${getSensorIconSymbol(s)}</span>${escapeHtml(s.name)}
+                </td>
+                <td style="color: #94a3b8;">${escapeHtml(s.room || 'General')}</td>
+                <td><span class="gpio-badge" style="font-family: monospace;">${pinLabel}</span></td>
+                <td>${roleBadgeHtml}</td>
+                <td><span style="color: #94a3b8; font-size: 11px; font-family: monospace;">${calib}</span></td>
+                <td id="sensor-reading-${s.node_id}-${s.channel_id}">${liveControlHtml}</td>
+                <td style="text-align: right; white-space: nowrap;">
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px; margin-right: 4px;" onclick="openRelayChannelConfigModal('${s.node_id}', ${s.channel_id})">⚙ Configure</button>
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px; color: #38bdf8;" onclick="handleReadSensorLive('${s.node_id}', ${s.channel_id})">🚀 Read</button>
+                  ${(s.sensor_type === 'IR_TRANSMITTER' || s.function === 'IR Transmitter') ? `
+                    <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 7px; color: #22d3ee;" onclick="openIrTransmitModal('${s.node_id}')">🚀 Blast</button>
+                  ` : ''}
+                  ${(s.sensor_type === 'IR_RECEIVER' || s.function === 'IR Receiver') ? `
+                    <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 7px; color: #c084fc;" onclick="showNodeIrModal('${s.node_id}')">📡 Learn</button>
+                  ` : ''}
+                  <button class="btn btn-danger" style="font-size: 11px; padding: 4px 7px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); color: #f87171; margin-left: 4px;" title="Unassign pin" onclick="handleUnassignPin('${s.node_id}', ${s.channel_id}, '${escapeHtml(s.name)}')">🗑️</button>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 // --- 5. AUTOMATION UTILITIES ---

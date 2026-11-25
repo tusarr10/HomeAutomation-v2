@@ -34,6 +34,7 @@ All wire APIs, database schemas, bidirectional pin synchronizations, and UI moda
 | **CS-10** | **LittleFS File Explorer** | `GET /fs/list`, `GET /fs/download`, `POST /fs/upload`, `POST /fs/delete`, `POST /fs/rename` | ✅ **DONE** | Live verified: Browsed and inspected all 7 flash files on live node (`192.168.1.28`). |
 | **CS-11** | **Sensor Detection & Telemetry Mapping**| `upsertRelayFromChannel()` detecting `isSensor: true`, `direction: "INPUT"`, `type: "VOLTAGE_ADC"`, `type: "IR_RECEIVER"` | ✅ **DONE** | Live verified: Channels 10 and 12 properly stored as `SENSOR_INPUT` with units `HEX` and `V`. |
 | **CS-12** | **Tuya Breaker Isolation Lock** | Strict safeguard in `nodeManager.js`, `v1Router.js`, and `database.js` | ✅ **DONE** | Live verified: Breaker `NODE-30487DE85D5C` remained untouched, `Online`, and relay `LIVE ON`. |
+| **CS-13** | **Dedicated Sensors & Telemetry UI** | Added `Sensors & Telemetry` sidebar navigation tab and view module in `app.js`; decoupled relay switches from sensors | ✅ **DONE** | Live verified: Relays view only displays controllable switches; Sensors view displays live voltages, IR remotes, calibration, and matrix. |
 
 ---
 
