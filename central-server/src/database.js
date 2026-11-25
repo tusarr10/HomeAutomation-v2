@@ -990,10 +990,12 @@ class FleetDatabase {
     const isSensor = Boolean(
       ch.isSensor ||
       ch.direction === 'INPUT' ||
-      (ch.type && (ch.type.includes('SENSOR') || ch.type.includes('ADC') || ch.type.includes('RECEIVER'))) ||
+      (ch.type && (ch.type.includes('SENSOR') || ch.type.includes('ADC') || ch.type.includes('RECEIVER') || ch.type.includes('TRANSMITTER') || ch.type.includes('IR'))) ||
       func.toLowerCase().includes('sensor') ||
       func.toLowerCase().includes('receiver') ||
-      func.toLowerCase().includes('voltage')
+      func.toLowerCase().includes('transmitter') ||
+      func.toLowerCase().includes('voltage') ||
+      func.toLowerCase().includes('ir')
     );
     const pinMode = isSensor ? 'SENSOR_INPUT' : (ch.pin_mode || 'RELAY_OUTPUT');
     const sensorType = isSensor ? (ch.type || ch.sensor_type || ch.function || 'Sensor') : null;
