@@ -1,156 +1,120 @@
-# SmartHome Go Edge Broker (`smarthome-edge`)
+# SmartHome Edge Relay Server (`smarthome-edge`) ⚡
 
-Ultra-lightweight, high-performance edge control plane engineered specifically in **Go (Golang)** to run natively on the **Jio AX6000 JIDU6J01** (MediaTek MT7986A Filogic 830, Quad-core Cortex-A53, 512 MB RAM, OpenWrt 25.12-SNAPSHOT).
+**Ultra-Lightweight, High-Performance Autonomous Edge Control Plane in Pure Go (v1.2.0)**
+
+Engineered specifically to run natively on the **Jio AX6000 JIDU6J01** (MediaTek MT7986A Filogic 830, Quad-core ARM Cortex-A53, 512 MB RAM, OpenWrt 25.12-SNAPSHOT / Linux ARM64).
 
 ---
 
-## 🌟 Core Architecture
+## 🌟 Architecture & Edge Autonomy
 
 ```
-                                  +-----------------------------+
-                                  | Central Server (PC / Cloud) |
-                                  | (RBAC, SQLite History, OTA) |
-                                  +--------------^--------------+
-                                                 | Outbound Sync
-                                                 | (when PC is ON)
-+-----------------------+         +--------------v--------------+         +--------------------------+
-|  ESP8266 Fleet Nodes  |         |   Jio AX6000 OpenWrt Router |         | Android App / Client     |
-|  (app2 C++ Firmware)  +-------->|    (Go Edge Broker Process) |<------->| (REST & WebSocket :9200) |
-+-----------------------+  TCP    +--------------^--------------+         +--------------------------+
-                          :2000                  |
-                                                 | LAN Polling (:8085 / LAN)
-                                  +--------------v--------------+
-                                  | Wi-Fi Smart Circuit Breaker |
-                                  | (Voltage, Current, Leakage) |
-                                  +-----------------------------+
+                                  ┌─────────────────────────────┐
+                                  │ Central Server (PC / Cloud) │
+                                  │ (Long-Term Analytics & OTA) │
+                                  └──────────────▲──────────────┘
+                                                 │ Outbound Syncer
+                                                 │ (when PC is online)
+┌───────────────────────┐         ┌──────────────▼──────────────┐         ┌──────────────────────────┐
+│  ESP8266 Fleet Nodes  │         │  Jio AX6000 OpenWrt Router  │         │  Mobile App / Client     │
+│  (app2 C++ Firmware)  +-------->│   (Go Edge Broker Process)  │<------->│ (REST & WebSocket :9200) │
+└───────────────────────┘  TCP    └──────────────▲──────────────┘         └──────────────────────────┘
+                          :2000                  │
+                                                 │ Direct Socket (:6668 / LAN)
+                                  ┌──────────────▼──────────────┐
+                                  │ Wi-Fi Smart Circuit Breaker │
+                                  │ (Tuya Protocol v3.5 AES-128)│
+                                  └─────────────────────────────┘
 ```
 
 ### Key Highlights
-1. **Full Feature & Dashboard Parity with Central Server:** Houses the complete 17-module Single-Page Application (Overview, Nodes, Relays, Sensors, Smart Breaker, Automation, LittleFS, Config Sync, Command Center, Logs, RBAC).
-2. **Always-On Local Authority:** ESP nodes and Android mobile app connect directly to the router. The central PC is never a dependency for toggling relays, reading sensors, running local automations, or monitoring circuit breakers.
-3. **Pure Static Binary:** Zero runtime dependencies on OpenWrt (no Node.js, no Python, no shared libraries).
-4. **Low Resource Footprint:** Consumes only ~25 MB to 35 MB RAM and <1% idle CPU on the Jio AX6000 (MediaTek MT7986A Filogic 830).
-5. **Continuous Upstream Sync:** Automatically streams node telemetry, relay actuations, breaker changes, and events to Central Server (`http://<central_ip>:9100/api/telemetry`) when PC is online.
-6. **Framing & Protocol:** Standard NDJSON on TCP port `2000` + REST & WebSocket on port `9200`.
-7. **Circuit Breaker:** Complete live telemetry (V, A, W, kWh, Hz, °C, mA) and contact switch control (DP 108).
-8. **Persistent Spool:** Bounded circular disk queue on `/overlay/smarthome-edge/events` for offline state protection.
+1. **Always-On Local Authority**: Runs directly on the router hardware. Toggling relays, reading sensors, and executing automations work 100% locally without cloud or Central PC dependencies.
+2. **Zero-CGO Static Binary (`CGO_ENABLED=0`)**: Fully portable, zero shared-library dependencies, cross-compiled for Linux ARM64, Linux AMD64, and Windows AMD64.
+3. **Lean RAM Footprint**: Consumes only ~25–35 MB resident RAM and `< 1%` idle CPU on the MediaTek Filogic 830 MT7986A.
+4. **Embedded Pure-Go SQLite (`fleet_edge.db`)**: Enforces `PRAGMA cache_size = -2000` (2 MB cache) and WAL journal mode.
+5. **Two-Way Upstream Sync (`internal/syncer`)**: Spools offline events in bounded JSONL (`events.jsonl`) during PC downtime and replays them to Central Server upon link restoration.
+6. **Native Tuya Protocol v3.5 Socket**: Direct AES-128-ECB communication with the smart circuit breaker on port `6668` with software contactor interlock.
+7. **Procd Watchdog Integration**: Built-in `/api/health/watchdog` health ping for OpenWrt process supervision and automatic self-healing.
 
 ---
 
 ## 📁 Repository Structure
 
-> 📖 **Full Engineering Specification:** See [IMPLEMENTATION.md](file:///D:/ai/HomeAutomation%20v2/relay-server/IMPLEMENTATION.md) for complete protocol frames, wire contracts, and Tuya v3.5 socket documentation.
-
 ```
 relay-server/
-├── bin/
-│   ├── smarthome-edge       <-- Compiled Linux ARM64 binary (Jio AX6000 OpenWrt)
-│   └── smarthome-edge.exe   <-- Compiled Windows AMD64 binary
-├── cmd/
-│   └── edge/
-│       └── main.go          <-- Entrypoint: TCP, HTTP, WebSocket & signal handling
-├── config/
-│   └── config.json          <-- Default configuration file
-├── data/
-│   └── events.jsonl         <-- Persistent event spool
+├── bin/                       # Compiled static binaries
+│   ├── smarthome-edge         # Linux ARM64 binary (OpenWrt MT7986A)
+│   ├── smarthome-edge-linux-arm64
+│   ├── smarthome-edge-linux-amd64
+│   └── smarthome-edge.exe     # Windows AMD64 binary
+├── cmd/edge/                  # Application entrypoint (main.go)
+├── config/config.json         # Default configuration file
+├── data/events.jsonl          # Persistent offline event spool
 ├── internal/
-│   ├── auth/                <-- Token validation & node scope enforcement
-│   ├── config/              <-- Configuration loader
-│   ├── httpapi/             <-- REST API & static web dashboard router
-│   ├── queue/               <-- Bounded append-only JSONL event spool
-│   ├── state/               <-- In-memory Live State Cache, ACK handler & command queue
-│   ├── syncer/              <-- Outbound Central PC sync & Breaker poller
-│   ├── tcp/                 <-- Raw TCP NDJSON Gateway (Port 2000 / 2001)
-│   ├── tuya/                <-- Native Tuya Protocol v3.5 socket client (AES-128-ECB)
-│   └── websocket/           <-- RFC 6455 pure Go WebSocket hub
-├── openwrt/
-│   └── smarthome-edge.init  <-- OpenWrt procd service definition
-├── web/                     <-- Embedded browser testing dashboard
-│   ├── index.html
-│   ├── style.css
-│   └── app.js
-├── build_arm64.bat          <-- Cross-compiles for Jio AX6000 OpenWrt ARM64
-├── build_windows.bat        <-- Compiles for Windows local testing
-├── run.bat                  <-- Runs locally on Windows
-├── IMPLEMENTATION.md        <-- Full technical implementation specification
-├── TODO.md                  <-- Edge broker feature status & roadmap
-└── go.mod
+│   ├── auth/                  # Token validation & rate limiting
+│   ├── config/                # JSON configuration parser
+│   ├── db/                    # Pure-Go SQLite driver & schema migrations
+│   ├── httpapi/               # REST API, Mobile API & SPA handler
+│   ├── queue/                 # Bounded append-only JSONL event spool
+│   ├── state/                 # Live state cache, ACK tracking & command queue
+│   ├── syncer/                # Outbound Central Server sync & breaker poller
+│   ├── tcp/                   # Raw TCP NDJSON gateway (Port 2000)
+│   ├── tuya/                  # Native Tuya v3.5 AES-128-ECB socket client
+│   └── websocket/             # RFC 6455 pure Go WebSocket hub
+├── openwrt/                   # OpenWrt procd service scripts
+├── build_production.ps1       # Multi-platform static compilation script
+└── TODO.md                    # Relay Server engineering roadmap
 ```
 
 ---
 
-## 🔨 Building & Testing
+## 📡 Ports & Protocols
 
-### 1. Test Locally on Windows
-
-Double-click `run.bat` or run in terminal:
-```cmd
-cd relay-server
-go run ./cmd/edge -config ./config/config.json
-```
-Open **`http://localhost:9200`** in your browser to view the live edge dashboard.
-
-### 2. Cross-Compile for Jio AX6000 OpenWrt (ARM64)
-
-Run `build_arm64.bat` on your PC, or execute:
-```cmd
-cd relay-server
-set GOOS=linux
-set GOARCH=arm64
-set CGO_ENABLED=0
-go build -trimpath -ldflags="-s -w" -o bin/smarthome-edge ./cmd/edge
-```
-This generates `bin/smarthome-edge` (~6.4 MB standalone executable).
+| Port | Protocol | Path / Feature | Description |
+|:---:|:---:|:---|:---|
+| **`9200`** | `HTTP` | `/` | Embedded 17-module Web Dashboard |
+| **`9200`** | `HTTP` | `/api/v1/mobile/*` | High-speed mobile API suite (Bootstrap, Toggle, State, Stream) |
+| **`9200`** | `HTTP` | `/api/health/watchdog` | OpenWrt procd watchdog monitoring |
+| **`9200`** | `WebSocket` | `/ws` | Real-time state push stream |
+| **`2000`** | `TCP` | NDJSON | Sub-millisecond raw socket gateway for ESP8266 fleet nodes |
+| **`6668`** | `TCP` | AES-128-ECB | Direct socket communication with Tuya Smart Circuit Breaker |
 
 ---
 
-## 🚀 Deploying to Jio AX6000 OpenWrt
+## 🚀 Compilation & Deployment
 
-### Step 1: Copy Files to Router
-From your PC (using SCP or WinSCP):
-```sh
-scp bin/smarthome-edge root@192.168.1.1:/usr/bin/smarthome-edge
-scp config/config.json root@192.168.1.1:/etc/smarthome-edge/config.json
+### 1. Cross-Compilation (from Windows/Linux)
+Using PowerShell:
+```powershell
+cd relay-server
+.\build_production.ps1
+```
+This generates:
+- `bin/smarthome-edge-linux-arm64` (Linux ARM64 static binary)
+- `bin/smarthome-edge-linux-amd64` (Linux AMD64 static binary)
+- `bin/smarthome-edge.exe` (Windows AMD64 binary)
+
+### 2. Deploying on OpenWrt Router (MediaTek MT7986A Filogic 830)
+```bash
+# Copy binary, config, and init script to router
+scp bin/smarthome-edge-linux-arm64 root@192.168.1.1:/usr/bin/smarthome-edge
+scp config/config.json root@192.168.1.1:/etc/smarthome-edge.json
 scp openwrt/smarthome-edge.init root@192.168.1.1:/etc/init.d/smarthome-edge
-```
 
-### Step 2: Set Permissions & Enable Service
-SSH into the router:
-```sh
+# SSH into router and enable service
 ssh root@192.168.1.1
-
-# Make executable
-chmod +x /usr/bin/smarthome-edge
-chmod +x /etc/init.d/smarthome-edge
-
-# Enable and start via OpenWrt procd
+chmod +x /usr/bin/smarthome-edge /etc/init.d/smarthome-edge
 /etc/init.d/smarthome-edge enable
 /etc/init.d/smarthome-edge start
+
+# Verify running service
+/etc/init.d/smarthome-edge status
 ```
+Access the embedded edge dashboard at **`http://192.168.1.1:9200`**.
 
-### Step 3: Verify Status
-```sh
-# Check if running
-ps | grep smarthome-edge
-
-# Check listening ports
-netstat -lntp | grep -E '2000|9200'
-
-# Check logs
-logread | grep smarthome-edge
+### 3. Running Locally on Windows
+```powershell
+cd relay-server
+.\bin\smarthome-edge.exe
 ```
-
----
-
-## 📡 API Reference for Android App
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/v1/health` | `GET` | Broker health, uptime, and memory usage |
-| `/api/v1/nodes` | `GET` | Returns list of authorized nodes (filtered by token scope) |
-| `/api/v1/nodes/{id}` | `GET` | Single node details and channels |
-| `/api/v1/nodes/{id}/commands` | `POST` | Toggles relay switch (`{"channelId": 1, "state": true}`) |
-| `/api/v1/breaker` | `GET` | Live circuit breaker telemetry (V, A, W, kWh, Temp, Leakage) |
-| `/api/v1/breaker/switch` | `POST` | Trips or closes main breaker contact (`{"state": true}`) |
-| `/api/v1/edge/status` | `GET` | Edge broker diagnostics and Central PC connectivity |
-| `/api/v1/ws` | `WS` | Real-time WebSocket event stream (`node_status`, `pin_update`, `breaker_update`) |
+Access the local edge dashboard at **`http://localhost:9200`**.
