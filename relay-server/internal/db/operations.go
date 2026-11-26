@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -53,6 +54,8 @@ type NodeRecord struct {
 	RoomName        string  `json:"room_name"`
 	IsPaired        int     `json:"is_paired"`
 	RelaysCount     int     `json:"relays_count"`
+	AuthUsername    string  `json:"auth_username"`
+	AuthPassword    string  `json:"auth_password"`
 }
 
 type RelayRecord struct {
@@ -233,7 +236,9 @@ func (db *DB) GetAllNodes() ([]NodeRecord, error) {
 		       n.home_id, n.room_id, n.is_paired,
 		       (SELECT COUNT(*) FROM relays r WHERE r.node_id = n.node_id) as relays_count,
 		       COALESCE(h.name, '') as home_name,
-		       COALESCE(rm.name, '') as room_name
+		       COALESCE(rm.name, '') as room_name,
+		       COALESCE(n.auth_username, 'admin') as auth_username,
+		       COALESCE(n.auth_password, 'admin') as auth_password
 		FROM nodes n
 		LEFT JOIN homes h ON h.id = n.home_id
 		LEFT JOIN rooms rm ON rm.id = n.room_id
@@ -250,7 +255,7 @@ func (db *DB) GetAllNodes() ([]NodeRecord, error) {
 		var name, hwType, fwVer, ip, mac, gw, status, room, loc, cat, lastSeenStr, chJSON, devGroup, mcu, wifi sql.NullString
 		var rssi, uptime, heap, isOnline, flashCap, lTotal, lUsed, lAvail, homeId, roomId, isPaired, rCount sql.NullInt64
 		var lastSeenEpoch, createdAt sql.NullFloat64
-		var homeName, roomName sql.NullString
+		var homeName, roomName, authUser, authPass sql.NullString
 
 		err := rows.Scan(
 			&n.NodeID, &name, &hwType, &fwVer, &ip, &mac, &gw,
@@ -259,6 +264,7 @@ func (db *DB) GetAllNodes() ([]NodeRecord, error) {
 			&flashCap, &lTotal, &lUsed, &lAvail, &wifi,
 			&homeId, &roomId, &isPaired, &rCount,
 			&homeName, &roomName,
+			&authUser, &authPass,
 		)
 		if err != nil {
 			continue
@@ -292,6 +298,8 @@ func (db *DB) GetAllNodes() ([]NodeRecord, error) {
 		if wifi.Valid { n.WifiSSID = wifi.String }
 		if homeId.Valid { val := int(homeId.Int64); n.HomeID = &val }
 		if roomId.Valid { val := int(roomId.Int64); n.RoomID = &val }
+		if authUser.Valid && authUser.String != "" { n.AuthUsername = authUser.String } else { n.AuthUsername = "admin" }
+		if authPass.Valid && authPass.String != "" { n.AuthPassword = authPass.String } else { n.AuthPassword = "admin" }
 		if homeName.Valid { n.HomeName = homeName.String }
 		if roomName.Valid { n.RoomName = roomName.String }
 		if isPaired.Valid { n.IsPaired = int(isPaired.Int64) }
@@ -440,6 +448,72 @@ func (db *DB) UpsertRelay(r *RelayRecord) error {
 		r.InitialMode, r.Enabled, r.CurrentState, r.RequestedState, r.IsSyncing,
 		nowStr, r.Icon, r.PinMode,
 	)
+	return err
+}
+
+func (db *DB) SyncNodeRelays(nodeID string, channels []RelayRecord) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	if len(channels) == 0 {
+		return nil
+	}
+
+	activeIDs := make([]interface{}, 0, len(channels))
+	placeholders := make([]string, 0, len(channels))
+	for _, ch := range channels {
+		activeIDs = append(activeIDs, ch.ChannelID)
+		placeholders = append(placeholders, "?")
+	}
+
+	// Purge stale relays that no longer exist on the node (Except Tuya breaker)
+	if !strings.Contains(nodeID, "30487D") && !strings.Contains(strings.ToUpper(nodeID), "BREAKER") {
+		args := append([]interface{}{nodeID}, activeIDs...)
+		query := fmt.Sprintf("DELETE FROM relays WHERE node_id = ? AND channel_id NOT IN (%s)", strings.Join(placeholders, ","))
+		_, _ = db.Exec(query, args...)
+	}
+
+	// Upsert active relays
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	for _, r := range channels {
+		_, _ = db.Exec(`
+			INSERT INTO relays (
+				node_id, channel_id, pin, name, room, function, active_low,
+				initial_mode, enabled, current_state, requested_state, is_syncing,
+				last_changed_at, icon, pin_mode
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(node_id, channel_id) DO UPDATE SET
+				pin = excluded.pin,
+				name = CASE WHEN relays.name IS NULL OR relays.name = '' THEN excluded.name ELSE relays.name END,
+				current_state = excluded.current_state,
+				requested_state = excluded.requested_state,
+				is_syncing = excluded.is_syncing,
+				last_changed_at = excluded.last_changed_at
+		`,
+			r.NodeID, r.ChannelID, r.Pin, r.Name, r.Room, r.Function, r.ActiveLow,
+			r.InitialMode, r.Enabled, r.CurrentState, r.RequestedState, r.IsSyncing,
+			nowStr, r.Icon, r.PinMode,
+		)
+	}
+	return nil
+}
+
+func (db *DB) DeleteRelay(nodeID string, channelID int) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.Exec("DELETE FROM relays WHERE node_id = ? AND channel_id = ?", nodeID, channelID)
+	return err
+}
+
+func (db *DB) DeleteNode(nodeID string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, _ = db.Exec("DELETE FROM relays WHERE node_id = ?", nodeID)
+	_, _ = db.Exec("DELETE FROM sensors WHERE node_id = ?", nodeID)
+	_, _ = db.Exec("DELETE FROM commands WHERE node_id = ?", nodeID)
+	_, _ = db.Exec("DELETE FROM telemetry_logs WHERE node_id = ?", nodeID)
+	_, _ = db.Exec("DELETE FROM system_events WHERE node_id = ?", nodeID)
+	_, err := db.Exec("DELETE FROM nodes WHERE node_id = ?", nodeID)
 	return err
 }
 

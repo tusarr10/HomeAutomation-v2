@@ -1590,99 +1590,6 @@ async function loadOverview() {
           </button>
         </div>
 
-        <!-- 2. MIDDLE SPLIT: DEVICE STATUS & QUICK RELAY CONTROL -->
-        <div class="dash-middle-grid">
-          <!-- Left: Device Status (ESP Nodes) -->
-          <div class="dash-card">
-            <div class="dash-card-header">
-              <div class="dash-card-title">
-                <span>Device Status (ESP Nodes)</span>
-              </div>
-              <a class="dash-card-link" onclick="switchView('nodes')">
-                <span>View All</span>
-                <span>→</span>
-              </a>
-            </div>
-
-            <div class="dash-table-wrap">
-              <table class="dash-table">
-                <thead>
-                  <tr>
-                    <th style="width: 32px;">#</th>
-                    <th>Device Name</th>
-                    <th>Type</th>
-                    <th>Room / Home</th>
-                    <th>IP Address</th>
-                    <th>Signal</th>
-                    <th>Status</th>
-                    <th>Last Seen</th>
-                  </tr>
-                </thead>
-                <tbody id="dash-device-table-body">
-                  ${dashFleetNodes.map((n, idx) => {
-                    let typeName = n.hardware_type || 'ESP8266';
-                    if (n.node_id && n.node_id.includes('30487D')) typeName = 'Tuya Breaker';
-                    const ip = n.ip || n.ip_address || '192.168.1.25';
-                    return `
-                      <tr id="dash-node-row-${n.node_id}">
-                        <td style="color: #64748b; font-weight: 600;">${idx + 1}</td>
-                        <td style="font-weight: 600; color: #ffffff;">${escapeHtml(n.name || n.node_id)}</td>
-                        <td>
-                          <span class="type-pill ${typeName.toLowerCase().replace(/[^a-z0-9]/g, '')}">
-                            ${typeName}
-                          </span>
-                        </td>
-                        <td style="color: #94a3b8;">${escapeHtml(n.room || 'General')}</td>
-                        <td style="font-family: monospace;">
-                          <a href="http://${ip}" target="_blank" style="color: #38bdf8; text-decoration: none; display: inline-flex; align-items: center; gap: 3px;">
-                            <span>${escapeHtml(ip)}</span>
-                            <span style="font-size: 10px;">↗</span>
-                          </a>
-                        </td>
-                        <td>
-                          <div class="signal-cell">
-                            <span>📶</span>
-                            <span id="dash-node-rssi-${n.node_id}">${n.rssi || -55} dBm</span>
-                          </div>
-                        </td>
-                        <td>
-                          <span id="dash-node-status-${n.node_id}" class="${n.is_online ? 'status-pill-online' : 'status-pill-offline'}">
-                            ${n.is_online ? 'Online' : 'Offline'}
-                          </span>
-                        </td>
-                        <td id="dash-node-lastseen-${n.node_id}" style="color: #94a3b8;">${n.is_online ? 'Live' : 'Offline'}</td>
-                      </tr>
-                    `;
-                  }).join('')}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- Right: Relay Control (Quick) WITH ALL HOME SELECTOR -->
-          <div class="dash-card">
-            <div class="dash-card-header" style="display: flex; justify-content: space-between; align-items: center;">
-              <div class="dash-card-title">
-                <span>Relay Control (Quick)</span>
-              </div>
-              <div style="display: flex; align-items: center; gap: 6px;">
-                <label style="font-size: 11px; color: #94a3b8; font-weight: 500;">Home:</label>
-                <select id="quick-relay-home-select" class="filter-select" onchange="onQuickRelayHomeChange(this.value)" style="padding: 4px 10px; font-size: 11.5px; background: #0f172a; color: #f1f5f9; border: 1px solid #334155; border-radius: 6px; cursor: pointer;">
-                  <option value="all" ${quickRelaySelectedHome === 'all' ? 'selected' : ''}>All Homes (${getFilteredQuickRelays().length})</option>
-                  ${dashFleetHomes.map(h => `<option value="${h.id}" ${quickRelaySelectedHome == h.id ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
-                </select>
-              </div>
-            </div>
-
-            <div id="dash-quick-relays-grid" class="dash-quick-relays-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 0; min-height: 220px;">
-              ${renderQuickRelaysGridHtml()}
-            </div>
-            <div id="dash-quick-relays-pagination" class="dash-quick-relays-pagination">
-              ${renderQuickRelaysPaginationHtml()}
-            </div>
-          </div>
-        </div>
-
         <!-- 2.5 LIVE SMART CIRCUIT BREAKER SENSOR TELEMETRY PANEL -->
         <div class="dash-breaker-telemetry-panel">
           <div class="dash-card-header">
@@ -1804,6 +1711,99 @@ async function loadOverview() {
               <span>🔒</span>
               <span><strong>Live Feeder Line Protection Active:</strong> Remote actuation is locked. All circuit power switches are inhibited to protect connected equipment from unintended power cutoff.</span>
             </span>
+          </div>
+        </div>
+
+        <!-- 2. MIDDLE SPLIT: DEVICE STATUS & QUICK RELAY CONTROL -->
+        <div class="dash-middle-grid">
+          <!-- Left: Device Status (ESP Nodes) -->
+          <div class="dash-card">
+            <div class="dash-card-header">
+              <div class="dash-card-title">
+                <span>Device Status (ESP Nodes)</span>
+              </div>
+              <a class="dash-card-link" onclick="switchView('nodes')">
+                <span>View All</span>
+                <span>→</span>
+              </a>
+            </div>
+
+            <div class="dash-table-wrap">
+              <table class="dash-table">
+                <thead>
+                  <tr>
+                    <th style="width: 32px;">#</th>
+                    <th>Device Name</th>
+                    <th>Type</th>
+                    <th>Room / Home</th>
+                    <th>IP Address</th>
+                    <th>Signal</th>
+                    <th>Status</th>
+                    <th>Last Seen</th>
+                  </tr>
+                </thead>
+                <tbody id="dash-device-table-body">
+                  ${dashFleetNodes.map((n, idx) => {
+                    let typeName = n.hardware_type || 'ESP8266';
+                    if (n.node_id && n.node_id.includes('30487D')) typeName = 'Tuya Breaker';
+                    const ip = n.ip || n.ip_address || '192.168.1.25';
+                    return `
+                      <tr id="dash-node-row-${n.node_id}">
+                        <td style="color: #64748b; font-weight: 600;">${idx + 1}</td>
+                        <td style="font-weight: 600; color: #ffffff;">${escapeHtml(n.name || n.node_id)}</td>
+                        <td>
+                          <span class="type-pill ${typeName.toLowerCase().replace(/[^a-z0-9]/g, '')}">
+                            ${typeName}
+                          </span>
+                        </td>
+                        <td style="color: #94a3b8;">${escapeHtml(n.room || 'General')}</td>
+                        <td style="font-family: monospace;">
+                          <a href="http://${ip}" target="_blank" style="color: #38bdf8; text-decoration: none; display: inline-flex; align-items: center; gap: 3px;">
+                            <span>${escapeHtml(ip)}</span>
+                            <span style="font-size: 10px;">↗</span>
+                          </a>
+                        </td>
+                        <td>
+                          <div class="signal-cell">
+                            <span>📶</span>
+                            <span id="dash-node-rssi-${n.node_id}">${n.rssi || -55} dBm</span>
+                          </div>
+                        </td>
+                        <td>
+                          <span id="dash-node-status-${n.node_id}" class="${n.is_online ? 'status-pill-online' : 'status-pill-offline'}">
+                            ${n.is_online ? 'Online' : 'Offline'}
+                          </span>
+                        </td>
+                        <td id="dash-node-lastseen-${n.node_id}" style="color: #94a3b8;">${n.is_online ? 'Live' : 'Offline'}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Right: Relay Control (Quick) WITH ALL HOME SELECTOR -->
+          <div class="dash-card">
+            <div class="dash-card-header" style="display: flex; justify-content: space-between; align-items: center;">
+              <div class="dash-card-title">
+                <span>Relay Control (Quick)</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 6px;">
+                <label style="font-size: 11px; color: #94a3b8; font-weight: 500;">Home:</label>
+                <select id="quick-relay-home-select" class="filter-select" onchange="onQuickRelayHomeChange(this.value)" style="padding: 4px 10px; font-size: 11.5px; background: #0f172a; color: #f1f5f9; border: 1px solid #334155; border-radius: 6px; cursor: pointer;">
+                  <option value="all" ${quickRelaySelectedHome === 'all' ? 'selected' : ''}>All Homes (${getFilteredQuickRelays().length})</option>
+                  ${dashFleetHomes.map(h => `<option value="${h.id}" ${quickRelaySelectedHome == h.id ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+
+            <div id="dash-quick-relays-grid" class="dash-quick-relays-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 0; min-height: 220px;">
+              ${renderQuickRelaysGridHtml()}
+            </div>
+            <div id="dash-quick-relays-pagination" class="dash-quick-relays-pagination">
+              ${renderQuickRelaysPaginationHtml()}
+            </div>
           </div>
         </div>
 
@@ -7243,7 +7243,7 @@ async function saveAutomationRuleFromEditor() {
 async function syncPinsWithHardware(nodeId) {
   try {
     const url = nodeId ? `${API_BASE}/nodes/${nodeId}/sync-pins` : `${API_BASE}/relays/sync`;
-    const res = await fetch(url, { method: "POST" });
+    const res = await fetchWithAuth(url, { method: "POST" });
     const data = await res.json();
     if (data.success || data.status === "ok") {
       const msg = data.message || (data.count ? `Synchronized ${data.count} pins from hardware node` : 'Hardware pin synchronization complete');

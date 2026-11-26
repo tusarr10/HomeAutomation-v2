@@ -2846,9 +2846,9 @@ async function pulseRelay(nodeId, channelId) {
 async function syncPinsWithHardware(nodeId) {
   try {
     const url = nodeId ? `${API_BASE}/nodes/${nodeId}/sync-pins` : `${API_BASE}/relays/sync`;
-    const res = await fetch(url, { method: "POST" });
+    const res = await fetchWithAuth(url, { method: "POST" });
     const data = await res.json();
-    if (data.status === "ok") {
+    if (data.status === "ok" || data.success) {
       alert(`Hardware pin synchronization complete: ${data.message || 'Synced'}`);
       if (typeof currentView !== 'undefined') {
         if (currentView === 'relays') loadRelays();

@@ -154,15 +154,34 @@ func (s *CentralSyncer) PullCentralConfig() {
 
 	log.Printf("[Central Syncer] Pulling master device & room configurations from Central Server (%s)...", s.cfg.Central.URL)
 
-	// 1. Fetch nodes: GET /api/v1/nodes
-	nodesURL := fmt.Sprintf("%s/api/v1/nodes", s.cfg.Central.URL)
-	if resp, err := s.httpClient.Get(nodesURL); err == nil && resp.StatusCode == http.StatusOK {
-		var nodes []map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&nodes); err == nil && len(nodes) > 0 {
-			s.sm.MergeCentralNodes(nodes)
-			log.Printf("[Central Syncer] Merged %d node configurations from Central Server.", len(nodes))
+	// 1. Fetch nodes: GET /api/nodes (fallback to /api/v1/nodes)
+	nodesURL := fmt.Sprintf("%s/api/nodes", s.cfg.Central.URL)
+	resp, err := s.httpClient.Get(nodesURL)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			_ = resp.Body.Close()
 		}
+		nodesURL = fmt.Sprintf("%s/api/v1/nodes", s.cfg.Central.URL)
+		resp, err = s.httpClient.Get(nodesURL)
+	}
+
+	if err == nil && resp.StatusCode == http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+
+		var bodyObj struct {
+			Nodes []map[string]interface{} `json:"nodes"`
+		}
+		if json.Unmarshal(bodyBytes, &bodyObj) == nil && len(bodyObj.Nodes) > 0 {
+			s.sm.MergeCentralNodes(bodyObj.Nodes)
+			log.Printf("[Central Syncer] Merged %d node configurations from Central Server (/api/nodes).", len(bodyObj.Nodes))
+		} else {
+			var directNodes []map[string]interface{}
+			if json.Unmarshal(bodyBytes, &directNodes) == nil && len(directNodes) > 0 {
+				s.sm.MergeCentralNodes(directNodes)
+				log.Printf("[Central Syncer] Merged %d node configurations from Central Server (/api/v1/nodes).", len(directNodes))
+			}
+		}
 	}
 
 	// 2. Fetch homes: GET /api/v1/homes

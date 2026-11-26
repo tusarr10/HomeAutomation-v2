@@ -44,6 +44,20 @@ type Node struct {
 	LastSeenEpoch   int64     `json:"lastSeenEpoch"`
 	Channels        []Channel `json:"channels"`
 	Sensors         []Sensor  `json:"sensors"`
+	AuthUsername    string    `json:"auth_username,omitempty"`
+	AuthPassword    string    `json:"auth_password,omitempty"`
+}
+
+func (n *Node) GetCredentials() (string, string) {
+	u := n.AuthUsername
+	if u == "" {
+		u = "admin"
+	}
+	p := n.AuthPassword
+	if p == "" {
+		p = "admin"
+	}
+	return u, p
 }
 
 type Command struct {
@@ -348,6 +362,8 @@ func (sm *StateManager) restoreFromDatabase() {
 				FirmwareVersion: dn.FirmwareVersion,
 				IsOnline:        dn.IsOnline,
 				Channels:        chs,
+				AuthUsername:    dn.AuthUsername,
+				AuthPassword:    dn.AuthPassword,
 			}
 		}
 	}
@@ -664,22 +680,26 @@ func (sm *StateManager) IngestRawTelemetry(raw []byte, clientIP string, protocol
 		}
 		go func(nr *db.NodeRecord, chs []Channel) {
 			_ = sm.database.UpsertNode(nr)
-			for _, ch := range chs {
-				st := 0
-				if ch.State {
-					st = 1
+			if len(chs) > 0 {
+				relayRecords := make([]db.RelayRecord, len(chs))
+				for i, ch := range chs {
+					st := 0
+					if ch.State {
+						st = 1
+					}
+					relayRecords[i] = db.RelayRecord{
+						NodeID:         nr.NodeID,
+						ChannelID:      ch.ID,
+						Pin:            ch.Pin,
+						Name:           ch.Name,
+						Room:           ch.Room,
+						Function:       ch.Function,
+						CurrentState:   st,
+						RequestedState: st,
+						Enabled:        1,
+					}
 				}
-				_ = sm.database.UpsertRelay(&db.RelayRecord{
-					NodeID:         nr.NodeID,
-					ChannelID:      ch.ID,
-					Pin:            ch.Pin,
-					Name:           ch.Name,
-					Room:           ch.Room,
-					Function:       ch.Function,
-					CurrentState:   st,
-					RequestedState: st,
-					Enabled:        1,
-				})
+				_ = sm.database.SyncNodeRelays(nr.NodeID, relayRecords)
 			}
 		}(nodeRecord, node.Channels)
 	}
@@ -1278,10 +1298,78 @@ func (sm *StateManager) DeleteNode(nodeID string) bool {
 	if _, ok := sm.nodes[nodeID]; ok {
 		delete(sm.nodes, nodeID)
 		delete(sm.commandQueue, nodeID)
+		if sm.database != nil {
+			_ = sm.database.DeleteNode(nodeID)
+		}
 		sm.emit("node_deleted", map[string]string{"nodeId": nodeID})
 		return true
 	}
 	return false
+}
+
+func (sm *StateManager) SyncNodeChannelsFromHardware(nodeID string, channels []Channel) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	node, ok := sm.nodes[nodeID]
+	if !ok {
+		return
+	}
+
+	node.Channels = channels
+
+	if sm.database != nil && len(channels) > 0 {
+		relayRecords := make([]db.RelayRecord, len(channels))
+		for i, ch := range channels {
+			st := 0
+			if ch.State {
+				st = 1
+			}
+			relayRecords[i] = db.RelayRecord{
+				NodeID:         nodeID,
+				ChannelID:      ch.ID,
+				Pin:            ch.Pin,
+				Name:           ch.Name,
+				Room:           ch.Room,
+				Function:       ch.Function,
+				CurrentState:   st,
+				RequestedState: st,
+				Enabled:        1,
+			}
+		}
+		_ = sm.database.SyncNodeRelays(nodeID, relayRecords)
+	}
+
+	sm.emit("relay_sync", map[string]interface{}{
+		"nodeId":   nodeID,
+		"count":    len(channels),
+		"channels": channels,
+	})
+}
+
+func (sm *StateManager) DeleteRelay(nodeID string, channelID int) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if node, ok := sm.nodes[nodeID]; ok {
+		newChannels := make([]Channel, 0, len(node.Channels))
+		for _, ch := range node.Channels {
+			if ch.ID != channelID && ch.ChannelID != channelID {
+				newChannels = append(newChannels, ch)
+			}
+		}
+		node.Channels = newChannels
+	}
+
+	if sm.database != nil {
+		_ = sm.database.DeleteRelay(nodeID, channelID)
+	}
+
+	sm.emit("relay_deleted", map[string]interface{}{
+		"nodeId":    nodeID,
+		"channelId": channelID,
+	})
+	return true
 }
 
 func (sm *StateManager) UpdateNodeSettings(nodeID string, name string) bool {
@@ -1451,9 +1539,22 @@ func (sm *StateManager) MergeCentralNodes(nodesData []map[string]interface{}) {
 		if fw, ok := raw["firmware_version"].(string); ok && fw != "" {
 			existing.FirmwareVersion = fw
 		}
+		if u, ok := raw["auth_username"].(string); ok && u != "" {
+			existing.AuthUsername = u
+		}
+		if p, ok := raw["auth_password"].(string); ok && p != "" {
+			existing.AuthPassword = p
+		}
 
-		// Merge channels if provided
-		if chList, ok := raw["channels"].([]interface{}); ok && len(chList) > 0 {
+		// Merge relays / channels if provided
+		var chList []interface{}
+		if rList, ok := raw["relays"].([]interface{}); ok && len(rList) > 0 {
+			chList = rList
+		} else if cList, ok := raw["channels"].([]interface{}); ok && len(cList) > 0 {
+			chList = cList
+		}
+
+		if len(chList) > 0 {
 			channels := make([]Channel, len(chList))
 			for i, chRaw := range chList {
 				if chMap, ok := chRaw.(map[string]interface{}); ok {
@@ -1501,6 +1602,29 @@ func (sm *StateManager) MergeCentralNodes(nodesData []map[string]interface{}) {
 					}
 				}
 				existing.Channels = channels
+			}
+
+			// Persist synchronized channels to SQLite & purge deleted stale pins
+			if sm.database != nil && len(channels) > 0 {
+				relayRecords := make([]db.RelayRecord, len(channels))
+				for i, ch := range channels {
+					st := 0
+					if ch.State {
+						st = 1
+					}
+					relayRecords[i] = db.RelayRecord{
+						NodeID:         nodeID,
+						ChannelID:      ch.ID,
+						Pin:            ch.Pin,
+						Name:           ch.Name,
+						Room:           ch.Room,
+						Function:       ch.Function,
+						CurrentState:   st,
+						RequestedState: st,
+						Enabled:        1,
+					}
+				}
+				_ = sm.database.SyncNodeRelays(nodeID, relayRecords)
 			}
 		}
 	}

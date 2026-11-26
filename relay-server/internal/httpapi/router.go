@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -148,6 +149,30 @@ func NewRouter(
 	}
 
 	return rt
+}
+
+func (rt *Router) getNodeAuth(node *state.Node) (string, string) {
+	if node != nil {
+		u, p := node.GetCredentials()
+		if u != "" && p != "" && (u != "admin" || p != "admin") {
+			return u, p
+		}
+		// Fallback check in database if custom credentials were saved
+		if rt.database != nil {
+			var dbUser, dbPass sql.NullString
+			err := rt.database.QueryRow("SELECT auth_username, auth_password FROM nodes WHERE node_id = ?", node.NodeID).Scan(&dbUser, &dbPass)
+			if err == nil {
+				if dbUser.Valid && dbUser.String != "" {
+					u = dbUser.String
+				}
+				if dbPass.Valid && dbPass.String != "" {
+					p = dbPass.String
+				}
+			}
+		}
+		return u, p
+	}
+	return "admin", "admin"
 }
 
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -943,10 +968,71 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if path == "/api/v1/relays/sync" && r.Method == http.MethodPost {
+	if (path == "/api/v1/relays/sync" || path == "/api/relays/sync") && r.Method == http.MethodPost {
+		// Sync all online nodes from physical hardware
+		allNodes := rt.sm.GetAllNodes()
+		syncedNodes := 0
+		client := &http.Client{Timeout: 3 * time.Second}
+		for _, n := range allNodes {
+			if n.IsOnline && n.IP != "" && n.IP != "0.0.0.0" && !strings.Contains(n.NodeID, "30487D") {
+				reqURL := fmt.Sprintf("http://%s/api/gpio", n.IP)
+				httpReq, _ := http.NewRequest(http.MethodGet, reqURL, nil)
+				u, p := rt.getNodeAuth(n)
+				httpReq.SetBasicAuth(u, p)
+				httpReq.Header.Set("Accept", "application/json")
+				if gpioResp, gpioErr := client.Do(httpReq); gpioErr == nil && gpioResp.StatusCode == http.StatusOK {
+					var rawChannels []map[string]interface{}
+					bodyBytes, _ := io.ReadAll(gpioResp.Body)
+					gpioResp.Body.Close()
+					if err := json.Unmarshal(bodyBytes, &rawChannels); err != nil {
+						var wrapped struct {
+							Channels []map[string]interface{} `json:"channels"`
+						}
+						if err2 := json.Unmarshal(bodyBytes, &wrapped); err2 == nil {
+							rawChannels = wrapped.Channels
+						}
+					}
+					if len(rawChannels) > 0 {
+						newChannels := make([]state.Channel, len(rawChannels))
+						for i, ch := range rawChannels {
+							chID := i + 1
+							if v, ok := ch["id"].(float64); ok {
+								chID = int(v)
+							} else if v, ok := ch["channel_id"].(float64); ok {
+								chID = int(v)
+							}
+							pin := 0
+							if v, ok := ch["pin"].(float64); ok {
+								pin = int(v)
+							}
+							name, _ := ch["name"].(string)
+							room, _ := ch["room"].(string)
+							fn, _ := ch["function"].(string)
+							st := false
+							if v, ok := ch["state"].(bool); ok {
+								st = v
+							}
+							newChannels[i] = state.Channel{
+								ID:        chID,
+								ChannelID: chID,
+								Pin:       pin,
+								Name:      name,
+								Room:      room,
+								Function:  fn,
+								State:     st,
+							}
+						}
+						rt.sm.SyncNodeChannelsFromHardware(n.NodeID, newChannels)
+						syncedNodes++
+					}
+				}
+			}
+		}
+
 		sendJSON(w, http.StatusOK, map[string]interface{}{
+			"status":      "ok",
 			"success":     true,
-			"message":     "Hardware pins synchronized",
+			"message":     fmt.Sprintf("Synchronized %d online hardware node(s)", syncedNodes),
 			"totalRelays": len(rt.sm.GetAllRelays("", "", nil)),
 			"relays":      rt.sm.GetAllRelays("", "", nil),
 		})
@@ -1757,14 +1843,114 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 			// POST /api/v1/nodes/{id}/sync-pins
 			if len(parts) == 5 && parts[4] == "sync-pins" && r.Method == http.MethodPost {
-				if node, ok := rt.sm.GetNode(nodeID); ok {
-					sendJSON(w, http.StatusOK, map[string]interface{}{
-						"success":  true,
-						"channels": node.Channels,
-					})
+				node, ok := rt.sm.GetNode(nodeID)
+				if !ok {
+					sendJSON(w, http.StatusNotFound, map[string]string{"error": "Node not found"})
 					return
 				}
-				sendJSON(w, http.StatusNotFound, map[string]string{"error": "Node not found"})
+
+				// If node has an IP, fetch authoritative /api/gpio directly from the physical hardware
+				ip := node.IP
+				if ip != "" && ip != "0.0.0.0" {
+					client := &http.Client{Timeout: 4 * time.Second}
+					reqURL := fmt.Sprintf("http://%s/api/gpio", ip)
+					httpReq, _ := http.NewRequest(http.MethodGet, reqURL, nil)
+					u, p := rt.getNodeAuth(node)
+					httpReq.SetBasicAuth(u, p)
+					httpReq.Header.Set("Accept", "application/json")
+
+					if gpioResp, gpioErr := client.Do(httpReq); gpioErr == nil && gpioResp.StatusCode == http.StatusOK {
+						defer gpioResp.Body.Close()
+						var rawChannels []map[string]interface{}
+						bodyBytes, _ := io.ReadAll(gpioResp.Body)
+						if err := json.Unmarshal(bodyBytes, &rawChannels); err != nil {
+							var wrapped struct {
+								Channels []map[string]interface{} `json:"channels"`
+							}
+							if err2 := json.Unmarshal(bodyBytes, &wrapped); err2 == nil {
+								rawChannels = wrapped.Channels
+							}
+						}
+
+						if len(rawChannels) > 0 {
+							newChannels := make([]state.Channel, len(rawChannels))
+							for i, ch := range rawChannels {
+								chID := i + 1
+								if v, ok := ch["id"].(float64); ok {
+									chID = int(v)
+								} else if v, ok := ch["channel_id"].(float64); ok {
+									chID = int(v)
+								}
+								pin := 0
+								if v, ok := ch["pin"].(float64); ok {
+									pin = int(v)
+								}
+								name, _ := ch["name"].(string)
+								room, _ := ch["room"].(string)
+								fn, _ := ch["function"].(string)
+								st := false
+								if v, ok := ch["state"].(bool); ok {
+									st = v
+								}
+
+								newChannels[i] = state.Channel{
+									ID:        chID,
+									ChannelID: chID,
+									Pin:       pin,
+									Name:      name,
+									Room:      room,
+									Function:  fn,
+									State:     st,
+								}
+							}
+
+							rt.sm.SyncNodeChannelsFromHardware(nodeID, newChannels)
+
+							// Also trigger Central Server pin sync if connected
+							if rt.syncer != nil && rt.syncer.IsCentralOnline() {
+								go func() {
+									syncURL := fmt.Sprintf("%s/api/v1/nodes/%s/sync-pins", rt.cfg.Central.URL, nodeID)
+									syncReq, _ := http.NewRequest(http.MethodPost, syncURL, nil)
+									_, _ = client.Do(syncReq)
+								}()
+							}
+
+							sendJSON(w, http.StatusOK, map[string]interface{}{
+								"status":   "ok",
+								"success":  true,
+								"nodeId":   nodeID,
+								"count":    len(newChannels),
+								"channels": newChannels,
+								"message":  fmt.Sprintf("Synchronized %d pins from hardware node", len(newChannels)),
+							})
+							return
+						}
+					}
+				}
+
+				sendJSON(w, http.StatusOK, map[string]interface{}{
+					"status":   "ok",
+					"success":  true,
+					"channels": node.Channels,
+					"count":    len(node.Channels),
+					"message":  fmt.Sprintf("Synchronized %d pins from state", len(node.Channels)),
+				})
+				return
+			}
+
+			// DELETE /api/v1/nodes/{id}/pins/{channelId}
+			if len(parts) == 6 && parts[4] == "pins" && r.Method == http.MethodDelete {
+				chID, err := strconv.Atoi(parts[5])
+				if err != nil {
+					sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid channel ID"})
+					return
+				}
+				ok := rt.sm.DeleteRelay(nodeID, chID)
+				sendJSON(w, http.StatusOK, map[string]interface{}{
+					"status":  "ok",
+					"success": ok,
+					"message": fmt.Sprintf("Channel %d removed", chID),
+				})
 				return
 			}
 
