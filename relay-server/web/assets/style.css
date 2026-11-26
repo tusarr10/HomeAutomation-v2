@@ -4369,6 +4369,7 @@ input, textarea, select {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  margin-bottom: 20px;
 }
 
 .dash-breaker-sensor-grid {
