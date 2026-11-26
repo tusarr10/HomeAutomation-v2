@@ -237,6 +237,13 @@ class TuyaBreakerBridge {
 
     // 4. Broadcast real-time WebSocket event
     if (this.nodeManager && typeof this.nodeManager.broadcast === 'function') {
+      let energySummary = null;
+      try {
+        if (typeof this.db.getEnergySummary === 'function') {
+          energySummary = this.db.getEnergySummary(this.nodeId);
+        }
+      } catch (e) {}
+
       this.nodeManager.broadcast('breaker_telemetry', {
         nodeId: this.nodeId,
         isOnline: isLive,
@@ -244,7 +251,8 @@ class TuyaBreakerBridge {
         config: config,
         decoded: decoded,
         dps: dps,
-        source: reading.source
+        source: reading.source,
+        energySummary: energySummary
       });
 
       this.nodeManager.broadcast('telemetry_update', {

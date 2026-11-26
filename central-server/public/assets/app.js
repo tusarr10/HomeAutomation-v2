@@ -1290,6 +1290,7 @@ function updateBreakerTilesSilently(breakerRes) {
   if (!breakerRes) return;
   const reading = breakerRes.reading || breakerRes;
   const dec = reading.decoded || {};
+  const sum = breakerRes.energySummary || reading.energySummary;
 
   const vEl = document.getElementById('breaker-val-voltage');
   if (vEl && dec.voltage_v != null) vEl.textContent = dec.voltage_v;
@@ -1311,9 +1312,15 @@ function updateBreakerTilesSilently(breakerRes) {
   const dashLiveVolt = document.getElementById('dash-live-volt');
   if (dashLiveVolt && dec.voltage_v != null) dashLiveVolt.textContent = `${dec.voltage_v} V`;
   const dashTodayKwh = document.getElementById('dash-today-kwh');
-  if (dashTodayKwh && breakerRes?.energySummary?.today?.kwh != null) dashTodayKwh.textContent = `${breakerRes.energySummary.today.kwh} kWh`;
+  if (dashTodayKwh && sum?.today?.kwh != null) {
+    const k = Number(sum.today.kwh);
+    dashTodayKwh.textContent = `${k < 1.0 ? k.toFixed(3) : k.toFixed(2)} kWh`;
+  }
   const dashMonthKwh = document.getElementById('dash-month-kwh');
-  if (dashMonthKwh && breakerRes?.energySummary?.this_month?.kwh != null) dashMonthKwh.textContent = `${breakerRes.energySummary.this_month.kwh} kWh`;
+  if (dashMonthKwh && sum?.this_month?.kwh != null) {
+    const k = Number(sum.this_month.kwh);
+    dashMonthKwh.textContent = `${k < 1.0 ? k.toFixed(3) : k.toFixed(2)} kWh`;
+  }
 }
 
 function updateOverviewInPlace(overviewRes, breakerRes, totalNodes, onlineNodes, totalRelays, activeRelays, totalHomes, totalRooms, automationsTotal, automationsEnabled) {
@@ -12788,14 +12795,24 @@ function renderEnergyKpiCardsHtml(summary) {
 
   const s = summary.settings || { tariff_rate: 0.15, currency: '$', monthly_budget: 50 };
   const curr = s.currency || '$';
-  const todayKwh = summary.today?.kwh || 0;
-  const todayCost = summary.today?.cost || 0;
-  const yestKwh = summary.yesterday?.kwh || 0;
-  const yestCost = summary.yesterday?.cost || 0;
-  const monthKwh = summary.this_month?.kwh || 0;
-  const monthCost = summary.this_month?.cost || 0;
+  const todayKwhRaw = Number(summary.today?.kwh) || 0;
+  const todayKwh = todayKwhRaw < 1.0 ? todayKwhRaw.toFixed(3) : todayKwhRaw.toFixed(2);
+  const todayCost = Number(summary.today?.cost) || 0;
+
+  const yestKwhRaw = Number(summary.yesterday?.kwh) || 0;
+  const yestKwh = yestKwhRaw < 1.0 ? yestKwhRaw.toFixed(3) : yestKwhRaw.toFixed(2);
+  const yestCost = Number(summary.yesterday?.cost) || 0;
+
+  const monthKwhRaw = Number(summary.this_month?.kwh) || 0;
+  const monthKwh = monthKwhRaw < 1.0 ? monthKwhRaw.toFixed(3) : monthKwhRaw.toFixed(2);
+  const monthCost = Number(summary.this_month?.cost) || 0;
+
   const budget = s.monthly_budget || 50;
   const budgetPercent = Math.min(100, Math.round((monthCost / Math.max(1, budget)) * 100));
+
+  const l24 = summary.last_24h || {};
+  const l24KwhRaw = Number(l24.total_kwh) || 0;
+  const l24Kwh = l24KwhRaw < 1.0 ? l24KwhRaw.toFixed(3) : l24KwhRaw.toFixed(2);
 
   return `
     <!-- 1. Today's Consumption -->
@@ -12810,6 +12827,7 @@ function renderEnergyKpiCardsHtml(summary) {
       </div>
       <div class="energy-kpi-footer">
         <span>Cost: <strong style="color: #38bdf8;">${curr}${todayCost.toFixed(2)}</strong></span>
+        <span>Mean: <strong style="color: #10b981;">${summary.today?.avg_w || 0} W</strong></span>
         <span>Peak: <strong style="color: #f59e0b;">${summary.today?.peak_w || 0} W</strong></span>
       </div>
     </div>
@@ -12898,7 +12916,7 @@ function renderEnergyChart(history, summary, range) {
   const plotH = chartH - padT - padB;
 
   const barSlotW = plotW / Math.max(1, count);
-  const barW = Math.max(6, Math.min(32, barSlotW * 0.65));
+  const barW = Math.max(6, Math.min(28, barSlotW * 0.68));
 
   let gridLines = '';
   for (let step = 0; step <= 4; step++) {
@@ -12916,7 +12934,9 @@ function renderEnergyChart(history, summary, range) {
   history.forEach((h, idx) => {
     const kwh = Number(h.kwh) || 0;
     const peakW = Number(h.peak_power_w) || Number(h.avg_power_w) || 0;
-    const barH = Math.max(2, (kwh / maxKwh) * plotH);
+    const avgW = Number(h.avg_power_w) || 0;
+    const isZero = kwh <= 0.0001;
+    const barH = isZero ? 2 : Math.max(3, (kwh / maxKwh) * plotH);
     const x = padL + idx * barSlotW + (barSlotW - barW) / 2;
     const y = padT + plotH - barH;
     const cost = (kwh * rate).toFixed(3);
@@ -12929,8 +12949,8 @@ function renderEnergyChart(history, summary, range) {
 
     barsHtml += `
       <g class="energy-bar-group">
-        <rect class="energy-bar" x="${x}" y="${y}" width="${barW}" height="${barH}" rx="3" fill="url(#energyBarGrad)">
-          <title>${h.label} | ${kwh} kWh | Peak: ${peakW}W | Est: ${curr}${cost}</title>
+        <rect class="energy-bar" x="${x}" y="${y}" width="${barW}" height="${barH}" rx="2" fill="${isZero ? 'rgba(56, 189, 248, 0.2)' : 'url(#energyBarGrad)'}" opacity="${isZero ? '0.35' : '1.0'}">
+          <title>${h.label} (${h.time_slot}) | ${isZero ? '0.000 kWh' : kwh + ' kWh'} | Mean: ${avgW}W | Peak: ${peakW}W | Est: ${curr}${cost}</title>
         </rect>
         ${showLabel ? `<text x="${px}" y="${chartH - 12}" text-anchor="middle" font-size="9.5" fill="#94a3b8" font-family="sans-serif">${h.label}</text>` : ''}
       </g>
@@ -12964,6 +12984,34 @@ function renderEnergyHistoryTableHtml(history, summary) {
   const curr = s.currency || '$';
   const rate = s.tariff_rate || 0.15;
 
+  let totalKwh = 0;
+  let maxPeakW = 0;
+  let sumPower = 0;
+  let powerCount = 0;
+  let sumVolt = 0;
+  let voltCount = 0;
+
+  for (const h of history) {
+    const k = Number(h.kwh) || 0;
+    totalKwh += k;
+    const p = Number(h.peak_power_w) || 0;
+    if (p > maxPeakW) maxPeakW = p;
+    const avgP = Number(h.avg_power_w) || 0;
+    if (avgP > 0) {
+      sumPower += avgP;
+      powerCount++;
+    }
+    const avgV = Number(h.avg_voltage_v) || 0;
+    if (avgV > 0) {
+      sumVolt += avgV;
+      voltCount++;
+    }
+  }
+
+  const meanPower = powerCount > 0 ? (sumPower / powerCount).toFixed(1) : 0;
+  const meanVolt = voltCount > 0 ? (sumVolt / voltCount).toFixed(1) : 0;
+  const totalCost = (totalKwh * rate).toFixed(2);
+
   return `
     <div style="overflow-x: auto;">
       <table class="table" style="width: 100%; border-collapse: collapse; font-size: 12px;">
@@ -12972,27 +13020,38 @@ function renderEnergyHistoryTableHtml(history, summary) {
             <th style="padding: 8px 10px;">Time / Period</th>
             <th style="padding: 8px 10px;">Energy (kWh)</th>
             <th style="padding: 8px 10px;">Est. Cost (${curr})</th>
-            <th style="padding: 8px 10px;">Avg Power (W)</th>
-            <th style="padding: 8px 10px;">Peak Power (W)</th>
-            <th style="padding: 8px 10px;">Avg Voltage (V)</th>
+            <th style="padding: 8px 10px;">Mean Power (W)</th>
+            <th style="padding: 8px 10px;">Peak Demand (W)</th>
+            <th style="padding: 8px 10px;">Mean Voltage (V)</th>
           </tr>
         </thead>
         <tbody>
           ${history.slice().reverse().map(h => {
             const kwh = Number(h.kwh) || 0;
             const cost = (kwh * rate).toFixed(3);
+            const isZero = kwh <= 0.0001;
             return `
-              <tr style="border-bottom: 1px solid rgba(255,255,255,0.04);">
+              <tr style="border-bottom: 1px solid rgba(255,255,255,0.04); ${isZero ? 'opacity: 0.65;' : ''}">
                 <td style="padding: 8px 10px; font-weight: 600; color: #ffffff;">${escapeHtml(h.time_slot || h.label)}</td>
-                <td style="padding: 8px 10px; font-family: monospace; color: #38bdf8; font-weight: 700;">${kwh} kWh</td>
+                <td style="padding: 8px 10px; font-family: monospace; color: #38bdf8; font-weight: 700;">${isZero ? '0.000' : kwh.toFixed(3)} kWh</td>
                 <td style="padding: 8px 10px; font-family: monospace; color: #10b981;">${curr}${cost}</td>
-                <td style="padding: 8px 10px; font-family: monospace;">${h.avg_power_w || '—'} W</td>
-                <td style="padding: 8px 10px; font-family: monospace; color: #f59e0b; font-weight: 600;">${h.peak_power_w || '—'} W</td>
-                <td style="padding: 8px 10px; font-family: monospace;">${h.avg_voltage_v || '—'} V</td>
+                <td style="padding: 8px 10px; font-family: monospace;">${h.avg_power_w > 0 ? h.avg_power_w + ' W' : '—'}</td>
+                <td style="padding: 8px 10px; font-family: monospace; color: #f59e0b; font-weight: 600;">${h.peak_power_w > 0 ? h.peak_power_w + ' W' : '—'}</td>
+                <td style="padding: 8px 10px; font-family: monospace;">${h.avg_voltage_v > 0 ? h.avg_voltage_v + ' V' : '—'}</td>
               </tr>
             `;
           }).join('')}
         </tbody>
+        <tfoot>
+          <tr style="background: rgba(56, 189, 248, 0.08); border-top: 1px solid rgba(56, 189, 248, 0.3); font-weight: 700; color: #f8fafc;">
+            <td style="padding: 10px; color: #38bdf8;">Total & Period Mean</td>
+            <td style="padding: 10px; font-family: monospace; color: #38bdf8;">${totalKwh.toFixed(3)} kWh</td>
+            <td style="padding: 10px; font-family: monospace; color: #10b981;">${curr}${totalCost}</td>
+            <td style="padding: 10px; font-family: monospace;">${meanPower} W</td>
+            <td style="padding: 10px; font-family: monospace; color: #f59e0b;">${maxPeakW} W</td>
+            <td style="padding: 10px; font-family: monospace;">${meanVolt} V</td>
+          </tr>
+        </tfoot>
       </table>
     </div>
   `;

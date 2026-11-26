@@ -3430,7 +3430,7 @@ class FleetDatabase {
     const power_w = Number(data.power_w) || 0;
     const power_factor = Number(data.power_factor) || 1.0;
     const frequency_hz = Number(data.frequency_hz) || 50.0;
-    const total_energy_kwh = Number(data.total_energy_kwh) || 0;
+    let total_energy_kwh = Number(data.total_energy_kwh) || 0;
     const leakage_current_ma = Number(data.leakage_current_ma) || 0;
     const temperature_c = Number(data.temperature_c) || 0;
 
@@ -3443,20 +3443,34 @@ class FleetDatabase {
       ORDER BY id DESC LIMIT 1
     `).get(nodeId);
 
-    // Calculate delta kWh
+    // Calculate delta kWh and sanitize readings
     let delta_energy_kwh = 0;
     if (prev) {
       const elapsed = Number(prev.elapsed_sec) || 0;
-      // Throttle recording: only save if at least 25s elapsed OR power shifted by > 30W
-      if (elapsed < 25 && Math.abs(power_w - (prev.power_w || 0)) < 30) {
+      // Throttle recording: only save if at least 20s elapsed OR power shifted by > 25W
+      if (elapsed < 20 && Math.abs(power_w - (Number(prev.power_w) || 0)) < 25) {
         return null;
       }
 
-      if (total_energy_kwh >= prev.total_energy_kwh && prev.total_energy_kwh > 0) {
-        delta_energy_kwh = +(total_energy_kwh - prev.total_energy_kwh).toFixed(4);
-      } else if (elapsed > 0 && power_w > 0) {
-        // Fallback integration: kWh = (Watts * seconds) / (3600 * 1000)
-        delta_energy_kwh = +((power_w * Math.min(elapsed, 300)) / 3600000).toFixed(4);
+      const prevTotal = Number(prev.total_energy_kwh) || 0;
+
+      // Anomaly Filter: Detect and reject false register jumps (e.g. mock fallback 51.43 when prev was ~42.4)
+      if (prevTotal > 0 && Math.abs(total_energy_kwh - prevTotal) > 2.0 && elapsed < 300) {
+        total_energy_kwh = prevTotal;
+      }
+
+      // High-resolution active power integration: E = (P_avg * elapsed_sec) / (3600 * 1000)
+      const avgPower = (power_w + (Number(prev.power_w) || power_w)) / 2;
+      if (elapsed > 0 && avgPower > 0) {
+        delta_energy_kwh = +((avgPower * Math.min(elapsed, 300)) / 3600000).toFixed(5);
+      }
+
+      // Offline Gap Recovery: If server was offline for > 5 min, check if hardware meter advanced reasonably
+      if (elapsed > 300 && total_energy_kwh > prevTotal && prevTotal > 0) {
+        const meterDelta = total_energy_kwh - prevTotal;
+        if (meterDelta > 0 && meterDelta < 50) {
+          delta_energy_kwh = +meterDelta.toFixed(4);
+        }
       }
     }
 
@@ -3534,6 +3548,14 @@ class FleetDatabase {
          FROM energy_history WHERE date(timestamp) = date('now', 'localtime', '-1 day')`;
     const yesterday = nodeId ? this.db.prepare(yestQuery).get(nodeId) : this.db.prepare(yestQuery).get();
 
+    // Rolling 24 Hours summary metrics (Mean Hourly & 24h Totals)
+    const rolling24Query = nodeId
+      ? `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w, AVG(voltage_v) as avg_v, AVG(power_w) as avg_w
+         FROM energy_history WHERE timestamp >= datetime('now', 'localtime', '-24 hours') AND node_id = ?`
+      : `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w, AVG(voltage_v) as avg_v, AVG(power_w) as avg_w
+         FROM energy_history WHERE timestamp >= datetime('now', 'localtime', '-24 hours')`;
+    const last24h = nodeId ? this.db.prepare(rolling24Query).get(nodeId) : this.db.prepare(rolling24Query).get();
+
     // This Month's total delta kWh
     const monthQuery = nodeId
       ? `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w
@@ -3544,8 +3566,10 @@ class FleetDatabase {
 
     const todayKwh = +(today?.kwh || 0).toFixed(3);
     const yesterdayKwh = +(yesterday?.kwh || 0).toFixed(3);
+    const last24hKwh = +(last24h?.kwh || 0).toFixed(3);
     const monthKwh = +(thisMonth?.kwh || 0).toFixed(3);
     const todayCost = +(todayKwh * settings.tariff_rate).toFixed(2);
+    const last24hCost = +(last24hKwh * settings.tariff_rate).toFixed(2);
     const monthCost = +(monthKwh * settings.tariff_rate).toFixed(2);
 
     const now = new Date();
@@ -3571,6 +3595,14 @@ class FleetDatabase {
         peak_w: today?.peak_w || 0,
         avg_w: +(today?.avg_w || 0).toFixed(1),
         avg_v: +(today?.avg_v || 0).toFixed(1)
+      },
+      last_24h: {
+        total_kwh: last24hKwh,
+        cost: last24hCost,
+        mean_hourly_kwh: +(last24hKwh / 24).toFixed(4),
+        peak_w: last24h?.peak_w || 0,
+        mean_power_w: +(last24h?.avg_w || 0).toFixed(1),
+        mean_voltage_v: +(last24h?.avg_v || 0).toFixed(1)
       },
       yesterday: {
         kwh: yesterdayKwh,
@@ -3610,7 +3642,46 @@ class FleetDatabase {
            WHERE timestamp >= datetime('now', 'localtime', '-24 hours')
            GROUP BY time_slot
            ORDER BY time_slot ASC`;
-      return nodeId ? this.db.prepare(query).all(nodeId) : this.db.prepare(query).all();
+      const rows = nodeId ? this.db.prepare(query).all(nodeId) : this.db.prepare(query).all();
+      const rowMap = new Map();
+      for (const r of rows) {
+        rowMap.set(r.time_slot, r);
+      }
+
+      // Generate continuous 24-hour timeline (from 23 hours ago up to current hour)
+      const result = [];
+      const now = new Date();
+      for (let i = 23; i >= 0; i--) {
+        const d = new Date(now.getTime() - i * 3600 * 1000);
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const h = String(d.getHours()).padStart(2, '0');
+        const slotKey = `${y}-${m}-${day} ${h}:00`;
+        const label = `${h}:00`;
+
+        if (rowMap.has(slotKey)) {
+          const existing = rowMap.get(slotKey);
+          result.push({
+            time_slot: slotKey,
+            label,
+            kwh: Number(existing.kwh) || 0,
+            avg_power_w: Number(existing.avg_power_w) || 0,
+            peak_power_w: Number(existing.peak_power_w) || 0,
+            avg_voltage_v: Number(existing.avg_voltage_v) || 0
+          });
+        } else {
+          result.push({
+            time_slot: slotKey,
+            label,
+            kwh: 0,
+            avg_power_w: 0,
+            peak_power_w: 0,
+            avg_voltage_v: 0
+          });
+        }
+      }
+      return result;
     } else if (range === '7d' || range === '30d') {
       const days = range === '7d' ? 7 : 30;
       const query = nodeId
@@ -3634,7 +3705,45 @@ class FleetDatabase {
            WHERE timestamp >= datetime('now', 'localtime', '-${days} days')
            GROUP BY time_slot
            ORDER BY time_slot ASC`;
-      return nodeId ? this.db.prepare(query).all(nodeId) : this.db.prepare(query).all();
+      const rows = nodeId ? this.db.prepare(query).all(nodeId) : this.db.prepare(query).all();
+      const rowMap = new Map();
+      for (const r of rows) {
+        rowMap.set(r.time_slot, r);
+      }
+
+      // Generate continuous calendar days timeline
+      const result = [];
+      const now = new Date();
+      for (let i = days - 1; i >= 0; i--) {
+        const d = new Date(now.getTime() - i * 86400 * 1000);
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const slotKey = `${y}-${m}-${day}`;
+        const label = `${m}/${day}`;
+
+        if (rowMap.has(slotKey)) {
+          const existing = rowMap.get(slotKey);
+          result.push({
+            time_slot: slotKey,
+            label,
+            kwh: Number(existing.kwh) || 0,
+            avg_power_w: Number(existing.avg_power_w) || 0,
+            peak_power_w: Number(existing.peak_power_w) || 0,
+            avg_voltage_v: Number(existing.avg_voltage_v) || 0
+          });
+        } else {
+          result.push({
+            time_slot: slotKey,
+            label,
+            kwh: 0,
+            avg_power_w: 0,
+            peak_power_w: 0,
+            avg_voltage_v: 0
+          });
+        }
+      }
+      return result;
     }
     return [];
   }

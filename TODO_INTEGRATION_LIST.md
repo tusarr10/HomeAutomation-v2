@@ -35,7 +35,7 @@ All wire APIs, database schemas, bidirectional pin synchronizations, room GUI vi
 | **CS-10**| **Interactive 2D / 3D Room GUI** | Full architectural 2D blueprint (walls, bay window, glows, fan spins) + 3D isometric view | ✅ **DONE** | Live verified: Smooth switching between 2D Blueprint, 3D Isometric, and direct appliance control. |
 | **CS-11**| **Appliance Customization & Presets** | In-canvas appliance modal (`openEditRoomApplianceModal`) with 15+ presets and 25+ emojis | ✅ **DONE** | Live verified: Custom icon, label, and live hardware node/relay reassignment. |
 | **CS-12**| **PWA & Mobile/Tablet Optimization** | `manifest.json`, `sw.js` cache, off-canvas drawer (`☰`), responsive auto-scaling stages | ✅ **DONE** | Live verified: Standalone PWA install ready; smooth drawer navigation and responsive layout on mobile (390px). |
-| **CS-13**| **Long-Term Energy Analytics & Cost**| SQLite `energy_history` & `energy_settings`, REST endpoints, SVG hourly/daily chart, tariff modal | ✅ **DONE** | Live verified: Auto-downsampling, 4 KPI cards (Today kWh, Cost, Peak W), 24h/7d/30d SVG chart, live dashboard strip. |
+| **CS-13**| **Long-Term Energy Analytics & Cost**| SQLite `energy_history` & `energy_settings`, REST endpoints, SVG hourly/daily chart, tariff modal | ✅ **DONE** | Live verified: Trapezoidal active power integration, anomaly rejection, continuous 24h hourly report (zero-filled), KPI cards, table summary footer row, live dashboard strip. |
 
 ---
 
