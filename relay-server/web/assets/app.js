@@ -8988,34 +8988,59 @@ async function loadEvents() {
   const container = document.getElementById("content-area");
   try {
     const res = await fetch(`${API_BASE}/system/events`);
-    const events = await res.json();
+    const allEvents = await res.json();
+    const events = Array.isArray(allEvents) ? allEvents : [];
     container.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="font-size: 18px; font-weight: 600;">System Event Stream</h2>
+        <button class="btn btn-secondary" onclick="loadEvents()">🔄 Refresh</button>
+      </div>
       <table class="data-table">
         <thead>
           <tr>
             <th>Timestamp</th>
-            <th>Category</th>
+            <th>Category / Type</th>
             <th>Severity</th>
-            <th>Node</th>
-            <th>Description</th>
+            <th>Target Node</th>
+            <th>Event Description</th>
           </tr>
         </thead>
         <tbody>
           ${events.length === 0 ? '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 20px;">No events recorded yet.</td></tr>' : ''}
-          ${events.map(ev => `
-            <tr>
-              <td>${ev.timestamp ? new Date(ev.timestamp).toLocaleString() : 'Recent'}</td>
-              <td>${ev.category}</td>
-              <td><span class="status-badge ${ev.severity === 'WARNING' ? 'badge-sync' : 'badge-online'}">${ev.severity}</span></td>
-              <td>${ev.node_id || 'System'}</td>
-              <td>${ev.description}</td>
-            </tr>
-          `).join("")}
+          ${events.map(ev => {
+            let ts = 'Recent';
+            if (ev.timestamp) {
+              const epochMs = (typeof ev.timestamp === 'number')
+                ? (ev.timestamp < 1e11 ? ev.timestamp * 1000 : ev.timestamp)
+                : new Date(ev.timestamp).getTime();
+              if (!isNaN(epochMs)) ts = new Date(epochMs).toLocaleString();
+            }
+            const cat = ev.category || ev.type || 'SYSTEM';
+            const sev = ev.severity || ev.level || 'INFO';
+            const node = ev.node_id || ev.nodeId || ev.target || 'System';
+            let desc = ev.description || ev.details || ev.message || '';
+            if (!desc && ev.data) {
+              if (ev.data.channelId !== undefined) {
+                desc = `Channel ${ev.data.channelId} (Pin ${ev.data.pin}) switched ${ev.data.state ? 'ON' : 'OFF'}`;
+              } else {
+                desc = JSON.stringify(ev.data);
+              }
+            }
+            return `
+              <tr>
+                <td style="white-space: nowrap; font-size: 12.5px; color: var(--text-muted);">${ts}</td>
+                <td><span class="status-badge badge-sync">${escapeHtml(cat)}</span></td>
+                <td><span class="status-badge ${sev === 'WARNING' || sev === 'ERROR' ? 'badge-danger' : 'badge-online'}">${escapeHtml(sev)}</span></td>
+                <td><code>${escapeHtml(node)}</code></td>
+                <td style="font-size: 13px;">${escapeHtml(desc)}</td>
+              </tr>
+            `;
+          }).join("")}
         </tbody>
       </table>
     `;
   } catch (e) {
-    container.innerHTML = `<div style="color: var(--accent-red);">Error loading events: ${e.message}</div>`;
+    container.innerHTML = `<div style="color: var(--accent-red); padding: 20px;">Error loading events: ${e.message}</div>`;
   }
 }
 
@@ -11357,21 +11382,21 @@ async function loadLogs() {
     const data = Array.isArray(allData) ? allData : [];
 
     const filtered = data.filter(l => {
-      const act = l.action || '';
+      const act = l.action || l.category || '';
       if (currentLogCategory === 'PIN') {
-        if (!act.startsWith('PIN_')) return false;
+        if (!act.startsWith('PIN_') && !act.includes('RELAY')) return false;
       } else if (currentLogCategory === 'NODE') {
-        if (!act.startsWith('NODE_ON') && !act.startsWith('NODE_OFF')) return false;
+        if (!act.startsWith('NODE_ON') && !act.startsWith('NODE_OFF') && !act.includes('ONLINE') && !act.includes('OFFLINE')) return false;
       } else if (currentLogCategory === 'REBOOT') {
         if (!act.includes('REBOOT') && !act.includes('RESTART')) return false;
       } else if (currentLogCategory === 'COMMAND_SENT') {
-        if (act !== 'COMMAND_SENT') return false;
+        if (act !== 'COMMAND_SENT' && !act.includes('COMMAND')) return false;
       }
 
       if (!logSearchKeyword) return true;
       const kw = logSearchKeyword.toLowerCase();
       return (act.toLowerCase().includes(kw)) ||
-             ((l.target || '').toLowerCase().includes(kw)) ||
+             ((l.target || l.node_id || '').toLowerCase().includes(kw)) ||
              ((l.details || l.message || '').toLowerCase().includes(kw)) ||
              ((l.timestamp || '').toLowerCase().includes(kw));
     });
@@ -11414,24 +11439,24 @@ async function loadLogs() {
           ${filtered.map(l => {
             const timeStr = l.timestamp ? new Date(l.timestamp).toLocaleString() : 'Just now';
             let tagClass = 'tag-sync';
-            let actionLabel = l.action || 'SYSTEM';
+            let actionLabel = l.action || l.category || 'SYSTEM';
 
-            if (actionLabel === 'PIN_ON') {
+            if (actionLabel === 'PIN_ON' || actionLabel.includes('PIN_ON')) {
               tagClass = 'tag-pin-on';
               actionLabel = '⚡ PIN ON';
-            } else if (actionLabel === 'PIN_OFF') {
+            } else if (actionLabel === 'PIN_OFF' || actionLabel.includes('PIN_OFF')) {
               tagClass = 'tag-pin-off';
               actionLabel = '⚪ PIN OFF';
-            } else if (actionLabel === 'NODE_ONLINE') {
+            } else if (actionLabel === 'NODE_ONLINE' || actionLabel.includes('ONLINE')) {
               tagClass = 'tag-node-online';
               actionLabel = '🟢 ONLINE';
-            } else if (actionLabel === 'NODE_OFFLINE') {
+            } else if (actionLabel === 'NODE_OFFLINE' || actionLabel.includes('OFFLINE')) {
               tagClass = 'tag-node-offline';
               actionLabel = '🔴 OFFLINE';
             } else if (actionLabel.includes('REBOOT') || actionLabel.includes('RESTART')) {
               tagClass = 'tag-reboot';
               actionLabel = '🔄 RESTART';
-            } else if (actionLabel === 'COMMAND_SENT') {
+            } else if (actionLabel === 'COMMAND_SENT' || actionLabel.includes('COMMAND')) {
               tagClass = 'badge-sync';
               actionLabel = '🚀 COMMAND';
             }

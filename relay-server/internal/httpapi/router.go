@@ -23,6 +23,7 @@ import (
 	"smarthome-edge/internal/queue"
 	"smarthome-edge/internal/state"
 	"smarthome-edge/internal/syncer"
+	"smarthome-edge/internal/sysmetrics"
 	"smarthome-edge/internal/version"
 	"smarthome-edge/internal/websocket"
 )
@@ -703,11 +704,15 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	// 4. System Overview (Fleet Metrics)
 	if (path == "/api/v1/system/overview" || path == "/api/v1/overview") && r.Method == http.MethodGet {
+		var resp map[string]any
 		if rt.database != nil {
-			sendJSON(w, http.StatusOK, rt.database.GetOverviewStats(rt.syncer.IsCentralOnline()))
-			return
+			resp = rt.database.GetOverviewStats(rt.syncer.IsCentralOnline())
+		} else {
+			resp = rt.sm.GetOverview(rt.syncer.IsCentralOnline())
 		}
-		sendJSON(w, http.StatusOK, rt.sm.GetOverview(rt.syncer.IsCentralOnline()))
+		// Overwrite with real OpenWrt / Linux system telemetry
+		resp["system"] = sysmetrics.Collect(rt.cfg.Storage.DataDir, rt.startTime)
+		sendJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -755,10 +760,13 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 					list = append(list, map[string]interface{}{
 						"id":        l.ID,
 						"timestamp": l.TimestampStr,
-						"level":     "INFO",
+						"action":    l.Category,
 						"category":  l.Category,
+						"target":    l.NodeID,
 						"node_id":   l.NodeID,
+						"details":   l.Message,
 						"message":   l.Message,
+						"level":     l.Level,
 						"source":    "edge_server",
 					})
 				}
@@ -766,7 +774,23 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		sendJSON(w, http.StatusOK, rt.sm.GetSystemLogs())
+		smLogs := rt.sm.GetSystemLogs()
+		list := make([]map[string]interface{}, 0, len(smLogs))
+		for i, l := range smLogs {
+			list = append(list, map[string]interface{}{
+				"id":        i + 1,
+				"timestamp": l.Timestamp,
+				"action":    l.Level,
+				"category":  l.Level,
+				"target":    l.Source,
+				"node_id":   l.Source,
+				"details":   l.Message,
+				"message":   l.Message,
+				"level":     l.Level,
+				"source":    l.Source,
+			})
+		}
+		sendJSON(w, http.StatusOK, list)
 		return
 	}
 
@@ -779,16 +803,65 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if rt.database != nil {
 			if dbEvents, err := rt.database.GetSystemEvents(limit); err == nil && len(dbEvents) > 0 {
-				sendJSON(w, http.StatusOK, dbEvents)
+				list := make([]map[string]interface{}, 0, len(dbEvents))
+				for _, ev := range dbEvents {
+					list = append(list, map[string]interface{}{
+						"id":               ev.ID,
+						"eventId":          fmt.Sprintf("evt-db-%d", ev.ID),
+						"timestamp":        ev.Timestamp,
+						"category":         ev.Category,
+						"type":             ev.Category,
+						"severity":         ev.Severity,
+						"level":            ev.Severity,
+						"node_id":          ev.NodeID,
+						"nodeId":           ev.NodeID,
+						"target":           ev.NodeID,
+						"description":      ev.Description,
+						"details":          ev.Description,
+						"execution_result": ev.ExecutionResult,
+					})
+				}
+				sendJSON(w, http.StatusOK, list)
 				return
 			}
 		}
-		events, err := rt.spool.ReadRecent(limit)
+		spoolEvents, err := rt.spool.ReadRecent(limit)
 		if err != nil {
 			sendJSON(w, http.StatusOK, []interface{}{})
 			return
 		}
-		sendJSON(w, http.StatusOK, events)
+		list := make([]map[string]interface{}, 0, len(spoolEvents))
+		for _, rawEv := range spoolEvents {
+			ts := time.Unix(rawEv.Timestamp, 0).UTC().Format(time.RFC3339)
+			desc := fmt.Sprintf("Event %s", rawEv.Type)
+			if rawEv.Type == "RELAY_TRANSITION" && rawEv.Data != nil {
+				chId := rawEv.Data["channelId"]
+				pin := rawEv.Data["pin"]
+				st := rawEv.Data["state"]
+				stateStr := "OFF"
+				if b, ok := st.(bool); ok && b {
+					stateStr = "ON"
+				}
+				desc = fmt.Sprintf("Channel %v (Pin %v) switched %s", chId, pin, stateStr)
+			}
+			list = append(list, map[string]interface{}{
+				"id":               rawEv.EventID,
+				"eventId":          rawEv.EventID,
+				"timestamp":        ts,
+				"category":         rawEv.Type,
+				"type":             rawEv.Type,
+				"severity":         "INFO",
+				"level":            "INFO",
+				"node_id":          rawEv.NodeID,
+				"nodeId":           rawEv.NodeID,
+				"target":           rawEv.NodeID,
+				"description":      desc,
+				"details":          desc,
+				"execution_result": "SUCCESS",
+				"data":             rawEv.Data,
+			})
+		}
+		sendJSON(w, http.StatusOK, list)
 		return
 	}
 
@@ -1120,6 +1193,18 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 				"state":     targetState,
 				"pin":       cmd.Pin,
 			})
+
+			stateStr := "OFF"
+			stateInt := 0
+			if targetState {
+				stateStr = "ON"
+				stateInt = 1
+			}
+			if rt.database != nil {
+				rt.database.LogRelayEvent(nodeID, chID, 1-stateInt, stateInt, "HTTP_API")
+				rt.database.LogAudit(fmt.Sprintf("PIN_%s", stateStr), nodeID, fmt.Sprintf("Channel %d (Pin %d) switched %s", chID, cmd.Pin, stateStr))
+				rt.database.LogSystemEvent(nodeID, "RELAY_COMMAND", "INFO", fmt.Sprintf("Channel %d (Pin %d) switched %s", chID, cmd.Pin, stateStr))
+			}
 
 			// Outbound notify to Central Server if online
 			rt.syncer.ForwardRelayCommand(nodeID, chID, "setState", targetState)

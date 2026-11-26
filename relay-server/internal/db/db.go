@@ -480,6 +480,15 @@ func (db *DB) LogAudit(category, nodeID, message string) {
 		now.Format(time.RFC3339), float64(now.Unix()), category, nodeID, message)
 }
 
+// LogSystemEvent logs a system event record
+func (db *DB) LogSystemEvent(nodeID, category, severity, description string) {
+	now := time.Now().UTC()
+	db.Exec(`
+		INSERT INTO system_events (node_id, category, severity, description, execution_result, timestamp)
+		VALUES (?, ?, ?, ?, 'SUCCESS', ?)
+	`, nodeID, category, severity, description, now.Format(time.RFC3339))
+}
+
 // LogRelayEvent logs a relay state change event
 func (db *DB) LogRelayEvent(nodeID string, channelID, oldState, newState int, source string) {
 	now := time.Now().UTC()
