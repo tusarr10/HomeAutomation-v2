@@ -83,23 +83,27 @@
 ## 3. Future Relay Server Tasks & Actionable Roadmap (TODO)
 
 ### P3 — System Resilience & Router Integration
-- [ ] **Task RS-F1: OpenWrt `procd` Watchdog Integration**
-  - Implement a periodic watchdog ping endpoint (`/api/health/watchdog`) that communicates with OpenWrt's `procd` process supervisor to automatically restart the binary in the event of an unhandled socket deadlock or memory exhaustion.
-- [ ] **Task RS-F2: Zero-Trust Remote Access Package (WireGuard / Tailscale)**
-  - Provide drop-in configuration scripts for OpenWrt to route mobile app traffic through a secure WireGuard or Tailscale tunnel, enabling remote access from anywhere without port forwarding.
+- [x] **Task RS-F1: OpenWrt `procd` Watchdog Integration** *(Completed 2026-11-26)*
+  - Implemented `/api/health/watchdog` and `/api/v1/system/watchdog` endpoints reporting DB connectivity (`ok`), goroutines count, memory usage (`alloc_mb`), tracked nodes, and uptime (`status: "healthy"`).
+  - Provided production OpenWrt `procd` init script with watchdog capability (`scripts/init.d/smarthome-edge` and `openwrt/smarthome-edge.init`) featuring `check_health` command to automatically restart degraded instances.
+- [x] **Task RS-F2: Zero-Trust Remote Access Package (WireGuard / Tailscale)** *(Completed 2026-11-26)*
+  - Created automated OpenWrt setup scripts `openwrt/setup-wireguard.sh` and `openwrt/setup-tailscale.sh`.
+  - Configures UCI network interface (`wg0`), inbound firewall rules for ports 9200 (HTTP/WS) and 2001 (NDJSON TCP), client keypair generation, and auto-generated mobile app QR codes for zero-port-forwarding remote access.
 
 ### P4 — Network Security & TLS Termination
-- [ ] **Task RS-F3: Native HTTPS / TLS Termination on Port 9443**
-  - Add optional TLS certificate path configuration in `config.json` (`cert_file`, `key_file`) allowing the Go server to serve HTTPS directly on OpenWrt without requiring Nginx or uHTTPd reverse proxies.
-- [ ] **Task RS-F4: Rate Limiting & IP Brute-Force Guard**
-  - Implement in-memory token bucket rate limiting on `/api/v1/mobile/login` to prevent credential brute-forcing over local Wi-Fi or VPN connections.
+- [x] **Task RS-F3: Native HTTPS / TLS Termination on Port 9443** *(Completed 2026-11-26)*
+  - Added optional `https_listen`, `tls_cert_file`, and `tls_key_file` support to `ServerConfig` and `main.go`. Serves direct HTTPS on port 9443 without requiring external reverse proxies.
+- [x] **Task RS-F4: Rate Limiting & IP Brute-Force Guard** *(Completed 2026-11-26)*
+  - Implemented thread-safe in-memory sliding window rate limiter (`IPRateLimiter`) in `internal/httpapi/router.go`.
+  - Enforced 10 attempts/minute threshold on `/api/v1/auth/login` and `/api/v1/mobile/login`. Returns HTTP 429 Too Many Requests upon flood detection with automatic lockout and recovery.
 
 ### P5 — Offline Spooling, Flash Safety & Edge Energy Analytics
 - [ ] **Task RS-F5: Compressed Telemetry Spooling for Long WAN Outages**
   - When the Central Server is unreachable for extended periods (> 24 hours), gzip-compress spooled electrical and sensor events in `offline_sync_spool` to minimize flash storage writes on the router's NAND flash.
-- [ ] **Task RS-F6: Autonomous Edge Energy Analytics & Flash-Safe RAM Logging**
-  - Implement in-memory circular ring buffer for 30-second power integration ($E = \frac{P \times \Delta t}{3,600,000}$) to compute local Today kWh and 24h hourly stats without frequent flash writes.
-  - Flush hourly aggregated buckets to SQLite `energy_history` only once per hour to preserve router NAND flash endurance.
-  - Expose `/api/v1/analytics/energy/summary` and `/api/v1/analytics/energy/history` directly on Relay Server for standalone offline analytics.
+- [x] **Task RS-F6: Autonomous Edge Energy Analytics & Flash-Safe RAM Logging** *(Completed 2026-11-26)*
+  - Created embedded SQLite tables `energy_history` and `energy_settings` in `data/fleet_edge.db`.
+  - Implemented high-resolution background power integration sampler ($E = \frac{P \times \Delta t}{3,600,000}$) in `internal/db/operations.go`.
+  - Exposed `GET /api/v1/analytics/energy/summary`, `GET /api/v1/analytics/energy/history` (24h/7d/30d continuous time-series slots), and `POST /api/v1/analytics/energy/settings`.
+  - Deployed full frontend UI parity in `web/assets/app.js` and `web/assets/style.css` (4 live KPI cards, interactive SVG 24h consumption profile chart, intervals table, and tariff modal). Verified live in browser.
 - [ ] **Task RS-F7: Two-Way Edge-to-Central Energy History Sync**
   - When Relay Server operates during WAN outages, sync the edge-calculated hourly energy summaries back to Central Server upon link restoration.

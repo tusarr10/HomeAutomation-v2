@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -1152,4 +1153,881 @@ func (db *DB) GetAllTuyaDevices() ([]TuyaDeviceRecord, error) {
 		}
 	}
 	return list, nil
+}
+
+
+// =========================================================================
+// ⚡ ENERGY & POWER CONSUMPTION ANALYTICS (P3 / CS-F1 PARITY)
+// =========================================================================
+
+type EnergySettings struct {
+	TariffRate    float64 `json:"tariff_rate"`
+	Currency      string  `json:"currency"`
+	MonthlyBudget float64 `json:"monthly_budget"`
+}
+
+type EnergySnapshot struct {
+	ID               int64   `json:"id"`
+	Timestamp        string  `json:"timestamp"`
+	NodeID           string  `json:"node_id"`
+	Source           string  `json:"source"`
+	VoltageV         float64 `json:"voltage_v"`
+	CurrentA         float64 `json:"current_a"`
+	PowerW           float64 `json:"power_w"`
+	PowerFactor      float64 `json:"power_factor"`
+	FrequencyHz      float64 `json:"frequency_hz"`
+	TotalEnergyKWh   float64 `json:"total_energy_kwh"`
+	DeltaEnergyKWh   float64 `json:"delta_energy_kwh"`
+	LeakageCurrentMA float64 `json:"leakage_current_ma"`
+	TemperatureC     float64 `json:"temperature_c"`
+}
+
+type EnergySummary struct {
+	Current   map[string]any `json:"current"`
+	Today     map[string]any `json:"today"`
+	Last24h   map[string]any `json:"last_24h"`
+	Yesterday map[string]any `json:"yesterday"`
+	ThisMonth map[string]any `json:"this_month"`
+	Settings  EnergySettings `json:"settings"`
+}
+
+type EnergyHistorySlot struct {
+	TimeSlot    string  `json:"time_slot"`
+	Label       string  `json:"label"`
+	KWh         float64 `json:"kwh"`
+	AvgPowerW   float64 `json:"avg_power_w"`
+	PeakPowerW  float64 `json:"peak_power_w"`
+	AvgVoltageV float64 `json:"avg_voltage_v"`
+}
+
+func (db *DB) GetEnergySettings() EnergySettings {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	settings := EnergySettings{
+		TariffRate:    0.15,
+		Currency:      "$",
+		MonthlyBudget: 50.0,
+	}
+
+	rows, err := db.Query(`SELECT key, value FROM energy_settings`)
+	if err != nil {
+		return settings
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err == nil {
+			switch k {
+			case "tariff_rate":
+				if f, err := strconv.ParseFloat(v, 64); err == nil {
+					settings.TariffRate = f
+				}
+			case "currency":
+				if v != "" {
+					settings.Currency = v
+				}
+			case "monthly_budget":
+				if f, err := strconv.ParseFloat(v, 64); err == nil {
+					settings.MonthlyBudget = f
+				}
+			}
+		}
+	}
+	return settings
+}
+
+func (db *DB) UpdateEnergySettings(newSettings map[string]any) (EnergySettings, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	for k, v := range newSettings {
+		valStr := fmt.Sprintf("%v", v)
+		_, _ = db.Exec(`
+			INSERT INTO energy_settings (key, value, updated_at)
+			VALUES (?, ?, datetime('now', 'localtime'))
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+		`, k, valStr)
+	}
+
+	// Re-read settings
+	settings := EnergySettings{
+		TariffRate:    0.15,
+		Currency:      "$",
+		MonthlyBudget: 50.0,
+	}
+	rows, err := db.Query(`SELECT key, value FROM energy_settings`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var k, v string
+			if err := rows.Scan(&k, &v); err == nil {
+				switch k {
+				case "tariff_rate":
+					if f, err := strconv.ParseFloat(v, 64); err == nil {
+						settings.TariffRate = f
+					}
+				case "currency":
+					if v != "" {
+						settings.Currency = v
+					}
+				case "monthly_budget":
+					if f, err := strconv.ParseFloat(v, 64); err == nil {
+						settings.MonthlyBudget = f
+					}
+				}
+			}
+		}
+	}
+	return settings, nil
+}
+
+func (db *DB) RecordEnergySnapshot(data map[string]any) (int64, float64, error) {
+	nodeID := fmt.Sprintf("%v", data["nodeId"])
+	if nodeID == "" || nodeID == "<nil>" {
+		nodeID = "NODE-30487DE85D5C"
+	}
+	source := "tuya_breaker"
+	if s, ok := data["source"].(string); ok && s != "" {
+		source = s
+	}
+
+	toF := func(v any) float64 {
+		if v == nil {
+			return 0
+		}
+		switch val := v.(type) {
+		case float64:
+			return val
+		case float32:
+			return float64(val)
+		case int:
+			return float64(val)
+		case int64:
+			return float64(val)
+		case string:
+			f, _ := strconv.ParseFloat(val, 64)
+			return f
+		default:
+			return 0
+		}
+	}
+
+	voltageV := toF(data["voltage_v"])
+	currentA := toF(data["current_a"])
+	powerW := toF(data["power_w"])
+	powerFactor := toF(data["power_factor"])
+	if powerFactor == 0 {
+		powerFactor = 0.92
+	}
+	frequencyHz := toF(data["frequency_hz"])
+	if frequencyHz == 0 {
+		frequencyHz = 50.0
+	}
+	totalEnergyKWh := toF(data["total_energy_kwh"])
+	leakageCurrentMA := toF(data["leakage_current_ma"])
+	temperatureC := toF(data["temperature_c"])
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	// Check previous snapshot for delta calculation
+	var prevID int64
+	var prevTotal, prevPower float64
+	var elapsedSec int64
+
+	row := db.QueryRow(`
+		SELECT id, total_energy_kwh, power_w,
+		       (strftime('%s', 'now', 'localtime') - strftime('%s', timestamp)) as elapsed_sec
+		FROM energy_history
+		WHERE node_id = ?
+		ORDER BY id DESC LIMIT 1
+	`, nodeID)
+
+	deltaEnergyKWh := 0.0
+	if err := row.Scan(&prevID, &prevTotal, &prevPower, &elapsedSec); err == nil && prevID > 0 {
+		// Throttle: Skip if less than 20 seconds elapsed and power changed by < 25W
+		if elapsedSec < 20 && mathAbs(powerW-prevPower) < 25 {
+			return prevID, 0, nil
+		}
+
+		// Calculate high-resolution active power delta: E = (P_avg * elapsed_sec) / (3600 * 1000)
+		avgPower := (powerW + prevPower) / 2.0
+		if elapsedSec > 0 && avgPower > 0 {
+			effElapsed := elapsedSec
+			if effElapsed > 300 {
+				effElapsed = 300
+			}
+			deltaEnergyKWh = mathRound((avgPower*float64(effElapsed))/3600000.0, 5)
+		}
+
+		if totalEnergyKWh > prevTotal && prevTotal > 0 {
+			meterDelta := totalEnergyKWh - prevTotal
+			if meterDelta > 0 && meterDelta < 50 && elapsedSec > 300 {
+				deltaEnergyKWh = mathRound(meterDelta, 4)
+			}
+		}
+	} else {
+		// First record: baseline delta
+		deltaEnergyKWh = 0.001
+	}
+
+	res, err := db.Exec(`
+		INSERT INTO energy_history (
+			node_id, source, voltage_v, current_a, power_w, power_factor,
+			frequency_hz, total_energy_kwh, delta_energy_kwh, leakage_current_ma,
+			temperature_c, interval_type
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'raw')
+	`, nodeID, source, voltageV, currentA, powerW, powerFactor, frequencyHz, totalEnergyKWh, deltaEnergyKWh, leakageCurrentMA, temperatureC)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	id, _ := res.LastInsertId()
+	return id, deltaEnergyKWh, nil
+}
+
+func (db *DB) GetEnergySummary(nodeID string) EnergySummary {
+	settings := db.GetEnergySettings()
+
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	summary := EnergySummary{
+		Current: map[string]any{
+			"power_w":            0.0,
+			"voltage_v":          0.0,
+			"current_a":          0.0,
+			"total_energy_kwh":   0.0,
+			"leakage_current_ma": 0.0,
+			"power_factor":       1.0,
+			"frequency_hz":       50.0,
+			"temperature_c":      0.0,
+			"timestamp":          time.Now().Format("2006-01-02 15:04:05"),
+		},
+		Today: map[string]any{
+			"kwh":    0.0,
+			"cost":   0.0,
+			"peak_w": 0.0,
+			"avg_w":  0.0,
+			"avg_v":  0.0,
+		},
+		Last24h: map[string]any{
+			"total_kwh":       0.0,
+			"cost":            0.0,
+			"mean_hourly_kwh": 0.0,
+			"peak_w":          0.0,
+			"mean_power_w":    0.0,
+			"mean_voltage_v":  0.0,
+		},
+		Yesterday: map[string]any{
+			"kwh":    0.0,
+			"cost":   0.0,
+			"peak_w": 0.0,
+		},
+		ThisMonth: map[string]any{
+			"kwh":            0.0,
+			"cost":           0.0,
+			"projected_kwh":  0.0,
+			"projected_cost": 0.0,
+		},
+		Settings: settings,
+	}
+
+	// 1. Latest real-time snapshot
+	queryLatest := `SELECT power_w, voltage_v, current_a, total_energy_kwh, leakage_current_ma, power_factor, frequency_hz, temperature_c, timestamp
+		FROM energy_history ORDER BY id DESC LIMIT 1`
+	var (
+		pw, vv, ca, tek, lma, pf, fhz, tc float64
+		ts                                string
+	)
+	var errLatest error
+	if nodeID != "" {
+		queryLatest = `SELECT power_w, voltage_v, current_a, total_energy_kwh, leakage_current_ma, power_factor, frequency_hz, temperature_c, timestamp
+			FROM energy_history WHERE node_id = ? ORDER BY id DESC LIMIT 1`
+		errLatest = db.QueryRow(queryLatest, nodeID).Scan(&pw, &vv, &ca, &tek, &lma, &pf, &fhz, &tc, &ts)
+	} else {
+		errLatest = db.QueryRow(queryLatest).Scan(&pw, &vv, &ca, &tek, &lma, &pf, &fhz, &tc, &ts)
+	}
+	if errLatest == nil {
+		summary.Current = map[string]any{
+			"power_w":            pw,
+			"voltage_v":          vv,
+			"current_a":          ca,
+			"total_energy_kwh":   tek,
+			"leakage_current_ma": lma,
+			"power_factor":       pf,
+			"frequency_hz":       fhz,
+			"temperature_c":      tc,
+			"timestamp":          ts,
+		}
+	}
+
+	// 2. Today's total delta kWh
+	queryToday := `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w, AVG(voltage_v) as avg_v, AVG(power_w) as avg_w
+		FROM energy_history WHERE date(timestamp) = date('now', 'localtime')`
+	var (
+		todayKwh, todayPeak, todayAvgV, todayAvgW float64
+	)
+	var errToday error
+	if nodeID != "" {
+		queryToday = `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w, AVG(voltage_v) as avg_v, AVG(power_w) as avg_w
+			FROM energy_history WHERE date(timestamp) = date('now', 'localtime') AND node_id = ?`
+		errToday = db.QueryRow(queryToday, nodeID).Scan(&todayKwh, &todayPeak, &todayAvgV, &todayAvgW)
+	} else {
+		errToday = db.QueryRow(queryToday).Scan(&todayKwh, &todayPeak, &todayAvgV, &todayAvgW)
+	}
+	if errToday == nil {
+		todayKwh = mathRound(todayKwh, 3)
+		summary.Today = map[string]any{
+			"kwh":    todayKwh,
+			"cost":   mathRound(todayKwh*settings.TariffRate, 2),
+			"peak_w": todayPeak,
+			"avg_w":  mathRound(todayAvgW, 1),
+			"avg_v":  mathRound(todayAvgV, 1),
+		}
+	}
+
+	// 3. Yesterday's total delta kWh
+	queryYesterday := `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w
+		FROM energy_history WHERE date(timestamp) = date('now', 'localtime', '-1 day')`
+	var (
+		yestKwh, yestPeak float64
+	)
+	var errYest error
+	if nodeID != "" {
+		queryYesterday = `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w
+			FROM energy_history WHERE date(timestamp) = date('now', 'localtime', '-1 day') AND node_id = ?`
+		errYest = db.QueryRow(queryYesterday, nodeID).Scan(&yestKwh, &yestPeak)
+	} else {
+		errYest = db.QueryRow(queryYesterday).Scan(&yestKwh, &yestPeak)
+	}
+	if errYest == nil {
+		yestKwh = mathRound(yestKwh, 3)
+		summary.Yesterday = map[string]any{
+			"kwh":    yestKwh,
+			"cost":   mathRound(yestKwh*settings.TariffRate, 2),
+			"peak_w": yestPeak,
+		}
+	}
+
+	// 4. Rolling 24 Hours summary metrics
+	query24h := `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w, AVG(voltage_v) as avg_v, AVG(power_w) as avg_w
+		FROM energy_history WHERE timestamp >= datetime('now', 'localtime', '-24 hours')`
+	var (
+		k24, p24, v24, w24 float64
+	)
+	var err24h error
+	if nodeID != "" {
+		query24h = `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w, AVG(voltage_v) as avg_v, AVG(power_w) as avg_w
+			FROM energy_history WHERE timestamp >= datetime('now', 'localtime', '-24 hours') AND node_id = ?`
+		err24h = db.QueryRow(query24h, nodeID).Scan(&k24, &p24, &v24, &w24)
+	} else {
+		err24h = db.QueryRow(query24h).Scan(&k24, &p24, &v24, &w24)
+	}
+	if err24h == nil {
+		k24 = mathRound(k24, 3)
+		summary.Last24h = map[string]any{
+			"total_kwh":       k24,
+			"cost":            mathRound(k24*settings.TariffRate, 2),
+			"mean_hourly_kwh": mathRound(k24/24.0, 4),
+			"peak_w":          p24,
+			"mean_power_w":    mathRound(w24, 1),
+			"mean_voltage_v":  mathRound(v24, 1),
+		}
+	}
+
+	// 5. This Month's total delta kWh & projections
+	queryMonth := `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w
+		FROM energy_history WHERE strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now', 'localtime')`
+	var (
+		monthKwh, monthPeak float64
+	)
+	var errMonth error
+	if nodeID != "" {
+		queryMonth = `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w
+			FROM energy_history WHERE strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now', 'localtime') AND node_id = ?`
+		errMonth = db.QueryRow(queryMonth, nodeID).Scan(&monthKwh, &monthPeak)
+	} else {
+		errMonth = db.QueryRow(queryMonth).Scan(&monthKwh, &monthPeak)
+	}
+	if errMonth == nil {
+		monthKwh = mathRound(monthKwh, 3)
+		dayOfMonth := time.Now().Day()
+		if dayOfMonth < 1 {
+			dayOfMonth = 1
+		}
+		projKwh := mathRound((monthKwh/float64(dayOfMonth))*30.0, 2)
+		summary.ThisMonth = map[string]any{
+			"kwh":            monthKwh,
+			"cost":           mathRound(monthKwh*settings.TariffRate, 2),
+			"projected_kwh":  projKwh,
+			"projected_cost": mathRound(projKwh*settings.TariffRate, 2),
+		}
+	}
+
+	return summary
+}
+
+func (db *DB) GetEnergyHistory(rangeStr string, nodeID string) []EnergyHistorySlot {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	now := time.Now()
+	var slots []EnergyHistorySlot
+
+	if rangeStr == "7d" || rangeStr == "30d" {
+		days := 7
+		if rangeStr == "30d" {
+			days = 30
+		}
+
+		rowMap := make(map[string]EnergyHistorySlot)
+		q := `SELECT date(timestamp) as slot,
+		             strftime('%m/%d', timestamp) as lbl,
+		             ROUND(SUM(delta_energy_kwh), 3) as kwh,
+		             ROUND(AVG(power_w), 1) as avg_w,
+		             ROUND(MAX(power_w), 1) as peak_w,
+		             ROUND(AVG(voltage_v), 1) as avg_v
+		      FROM energy_history
+		      WHERE timestamp >= datetime('now', 'localtime', ? || ' days')
+		      GROUP BY slot ORDER BY slot ASC`
+		var rows *sql.Rows
+		var err error
+		if nodeID != "" {
+			q = `SELECT date(timestamp) as slot,
+			             strftime('%m/%d', timestamp) as lbl,
+			             ROUND(SUM(delta_energy_kwh), 3) as kwh,
+			             ROUND(AVG(power_w), 1) as avg_w,
+			             ROUND(MAX(power_w), 1) as peak_w,
+			             ROUND(AVG(voltage_v), 1) as avg_v
+			      FROM energy_history
+			      WHERE timestamp >= datetime('now', 'localtime', ? || ' days') AND node_id = ?
+			      GROUP BY slot ORDER BY slot ASC`
+			rows, err = db.Query(q, fmt.Sprintf("-%d", days), nodeID)
+		} else {
+			rows, err = db.Query(q, fmt.Sprintf("-%d", days))
+		}
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var s EnergyHistorySlot
+				if err := rows.Scan(&s.TimeSlot, &s.Label, &s.KWh, &s.AvgPowerW, &s.PeakPowerW, &s.AvgVoltageV); err == nil {
+					rowMap[s.TimeSlot] = s
+				}
+			}
+		}
+
+		for i := days - 1; i >= 0; i-- {
+			d := now.AddDate(0, 0, -i)
+			slotKey := d.Format("2006-01-02")
+			lbl := d.Format("01/02")
+
+			if existing, ok := rowMap[slotKey]; ok {
+				slots = append(slots, existing)
+			} else {
+				slots = append(slots, EnergyHistorySlot{
+					TimeSlot:    slotKey,
+					Label:       lbl,
+					KWh:         0,
+					AvgPowerW:   0,
+					PeakPowerW:  0,
+					AvgVoltageV: 0,
+				})
+			}
+		}
+		return slots
+	}
+
+	// Default: 24h continuous hourly timeline
+	rowMap := make(map[string]EnergyHistorySlot)
+	q := `SELECT strftime('%Y-%m-%d %H:00', timestamp) as slot,
+	             strftime('%H:00', timestamp) as lbl,
+	             ROUND(SUM(delta_energy_kwh), 3) as kwh,
+	             ROUND(AVG(power_w), 1) as avg_w,
+	             ROUND(MAX(power_w), 1) as peak_w,
+	             ROUND(AVG(voltage_v), 1) as avg_v
+	      FROM energy_history
+	      WHERE timestamp >= datetime('now', 'localtime', '-24 hours')
+	      GROUP BY slot ORDER BY slot ASC`
+	var rows *sql.Rows
+	var err error
+	if nodeID != "" {
+		q = `SELECT strftime('%Y-%m-%d %H:00', timestamp) as slot,
+		             strftime('%H:00', timestamp) as lbl,
+		             ROUND(SUM(delta_energy_kwh), 3) as kwh,
+		             ROUND(AVG(power_w), 1) as avg_w,
+		             ROUND(MAX(power_w), 1) as peak_w,
+		             ROUND(AVG(voltage_v), 1) as avg_v
+		      FROM energy_history
+		      WHERE timestamp >= datetime('now', 'localtime', '-24 hours') AND node_id = ?
+		      GROUP BY slot ORDER BY slot ASC`
+		rows, err = db.Query(q, nodeID)
+	} else {
+		rows, err = db.Query(q)
+	}
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var s EnergyHistorySlot
+			if err := rows.Scan(&s.TimeSlot, &s.Label, &s.KWh, &s.AvgPowerW, &s.PeakPowerW, &s.AvgVoltageV); err == nil {
+				rowMap[s.TimeSlot] = s
+			}
+		}
+	}
+
+	for i := 23; i >= 0; i-- {
+		t := now.Add(-time.Duration(i) * time.Hour)
+		slotKey := t.Format("2006-01-02 15:00")
+		lbl := t.Format("15:00")
+
+		if existing, ok := rowMap[slotKey]; ok {
+			slots = append(slots, existing)
+		} else {
+			slots = append(slots, EnergyHistorySlot{
+				TimeSlot:    slotKey,
+				Label:       lbl,
+				KWh:         0,
+				AvgPowerW:   0,
+				PeakPowerW:  0,
+				AvgVoltageV: 0,
+			})
+		}
+	}
+
+	return slots
+}
+
+func mathAbs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func mathRound(val float64, precision int) float64 {
+	p := mathPow10(precision)
+	return float64(int64(val*p+0.5)) / p
+}
+
+func mathPow10(n int) float64 {
+	r := 1.0
+	for i := 0; i < n; i++ {
+		r *= 10.0
+	}
+	return r
+}
+
+func mathSin(x float64) float64 {
+	// Simple Taylor approximation for baseline curve
+	for x > 3.14159265 {
+		x -= 2 * 3.14159265
+	}
+	for x < -3.14159265 {
+		x += 2 * 3.14159265
+	}
+	return x - (x*x*x)/6.0 + (x*x*x*x*x)/120.0
+}
+
+// --- Firmware & OTA Data Operations ---
+
+type FirmwareRecord struct {
+	ID             int64  `json:"id"`
+	Version        string `json:"version"`
+	HardwareType   string `json:"hardware_type"`
+	Filename       string `json:"filename"`
+	Notes          string `json:"notes"`
+	FileSizeBytes  int64  `json:"file_size_bytes"`
+	ChecksumMD5    string `json:"checksum_md5"`
+	ChecksumSHA256 string `json:"checksum_sha256"`
+	FilePath       string `json:"file_path"`
+	UploadedAt     string `json:"uploaded_at"`
+	ReleaseChannel string `json:"release_channel"`
+	IsLatest       int    `json:"is_latest"`
+}
+
+type NodeBackupRecord struct {
+	ID              int64  `json:"id"`
+	NodeID          string `json:"node_id"`
+	NodeName        string `json:"node_name"`
+	FirmwareVersion string `json:"firmware_version"`
+	BackupType      string `json:"backup_type"`
+	BackupPath      string `json:"backup_path"`
+	FileSizeBytes   int64  `json:"file_size_bytes"`
+	SnapshotJSON    string `json:"snapshot_json,omitempty"`
+	CreatedAt       string `json:"created_at"`
+}
+
+type OtaHistoryRecord struct {
+	ID               int64   `json:"id"`
+	NodeID           string  `json:"node_id"`
+	NodeName         string  `json:"node_name"`
+	FirmwareID       *int64  `json:"firmware_id"`
+	FirmwareFilename string  `json:"firmware_filename"`
+	VersionFrom      string  `json:"version_from"`
+	VersionTo        string  `json:"version_to"`
+	Status           string  `json:"status"`
+	BackupID         *int64  `json:"backup_id"`
+	DurationMs       int64   `json:"duration_ms"`
+	Details          string  `json:"details"`
+	ErrorMessage     string  `json:"error_message"`
+	CreatedAt        string  `json:"created_at"`
+}
+
+func (db *DB) GetAllFirmware() ([]FirmwareRecord, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	rows, err := db.Query(`
+		SELECT id, version, COALESCE(hardware_type, 'ESP8266'), filename, COALESCE(notes, ''),
+		       COALESCE(file_size_bytes, 0), COALESCE(checksum_md5, ''), COALESCE(checksum_sha256, ''),
+		       COALESCE(file_path, ''), COALESCE(uploaded_at, ''), COALESCE(release_channel, 'LTS'),
+		       COALESCE(is_latest, 0)
+		FROM firmware ORDER BY id DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []FirmwareRecord
+	for rows.Next() {
+		var f FirmwareRecord
+		if err := rows.Scan(
+			&f.ID, &f.Version, &f.HardwareType, &f.Filename, &f.Notes,
+			&f.FileSizeBytes, &f.ChecksumMD5, &f.ChecksumSHA256,
+			&f.FilePath, &f.UploadedAt, &f.ReleaseChannel, &f.IsLatest,
+		); err != nil {
+			return nil, err
+		}
+		list = append(list, f)
+	}
+	if list == nil {
+		list = []FirmwareRecord{}
+	}
+	return list, nil
+}
+
+func (db *DB) GetFirmware(id int64) (*FirmwareRecord, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	row := db.QueryRow(`
+		SELECT id, version, COALESCE(hardware_type, 'ESP8266'), filename, COALESCE(notes, ''),
+		       COALESCE(file_size_bytes, 0), COALESCE(checksum_md5, ''), COALESCE(checksum_sha256, ''),
+		       COALESCE(file_path, ''), COALESCE(uploaded_at, ''), COALESCE(release_channel, 'LTS'),
+		       COALESCE(is_latest, 0)
+		FROM firmware WHERE id = ?
+	`, id)
+
+	var f FirmwareRecord
+	if err := row.Scan(
+		&f.ID, &f.Version, &f.HardwareType, &f.Filename, &f.Notes,
+		&f.FileSizeBytes, &f.ChecksumMD5, &f.ChecksumSHA256,
+		&f.FilePath, &f.UploadedAt, &f.ReleaseChannel, &f.IsLatest,
+	); err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+func (db *DB) AddFirmware(f FirmwareRecord) (int64, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	res, err := db.Exec(`
+		INSERT INTO firmware (
+			filename, version, hardware_type, release_channel, notes,
+			file_size_bytes, checksum_md5, checksum_sha256, file_path, uploaded_at, is_latest
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+	`, f.Filename, f.Version, f.HardwareType, f.ReleaseChannel, f.Notes,
+		f.FileSizeBytes, f.ChecksumMD5, f.ChecksumSHA256, f.FilePath, nowStr)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (db *DB) DeleteFirmware(id int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	_, err := db.Exec("DELETE FROM firmware WHERE id = ?", id)
+	return err
+}
+
+func (db *DB) GetNodeBackups(nodeID string) ([]NodeBackupRecord, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var rows *sql.Rows
+	var err error
+	if nodeID != "" {
+		rows, err = db.Query(`
+			SELECT id, node_id, COALESCE(node_name, ''), COALESCE(firmware_version, '1.6.0'),
+			       COALESCE(backup_type, 'PRE_OTA'), COALESCE(backup_path, ''),
+			       COALESCE(file_size_bytes, 0), COALESCE(created_at, '')
+			FROM node_backups WHERE node_id = ? ORDER BY id DESC
+		`, nodeID)
+	} else {
+		rows, err = db.Query(`
+			SELECT id, node_id, COALESCE(node_name, ''), COALESCE(firmware_version, '1.6.0'),
+			       COALESCE(backup_type, 'PRE_OTA'), COALESCE(backup_path, ''),
+			       COALESCE(file_size_bytes, 0), COALESCE(created_at, '')
+			FROM node_backups ORDER BY id DESC
+		`)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []NodeBackupRecord
+	for rows.Next() {
+		var b NodeBackupRecord
+		if err := rows.Scan(
+			&b.ID, &b.NodeID, &b.NodeName, &b.FirmwareVersion,
+			&b.BackupType, &b.BackupPath, &b.FileSizeBytes, &b.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		list = append(list, b)
+	}
+	if list == nil {
+		list = []NodeBackupRecord{}
+	}
+	return list, nil
+}
+
+func (db *DB) GetNodeBackup(id int64) (*NodeBackupRecord, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	row := db.QueryRow(`
+		SELECT id, node_id, COALESCE(node_name, ''), COALESCE(firmware_version, '1.6.0'),
+		       COALESCE(backup_type, 'PRE_OTA'), COALESCE(backup_path, ''),
+		       COALESCE(file_size_bytes, 0), COALESCE(snapshot_json, '{}'), COALESCE(created_at, '')
+		FROM node_backups WHERE id = ?
+	`, id)
+
+	var b NodeBackupRecord
+	if err := row.Scan(
+		&b.ID, &b.NodeID, &b.NodeName, &b.FirmwareVersion,
+		&b.BackupType, &b.BackupPath, &b.FileSizeBytes, &b.SnapshotJSON, &b.CreatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &b, nil
+}
+
+func (db *DB) AddNodeBackup(b NodeBackupRecord) (int64, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	if b.CreatedAt == "" {
+		b.CreatedAt = nowStr
+	}
+	res, err := db.Exec(`
+		INSERT INTO node_backups (
+			node_id, node_name, firmware_version, backup_type, backup_path, file_size_bytes, snapshot_json, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, b.NodeID, b.NodeName, b.FirmwareVersion, b.BackupType, b.BackupPath, b.FileSizeBytes, b.SnapshotJSON, b.CreatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (db *DB) DeleteNodeBackup(id int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	_, err := db.Exec("DELETE FROM node_backups WHERE id = ?", id)
+	return err
+}
+
+func (db *DB) GetOtaHistory(limit int) ([]OtaHistoryRecord, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := db.Query(`
+		SELECT id, node_id, COALESCE(node_name, ''), firmware_id, COALESCE(firmware_filename, ''),
+		       COALESCE(version_from, '1.6.0'), COALESCE(version_to, '1.6.0'), COALESCE(status, 'PENDING'),
+		       backup_id, COALESCE(duration_ms, 0), COALESCE(details, ''), COALESCE(error_message, ''),
+		       COALESCE(created_at, '')
+		FROM ota_history ORDER BY id DESC LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []OtaHistoryRecord
+	for rows.Next() {
+		var h OtaHistoryRecord
+		if err := rows.Scan(
+			&h.ID, &h.NodeID, &h.NodeName, &h.FirmwareID, &h.FirmwareFilename,
+			&h.VersionFrom, &h.VersionTo, &h.Status, &h.BackupID, &h.DurationMs,
+			&h.Details, &h.ErrorMessage, &h.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		list = append(list, h)
+	}
+	if list == nil {
+		list = []OtaHistoryRecord{}
+	}
+	return list, nil
+}
+
+func (db *DB) AddOtaHistory(h OtaHistoryRecord) (int64, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	if h.CreatedAt == "" {
+		h.CreatedAt = nowStr
+	}
+	res, err := db.Exec(`
+		INSERT INTO ota_history (
+			node_id, node_name, firmware_id, firmware_filename, version_from, version_to,
+			status, backup_id, duration_ms, details, error_message, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, h.NodeID, h.NodeName, h.FirmwareID, h.FirmwareFilename, h.VersionFrom, h.VersionTo,
+		h.Status, h.BackupID, h.DurationMs, h.Details, h.ErrorMessage, h.CreatedAt)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (db *DB) UpdateNodeFirmwareVersion(nodeID, version string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	_, err := db.Exec("UPDATE nodes SET firmware_version = ? WHERE node_id = ?", version, nodeID)
+	return err
+}
+
+func (db *DB) UpdateOtaHistory(id int64, status string, durationMs int64, details string, errorMsg string, backupID *int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	query := "UPDATE ota_history SET status = ?, duration_ms = ?, details = ?, error_message = ?"
+	args := []interface{}{status, durationMs, details, errorMsg}
+	if backupID != nil {
+		query += ", backup_id = ?"
+		args = append(args, *backupID)
+	}
+	query += " WHERE id = ?"
+	args = append(args, id)
+
+	_, err := db.Exec(query, args...)
+	return err
 }

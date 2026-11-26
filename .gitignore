@@ -26,6 +26,10 @@ central-server/data/fleet*.db
 central-server/data/backups/
 central-server/data/fs_backups/
 central-server/data/firmware/
+relay-server/data/fleet*.db
+relay-server/data/backups/
+relay-server/data/firmware/
+relay-server/data/config_cache.json
 
 # Logs & runtime event dumps
 *.log

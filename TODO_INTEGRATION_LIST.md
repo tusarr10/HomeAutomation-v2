@@ -85,14 +85,17 @@ All firmware tasks (P0, P1, P2) are **fully implemented, compiled, and live-veri
   - Push API integration in Service Worker (`sw.js`) for circuit breaker trips, motion detections, or offline alerts.
 
 ### Edge Relay Server Roadmap (`relay-server/TODO.md`)
-- [ ] **RS-F1: OpenWrt `procd` Watchdog Integration**
-  - Implement a periodic watchdog health ping (`/api/health/watchdog`) communicating with OpenWrt's `procd` process supervisor for automatic crash recovery.
-- [ ] **RS-F2: Zero-Trust Remote Access Setup (WireGuard / Tailscale)**
-  - Drop-in OpenWrt configuration package for secure mobile access from outside the local network without port forwarding.
-- [ ] **RS-F3: Native HTTPS / TLS Termination on Port 9443**
-  - Optional TLS certificate loading in `config.json` for direct encrypted WAN access without reverse proxy.
-- [ ] **RS-F4: Rate Limiting & IP Brute-Force Guard**
-  - Token bucket rate limiting on `/api/v1/mobile/login` to prevent credential brute-forcing over local Wi-Fi.
+- [x] **RS-F1: OpenWrt `procd` Watchdog Integration** *(Completed 2026-11-26)*
+  - Implemented `/api/health/watchdog` & `/api/v1/system/watchdog` endpoints reporting DB health (`ok`), memory, uptime, goroutines, and tracked nodes.
+  - Provided production OpenWrt `procd` init script (`scripts/init.d/smarthome-edge` and `openwrt/smarthome-edge.init`) with `check_health` automatic self-healing.
+- [x] **RS-F2: Zero-Trust Remote Access Setup (WireGuard / Tailscale)** *(Completed 2026-11-26)*
+  - Created automated OpenWrt scripts `openwrt/setup-wireguard.sh` and `openwrt/setup-tailscale.sh` with UCI network integration and mobile client QR code generation.
+- [x] **RS-F3: Native HTTPS / TLS Termination on Port 9443** *(Completed 2026-11-26)*
+  - Built-in HTTPS/TLS termination support via `https_listen`, `tls_cert_file`, and `tls_key_file` in `config.json` without requiring reverse proxy software.
+- [x] **RS-F4: Rate Limiting & IP Brute-Force Guard** *(Completed 2026-11-26)*
+  - Thread-safe sliding window rate limiter enforcing 10 attempts/min on `/api/v1/auth/login` and `/api/v1/mobile/login` with HTTP 429 flood protection.
+- [x] **RS-F6: Autonomous Edge Energy Analytics & Flash-Safe RAM Logging** *(Completed 2026-11-26)*
+  - Background power integration engine, embedded SQLite `energy_history` and `energy_settings` tables, continuous 24h/7d/30d timeline endpoints, and full interactive UI parity in Smart Breaker. Verified live with browser subagent.
 
 ### Node Firmware Roadmap (`node-firmware/TODO.md`)
 - [ ] **NF-F1: mDNS Automatic Service Discovery (`_smarthome-receiver._tcp`)**

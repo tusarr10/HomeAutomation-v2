@@ -11953,6 +11953,9 @@ function renderBreakerDashboard(container, data) {
       <button class="breaker-tab-btn ${breakerSubTab === 'telemetry' ? 'active' : ''}" onclick="switchBreakerTab('telemetry')">
         <span>📊</span> Live Telemetry
       </button>
+      <button class="breaker-tab-btn ${breakerSubTab === 'energy' ? 'active' : ''}" onclick="switchBreakerTab('energy')">
+        <span>⚡</span> Energy Analytics & kWh
+      </button>
       <button class="breaker-tab-btn ${breakerSubTab === 'protection' ? 'active' : ''}" onclick="switchBreakerTab('protection')">
         <span>🛡️</span> Protection & Thresholds
       </button>
@@ -11996,6 +11999,9 @@ function switchBreakerTab(tabName) {
       initSerialTerminal();
       loadSerialLogsFromServer();
     }
+    if (tabName === 'energy') {
+      setTimeout(loadEnergyAnalyticsData, 50);
+    }
   }
 }
 
@@ -12004,6 +12010,12 @@ function renderBreakerSubTab(data) {
   const dps = data.reading?.dps || {};
   const cfg = data.config || {};
   const currentIp = cfg.ip_address || '192.168.1.25';
+
+  // 1.5 ENERGY & POWER CONSUMPTION ANALYTICS (P3 / CS-F1)
+  if (breakerSubTab === 'energy') {
+    setTimeout(loadEnergyAnalyticsData, 10);
+    return renderBreakerEnergySubTab();
+  }
 
   // 1. LIVE TELEMETRY VIEW
   if (breakerSubTab === 'telemetry') {
@@ -12657,6 +12669,477 @@ function renderBreakerSubTab(data) {
 
   return '';
 }
+
+// ⚡ ENERGY CONSUMPTION & POWER ANALYTICS MODULE (P3 / CS-F1)
+// =========================================================================
+let energyRange = '24h';
+let energySummaryData = null;
+let energyHistoryData = [];
+
+function renderBreakerEnergySubTab() {
+  const settings = energySummaryData?.settings || { tariff_rate: 0.15, currency: '$', monthly_budget: 50 };
+  const curr = settings.currency || '$';
+
+  return `
+    <div class="energy-analytics-container">
+      <!-- Energy Hero Header -->
+      <div class="energy-hero-header">
+        <div>
+          <h2 style="font-size: 17px; font-weight: 700; color: #f8fafc; margin: 0; display: flex; align-items: center; gap: 8px;">
+            <span>⚡ Long-Term Energy & Power Consumption</span>
+            <span class="status-badge badge-online" style="font-size: 10px; padding: 2px 8px;">AUTO-LOGGING ACTIVE</span>
+          </h2>
+          <p style="font-size: 12px; color: var(--text-secondary); margin: 4px 0 0 0;">
+            Hourly & daily persistent time-series aggregation, peak demand tracking, and tariff cost calculation.
+          </p>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+          <div class="energy-range-segmented">
+            <button class="energy-range-btn ${energyRange === '24h' ? 'active' : ''}" onclick="changeEnergyRange('24h')">24 Hours</button>
+            <button class="energy-range-btn ${energyRange === '7d' ? 'active' : ''}" onclick="changeEnergyRange('7d')">7 Days</button>
+            <button class="energy-range-btn ${energyRange === '30d' ? 'active' : ''}" onclick="changeEnergyRange('30d')">30 Days</button>
+          </div>
+          <button class="btn btn-secondary" id="energy-tariff-btn" onclick="openTariffSettingsModal()" style="font-size: 11px; padding: 5px 12px;">
+            ⚙️ Tariff (${curr}${settings.tariff_rate}/kWh)
+          </button>
+          <button class="btn btn-primary" onclick="loadEnergyAnalyticsData()" style="font-size: 11px; padding: 5px 12px;">
+            🔄 Refresh
+          </button>
+        </div>
+      </div>
+
+      <!-- KPI Grid -->
+      <div class="energy-kpi-grid" id="energy-kpi-cards">
+        ${renderEnergyKpiCardsHtml(energySummaryData)}
+      </div>
+
+      <!-- Energy Chart Section -->
+      <div class="energy-chart-card">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+          <div>
+            <h3 style="font-size: 15px; font-weight: 700; color: #38bdf8; margin: 0;" id="energy-chart-title">
+              📊 ${energyRange === '24h' ? 'Hourly Consumption Profile (Last 24 Hours)' : energyRange === '7d' ? 'Daily Consumption Profile (Last 7 Days)' : 'Daily Consumption Profile (Last 30 Days)'}
+            </h3>
+            <span style="font-size: 11px; color: var(--text-secondary);">
+              Aggregated delta kWh, active wattage, and demand peaks
+            </span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 14px; font-size: 11.5px;">
+            <span style="display: flex; align-items: center; gap: 6px;">
+              <span style="width: 12px; height: 12px; background: linear-gradient(180deg, #38bdf8, #0284c7); border-radius: 2px;"></span> Consumption (kWh)
+            </span>
+            <span style="display: flex; align-items: center; gap: 6px;">
+              <span style="width: 12px; height: 3px; background: #f59e0b; border-radius: 2px;"></span> Peak Demand (W)
+            </span>
+          </div>
+        </div>
+
+        <div id="energy-chart-viewport" style="min-height: 260px; width: 100%; position: relative;">
+          ${renderEnergyChart(energyHistoryData, energySummaryData, energyRange)}
+        </div>
+      </div>
+
+      <!-- Data Breakdown Table -->
+      <div class="energy-table-card">
+        <h3 style="font-size: 14px; font-weight: 700; color: #f8fafc; margin: 0 0 12px 0;">
+          📋 Time-Series Intervals Breakdown
+        </h3>
+        <div id="energy-history-table-container">
+          ${renderEnergyHistoryTableHtml(energyHistoryData, energySummaryData)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderEnergyKpiCardsHtml(summary) {
+  if (!summary) {
+    return `
+      <div class="energy-kpi-card" style="grid-column: 1 / -1; text-align: center; padding: 30px; color: var(--text-muted);">
+        <span>Loading Energy Metrics...</span>
+      </div>
+    `;
+  }
+
+  const s = summary.settings || { tariff_rate: 0.15, currency: '$', monthly_budget: 50 };
+  const curr = s.currency || '$';
+  const todayKwhRaw = Number(summary.today?.kwh) || 0;
+  const todayKwh = todayKwhRaw < 1.0 ? todayKwhRaw.toFixed(3) : todayKwhRaw.toFixed(2);
+  const todayCost = Number(summary.today?.cost) || 0;
+
+  const yestKwhRaw = Number(summary.yesterday?.kwh) || 0;
+  const yestKwh = yestKwhRaw < 1.0 ? yestKwhRaw.toFixed(3) : yestKwhRaw.toFixed(2);
+  const yestCost = Number(summary.yesterday?.cost) || 0;
+
+  const monthKwhRaw = Number(summary.this_month?.kwh) || 0;
+  const monthKwh = monthKwhRaw < 1.0 ? monthKwhRaw.toFixed(3) : monthKwhRaw.toFixed(2);
+  const monthCost = Number(summary.this_month?.cost) || 0;
+
+  const budget = s.monthly_budget || 50;
+  const budgetPercent = Math.min(100, Math.round((monthCost / Math.max(1, budget)) * 100));
+
+  const l24 = summary.last_24h || {};
+  const l24KwhRaw = Number(l24.total_kwh) || 0;
+  const l24Kwh = l24KwhRaw < 1.0 ? l24KwhRaw.toFixed(3) : l24KwhRaw.toFixed(2);
+
+  return `
+    <!-- 1. Today's Consumption -->
+    <div class="energy-kpi-card">
+      <div class="energy-kpi-header">
+        <span>Today's Energy</span>
+        <span>⚡</span>
+      </div>
+      <div class="energy-kpi-val-row">
+        <span class="energy-kpi-val">${todayKwh}</span>
+        <span class="energy-kpi-unit">kWh</span>
+      </div>
+      <div class="energy-kpi-footer">
+        <span>Cost: <strong style="color: #38bdf8;">${curr}${todayCost.toFixed(2)}</strong></span>
+        <span>Mean: <strong style="color: #10b981;">${summary.today?.avg_w || 0} W</strong></span>
+        <span>Peak: <strong style="color: #f59e0b;">${summary.today?.peak_w || 0} W</strong></span>
+      </div>
+    </div>
+
+    <!-- 2. Yesterday's Consumption -->
+    <div class="energy-kpi-card amber">
+      <div class="energy-kpi-header">
+        <span>Yesterday's Energy</span>
+        <span>⏱️</span>
+      </div>
+      <div class="energy-kpi-val-row">
+        <span class="energy-kpi-val">${yestKwh}</span>
+        <span class="energy-kpi-unit">kWh</span>
+      </div>
+      <div class="energy-kpi-footer">
+        <span>Cost: <strong>${curr}${yestCost.toFixed(2)}</strong></span>
+        <span>Peak: <strong>${summary.yesterday?.peak_w || 0} W</strong></span>
+      </div>
+    </div>
+
+    <!-- 3. Month-to-Date & Projection -->
+    <div class="energy-kpi-card green">
+      <div class="energy-kpi-header">
+        <span>Month-to-Date</span>
+        <span>📅</span>
+      </div>
+      <div class="energy-kpi-val-row">
+        <span class="energy-kpi-val">${monthKwh}</span>
+        <span class="energy-kpi-unit">kWh</span>
+      </div>
+      <div class="energy-kpi-footer">
+        <span>Cost: <strong>${curr}${monthCost.toFixed(2)}</strong></span>
+        <span>Projected: <strong>${curr}${(summary.this_month?.projected_cost || 0).toFixed(2)}</strong></span>
+      </div>
+    </div>
+
+    <!-- 4. Monthly Budget Status -->
+    <div class="energy-kpi-card purple">
+      <div class="energy-kpi-header">
+        <span>Monthly Budget</span>
+        <span>💰</span>
+      </div>
+      <div class="energy-kpi-val-row">
+        <span class="energy-kpi-val">${curr}${monthCost.toFixed(2)}</span>
+        <span class="energy-kpi-unit">/ ${curr}${budget.toFixed(2)}</span>
+      </div>
+      <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; overflow: hidden; margin-bottom: 6px;">
+        <div style="height: 100%; width: ${budgetPercent}%; background: ${budgetPercent > 90 ? '#ef4444' : budgetPercent > 70 ? '#f59e0b' : '#10b981'}; transition: width 0.3s ease;"></div>
+      </div>
+      <div class="energy-kpi-footer">
+        <span>${budgetPercent}% of budget</span>
+        <span>Rate: <strong>${curr}${s.tariff_rate}/kWh</strong></span>
+      </div>
+    </div>
+  `;
+}
+
+function renderEnergyChart(history, summary, range) {
+  if (!history || history.length === 0) {
+    return `
+      <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 240px; color: var(--text-secondary); text-align: center; gap: 8px;">
+        <span style="font-size: 28px;">⚡</span>
+        <div style="font-size: 14px; font-weight: 600; color: #f8fafc;">Energy Logging Active</div>
+        <div style="font-size: 12px; max-width: 400px; color: #94a3b8;">
+          Snapshots are automatically recorded every 30 seconds. Historical bars will appear as time progresses.
+        </div>
+      </div>
+    `;
+  }
+
+  const s = summary?.settings || { tariff_rate: 0.15, currency: '$' };
+  const curr = s.currency || '$';
+  const rate = s.tariff_rate || 0.15;
+
+  const count = history.length;
+  const maxKwh = Math.max(0.05, ...history.map(h => Number(h.kwh) || 0)) * 1.25;
+  const maxPwr = Math.max(100, ...history.map(h => Number(h.peak_power_w) || Number(h.avg_power_w) || 0)) * 1.15;
+
+  const chartW = 760;
+  const chartH = 220;
+  const padL = 50;
+  const padR = 20;
+  const padT = 20;
+  const padB = 40;
+  const plotW = chartW - padL - padR;
+  const plotH = chartH - padT - padB;
+
+  const barSlotW = plotW / Math.max(1, count);
+  const barW = Math.max(6, Math.min(28, barSlotW * 0.68));
+
+  let gridLines = '';
+  for (let step = 0; step <= 4; step++) {
+    const yVal = padT + (plotH / 4) * step;
+    const kwhLabel = (maxKwh * (1 - step / 4)).toFixed(step === 4 ? 1 : 2);
+    gridLines += `
+      <line x1="${padL}" y1="${yVal}" x2="${chartW - padR}" y2="${yVal}" stroke="rgba(255,255,255,0.06)" stroke-width="1" stroke-dasharray="3,3" />
+      <text x="${padL - 8}" y="${yVal + 3.5}" text-anchor="end" font-size="9.5" fill="#64748b" font-family="monospace">${kwhLabel}</text>
+    `;
+  }
+
+  let barsHtml = '';
+  const peakPoints = [];
+
+  history.forEach((h, idx) => {
+    const kwh = Number(h.kwh) || 0;
+    const peakW = Number(h.peak_power_w) || Number(h.avg_power_w) || 0;
+    const avgW = Number(h.avg_power_w) || 0;
+    const isZero = kwh <= 0.0001;
+    const barH = isZero ? 2 : Math.max(3, (kwh / maxKwh) * plotH);
+    const x = padL + idx * barSlotW + (barSlotW - barW) / 2;
+    const y = padT + plotH - barH;
+    const cost = (kwh * rate).toFixed(3);
+
+    const px = padL + idx * barSlotW + barSlotW / 2;
+    const py = padT + plotH - (peakW / maxPwr) * plotH;
+    peakPoints.push(`${px},${py}`);
+
+    const showLabel = count <= 12 || idx % Math.ceil(count / 10) === 0 || idx === count - 1;
+
+    barsHtml += `
+      <g class="energy-bar-group">
+        <rect class="energy-bar" x="${x}" y="${y}" width="${barW}" height="${barH}" rx="2" fill="${isZero ? 'rgba(56, 189, 248, 0.2)' : 'url(#energyBarGrad)'}" opacity="${isZero ? '0.35' : '1.0'}">
+          <title>${h.label} (${h.time_slot}) | ${isZero ? '0.000 kWh' : kwh + ' kWh'} | Mean: ${avgW}W | Peak: ${peakW}W | Est: ${curr}${cost}</title>
+        </rect>
+        ${showLabel ? `<text x="${px}" y="${chartH - 12}" text-anchor="middle" font-size="9.5" fill="#94a3b8" font-family="sans-serif">${h.label}</text>` : ''}
+      </g>
+    `;
+  });
+
+  const peakPolyline = peakPoints.length > 1
+    ? `<polyline points="${peakPoints.join(' ')}" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.85" />`
+    : '';
+
+  return `
+    <svg viewBox="0 0 ${chartW} ${chartH}" width="100%" height="100%" style="overflow: visible; display: block;">
+      <defs>
+        <linearGradient id="energyBarGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#38bdf8" />
+          <stop offset="100%" stop-color="#0284c7" />
+        </linearGradient>
+      </defs>
+      ${gridLines}
+      ${barsHtml}
+      ${peakPolyline}
+    </svg>
+  `;
+}
+
+function renderEnergyHistoryTableHtml(history, summary) {
+  if (!history || history.length === 0) {
+    return `<div style="text-align: center; padding: 20px; color: var(--text-muted);">No historical records found for this period.</div>`;
+  }
+  const s = summary?.settings || { tariff_rate: 0.15, currency: '$' };
+  const curr = s.currency || '$';
+  const rate = s.tariff_rate || 0.15;
+
+  let totalKwh = 0;
+  let maxPeakW = 0;
+  let sumPower = 0;
+  let powerCount = 0;
+  let sumVolt = 0;
+  let voltCount = 0;
+
+  for (const h of history) {
+    const k = Number(h.kwh) || 0;
+    totalKwh += k;
+    const p = Number(h.peak_power_w) || 0;
+    if (p > maxPeakW) maxPeakW = p;
+    const avgP = Number(h.avg_power_w) || 0;
+    if (avgP > 0) {
+      sumPower += avgP;
+      powerCount++;
+    }
+    const avgV = Number(h.avg_voltage_v) || 0;
+    if (avgV > 0) {
+      sumVolt += avgV;
+      voltCount++;
+    }
+  }
+
+  const meanPower = powerCount > 0 ? (sumPower / powerCount).toFixed(1) : 0;
+  const meanVolt = voltCount > 0 ? (sumVolt / voltCount).toFixed(1) : 0;
+  const totalCost = (totalKwh * rate).toFixed(2);
+
+  return `
+    <div style="overflow-x: auto;">
+      <table class="table" style="width: 100%; border-collapse: collapse; font-size: 12px;">
+        <thead>
+          <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); color: var(--text-secondary); text-align: left;">
+            <th style="padding: 8px 10px;">Time / Period</th>
+            <th style="padding: 8px 10px;">Energy (kWh)</th>
+            <th style="padding: 8px 10px;">Est. Cost (${curr})</th>
+            <th style="padding: 8px 10px;">Mean Power (W)</th>
+            <th style="padding: 8px 10px;">Peak Demand (W)</th>
+            <th style="padding: 8px 10px;">Mean Voltage (V)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${history.slice().reverse().map(h => {
+            const kwh = Number(h.kwh) || 0;
+            const cost = (kwh * rate).toFixed(3);
+            const isZero = kwh <= 0.0001;
+            return `
+              <tr style="border-bottom: 1px solid rgba(255,255,255,0.04); ${isZero ? 'opacity: 0.65;' : ''}">
+                <td style="padding: 8px 10px; font-weight: 600; color: #ffffff;">${escapeHtml(h.time_slot || h.label)}</td>
+                <td style="padding: 8px 10px; font-family: monospace; color: #38bdf8; font-weight: 700;">${isZero ? '0.000' : kwh.toFixed(3)} kWh</td>
+                <td style="padding: 8px 10px; font-family: monospace; color: #10b981;">${curr}${cost}</td>
+                <td style="padding: 8px 10px; font-family: monospace;">${h.avg_power_w > 0 ? h.avg_power_w + ' W' : '—'}</td>
+                <td style="padding: 8px 10px; font-family: monospace; color: #f59e0b; font-weight: 600;">${h.peak_power_w > 0 ? h.peak_power_w + ' W' : '—'}</td>
+                <td style="padding: 8px 10px; font-family: monospace;">${h.avg_voltage_v > 0 ? h.avg_voltage_v + ' V' : '—'}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+        <tfoot>
+          <tr style="background: rgba(56, 189, 248, 0.08); border-top: 1px solid rgba(56, 189, 248, 0.3); font-weight: 700; color: #f8fafc;">
+            <td style="padding: 10px; color: #38bdf8;">Total & Period Mean</td>
+            <td style="padding: 10px; font-family: monospace; color: #38bdf8;">${totalKwh.toFixed(3)} kWh</td>
+            <td style="padding: 10px; font-family: monospace; color: #10b981;">${curr}${totalCost}</td>
+            <td style="padding: 10px; font-family: monospace;">${meanPower} W</td>
+            <td style="padding: 10px; font-family: monospace; color: #f59e0b;">${maxPeakW} W</td>
+            <td style="padding: 10px; font-family: monospace;">${meanVolt} V</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  `;
+}
+
+async function loadEnergyAnalyticsData() {
+  try {
+    const [summaryRes, historyRes] = await Promise.all([
+      fetch(`${API_BASE}/analytics/energy/summary`),
+      fetch(`${API_BASE}/analytics/energy/history?range=${energyRange}`)
+    ]);
+    const summaryData = await summaryRes.json();
+    const historyData = await historyRes.json();
+
+    if (summaryData.success) {
+      energySummaryData = summaryData.summary;
+    }
+    if (historyData.success) {
+      energyHistoryData = historyData.history || [];
+    }
+
+    const kpiEl = document.getElementById('energy-kpi-cards');
+    if (kpiEl) kpiEl.innerHTML = renderEnergyKpiCardsHtml(energySummaryData);
+
+    const chartEl = document.getElementById('energy-chart-viewport');
+    if (chartEl) chartEl.innerHTML = renderEnergyChart(energyHistoryData, energySummaryData, energyRange);
+
+    const tableEl = document.getElementById('energy-history-table-container');
+    if (tableEl) tableEl.innerHTML = renderEnergyHistoryTableHtml(energyHistoryData, energySummaryData);
+
+    const tariffBtn = document.getElementById('energy-tariff-btn');
+    if (tariffBtn && energySummaryData?.settings) {
+      tariffBtn.innerHTML = `⚙️ Tariff (${energySummaryData.settings.currency || '₹'}${energySummaryData.settings.tariff_rate}/kWh)`;
+    }
+  } catch (err) {
+    console.error('Failed to load energy analytics:', err);
+  }
+}
+
+function changeEnergyRange(range) {
+  energyRange = range;
+  document.querySelectorAll('.energy-range-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.toLowerCase().includes(range));
+  });
+  const chartTitle = document.getElementById('energy-chart-title');
+  if (chartTitle) {
+    chartTitle.textContent = `📊 Energy Consumption Profile (${range === '24h' ? 'Last 24 Hours' : range === '7d' ? 'Last 7 Days' : 'Last 30 Days'})`;
+  }
+  loadEnergyAnalyticsData();
+}
+
+function openTariffSettingsModal() {
+  const s = energySummaryData?.settings || { tariff_rate: 0.15, currency: '$', monthly_budget: 50 };
+  const modalContainer = document.getElementById("app-modal-container");
+  if (!modalContainer) return;
+
+  modalContainer.innerHTML = `
+    <div class="modal-backdrop" onclick="closeAppModal()">
+      <div class="modal-card" style="max-width: 440px;" onclick="event.stopPropagation()">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+          <h3 style="margin: 0; font-size: 16px; color: #f8fafc; display: flex; align-items: center; gap: 8px;">
+            <span>⚙️</span> Electricity Tariff & Budget
+          </h3>
+          <button class="btn btn-secondary" onclick="closeAppModal()" style="padding: 2px 8px; font-size: 12px;">✕</button>
+        </div>
+
+        <form onsubmit="handleSaveTariffSettings(event)">
+          <div class="form-group" style="margin-bottom: 14px;">
+            <label class="form-label">Currency Symbol</label>
+            <input type="text" id="tariff-currency" class="input" value="${escapeHtml(s.currency || '$')}" maxlength="4" required style="width: 100%;">
+            <small style="color: var(--text-secondary); font-size: 11px;">e.g. $, ₹, €, £</small>
+          </div>
+
+          <div class="form-group" style="margin-bottom: 14px;">
+            <label class="form-label">Electricity Rate (per kWh)</label>
+            <input type="number" step="0.001" id="tariff-rate" class="input" value="${s.tariff_rate || 0.15}" required style="width: 100%;">
+            <small style="color: var(--text-secondary); font-size: 11px;">Used to calculate daily and monthly electricity cost</small>
+          </div>
+
+          <div class="form-group" style="margin-bottom: 18px;">
+            <label class="form-label">Monthly Electricity Budget</label>
+            <input type="number" step="1" id="tariff-budget" class="input" value="${s.monthly_budget || 50}" required style="width: 100%;">
+            <small style="color: var(--text-secondary); font-size: 11px;">Target monthly spending ceiling</small>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; gap: 10px;">
+            <button type="button" class="btn btn-secondary" onclick="closeAppModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+async function handleSaveTariffSettings(e) {
+  e.preventDefault();
+  const currency = document.getElementById('tariff-currency').value.trim() || '$';
+  const tariff_rate = parseFloat(document.getElementById('tariff-rate').value) || 0.15;
+  const monthly_budget = parseFloat(document.getElementById('tariff-budget').value) || 50;
+
+  try {
+    const res = await fetch(`${API_BASE}/analytics/energy/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currency, tariff_rate, monthly_budget })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('Electricity tariff settings saved successfully', 'success', 'ENERGY', 'Tariff Updated');
+      closeAppModal();
+      loadEnergyAnalyticsData();
+    } else {
+      alert('Error: ' + data.error);
+    }
+  } catch (err) {
+    alert('Error saving tariff settings: ' + err.message);
+  }
+}
+
 
 function updateBreakerDom(data) {
   latestBreakerData = data;

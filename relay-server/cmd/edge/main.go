@@ -18,17 +18,25 @@ import (
 	"smarthome-edge/internal/state"
 	"smarthome-edge/internal/syncer"
 	"smarthome-edge/internal/tcp"
+	"smarthome-edge/internal/version"
 	"smarthome-edge/internal/websocket"
 )
 
-const version = "1.0.0-edge"
-
 func main() {
 	configPath := flag.String("config", "./config/config.json", "Path to config.json")
+	showVer := flag.Bool("version", false, "Print server version and exit")
 	flag.Parse()
 
+	if *showVer {
+		fmt.Printf("SmartHome Edge Relay Server v%s (Build: %s, Commit: %s)\n", version.Version, version.BuildTime, version.GitCommit)
+		return
+	}
+
 	log.Println(stringsRepeat("=", 70))
-	log.Printf(" [SmartHome Edge] Go Edge Broker v%s", version)
+	log.Printf(" [SmartHome Edge] Production Go Edge Broker v%s", version.Version)
+	if version.BuildTime != "" {
+		log.Printf(" Build Time: %s | Commit: %s", version.BuildTime, version.GitCommit)
+	}
 	log.Println(" Optimized for MediaTek MT7986A Filogic 830 (Jio AX6000 OpenWrt)")
 	log.Println(stringsRepeat("=", 70))
 
@@ -70,6 +78,7 @@ func main() {
 	})
 
 	centralSyncer := syncer.NewCentralSyncer(cfg, stateMgr, spool, cacheFile)
+	centralSyncer.SetDB(database)
 	centralSyncer.Start()
 
 	// 3. Start TCP Gateway (Port 2000 / 2001)
@@ -95,6 +104,22 @@ func main() {
 			log.Fatalf("[HTTP API] Server error: %v", err)
 		}
 	}()
+
+	// 4b. Optional HTTPS & TLS Termination (Port 9443 - Task RS-F3)
+	if cfg.Server.HTTPSListen != "" && cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "" {
+		if _, errCert := os.Stat(cfg.Server.TLSCertFile); errCert == nil {
+			httpsServer := &http.Server{
+				Addr:    cfg.Server.HTTPSListen,
+				Handler: httpRouter,
+			}
+			go func() {
+				log.Printf("[HTTPS API] Listening on https://%s (TLS Active)", cfg.Server.HTTPSListen)
+				if err := httpsServer.ListenAndServeTLS(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile); err != nil && err != http.ErrServerClosed {
+					log.Printf("[HTTPS API] TLS Listener stopped: %v", err)
+				}
+			}()
+		}
+	}
 
 	// 5. Start Metrics Listener (Port 9201 - Localhost only)
 	if cfg.Server.MetricsListen != "" {
