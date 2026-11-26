@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"smarthome-edge/internal/auth"
@@ -20,8 +22,69 @@ import (
 	"smarthome-edge/internal/queue"
 	"smarthome-edge/internal/state"
 	"smarthome-edge/internal/syncer"
+	"smarthome-edge/internal/version"
 	"smarthome-edge/internal/websocket"
 )
+
+type IPRateLimiter struct {
+	mu       sync.Mutex
+	attempts map[string][]time.Time
+	limit    int
+	window   time.Duration
+}
+
+func NewIPRateLimiter(limit int, window time.Duration) *IPRateLimiter {
+	return &IPRateLimiter{
+		attempts: make(map[string][]time.Time),
+		limit:    limit,
+		window:   window,
+	}
+}
+
+func (l *IPRateLimiter) Allow(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-l.window)
+
+	var valid []time.Time
+	for _, t := range l.attempts[ip] {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	l.attempts[ip] = valid
+
+	return len(valid) < l.limit
+}
+
+func (l *IPRateLimiter) RecordFail(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attempts[ip] = append(l.attempts[ip], time.Now())
+}
+
+func (l *IPRateLimiter) Reset(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.attempts, ip)
+}
+
+func getClientIP(r *http.Request) string {
+	if f := r.Header.Get("X-Forwarded-For"); f != "" {
+		parts := strings.Split(f, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
+		return strings.TrimSpace(realIP)
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
 
 type Router struct {
 	cfg       *config.Config
@@ -31,6 +94,7 @@ type Router struct {
 	syncer    *syncer.CentralSyncer
 	spool     *queue.EventSpool
 	database  *db.DB
+	limiter   *IPRateLimiter
 	startTime time.Time
 	webDir    string
 }
@@ -45,7 +109,7 @@ func NewRouter(
 	webDir string,
 	database *db.DB,
 ) *Router {
-	return &Router{
+	rt := &Router{
 		cfg:       cfg,
 		sm:        sm,
 		auth:      auth,
@@ -53,9 +117,37 @@ func NewRouter(
 		syncer:    syncer,
 		spool:     spool,
 		database:  database,
+		limiter:   NewIPRateLimiter(10, 1*time.Minute), // 10 attempts per minute
 		startTime: time.Now(),
 		webDir:    webDir,
 	}
+
+	// Start background energy consumption sampler
+	if database != nil {
+		go func() {
+			ticker := time.NewTicker(20 * time.Second)
+			for range ticker.C {
+				b := sm.GetBreaker()
+				dec := b.Reading.Decoded
+				if dec.VoltageV > 0 || dec.PowerW > 0 || dec.TotalEnergyKWh > 0 {
+					_, _, _ = database.RecordEnergySnapshot(map[string]any{
+						"nodeId":             cfg.Breaker.NodeID,
+						"source":             "tuya_breaker",
+						"voltage_v":          dec.VoltageV,
+						"current_a":          dec.CurrentA,
+						"power_w":            dec.PowerW,
+						"power_factor":       dec.PowerFactor,
+						"frequency_hz":       dec.FrequencyHz,
+						"total_energy_kwh":   dec.TotalEnergyKWh,
+						"leakage_current_ma": dec.LeakageCurrentMA,
+						"temperature_c":      dec.TemperatureC,
+					})
+				}
+			}
+		}()
+	}
+
+	return rt
 }
 
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +226,14 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Authentication Routes (Public)
 	if path == "/api/v1/auth/login" && r.Method == http.MethodPost {
+		clientIP := getClientIP(r)
+		if rt.limiter != nil && !rt.limiter.Allow(clientIP) {
+			sendJSON(w, http.StatusTooManyRequests, map[string]interface{}{
+				"success": false,
+				"error":   "Too many login attempts. Please wait 1 minute before retrying.",
+			})
+			return
+		}
 		var loginReq struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
@@ -149,29 +249,41 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if rt.database != nil {
-			if u, err := rt.database.AuthenticateUser(user, pass); err == nil {
-				token, _ := rt.database.CreateSession(u.ID, r.RemoteAddr, r.UserAgent())
-				if token == "" {
-					token, _ = rt.auth.GenerateUserToken(u.Username, "super_admin")
+			u, err := rt.database.AuthenticateUser(user, pass)
+			if err != nil {
+				if rt.limiter != nil {
+					rt.limiter.RecordFail(clientIP)
 				}
-				w.Header().Set("Set-Cookie", fmt.Sprintf("session=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000", token))
-				sendJSON(w, http.StatusOK, map[string]interface{}{
-					"success": true,
-					"token":   token,
-					"user": map[string]interface{}{
-						"id":             fmt.Sprintf("usr-%d", u.ID),
-						"username":       u.Username,
-						"full_name":      u.FullName,
-						"email":          u.Email,
-						"role":           "super_admin",
-						"roles":          u.Roles,
-						"permissions":    []string{"*"},
-						"is_superuser":   u.IsSuperuser,
-						"assigned_nodes": []string{"*"},
-					},
+				sendJSON(w, http.StatusUnauthorized, map[string]interface{}{
+					"success": false,
+					"error":   "Invalid username or password",
 				})
 				return
 			}
+			if rt.limiter != nil {
+				rt.limiter.Reset(clientIP)
+			}
+			token, _ := rt.database.CreateSession(u.ID, r.RemoteAddr, r.UserAgent())
+			if token == "" {
+				token, _ = rt.auth.GenerateUserToken(u.Username, "super_admin")
+			}
+			w.Header().Set("Set-Cookie", fmt.Sprintf("session=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000", token))
+			sendJSON(w, http.StatusOK, map[string]interface{}{
+				"success": true,
+				"token":   token,
+				"user": map[string]interface{}{
+					"id":             fmt.Sprintf("usr-%d", u.ID),
+					"username":       u.Username,
+					"full_name":      u.FullName,
+					"email":          u.Email,
+					"role":           "super_admin",
+					"roles":          u.Roles,
+					"permissions":    []string{"*"},
+					"is_superuser":   u.IsSuperuser,
+					"assigned_nodes": []string{"*"},
+				},
+			})
+			return
 		}
 
 		// Fallback token if db password mismatch or db not ready
@@ -230,6 +342,14 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	// 3b. Dedicated Mobile LAN/WAN Endpoints
 	if path == "/api/v1/mobile/login" && r.Method == http.MethodPost {
+		clientIP := getClientIP(r)
+		if rt.limiter != nil && !rt.limiter.Allow(clientIP) {
+			sendJSON(w, http.StatusTooManyRequests, map[string]interface{}{
+				"success": false,
+				"error":   "Too many mobile login attempts. Please wait 1 minute before retrying.",
+			})
+			return
+		}
 		var loginReq struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
@@ -239,27 +359,43 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 		if user == "" {
 			user = "admin"
 		}
-
-		token, err := rt.auth.GenerateUserToken(user, "mobile_admin")
-		if err != nil {
-			token = "mobile_token_" + fmt.Sprint(time.Now().Unix())
+		pass := loginReq.Password
+		if pass == "" {
+			pass = "admin123"
 		}
 
-		sendJSON(w, http.StatusOK, map[string]interface{}{
-			"success": true,
-			"token":   token,
-			"user": map[string]interface{}{
-				"id":       "usr-mobile",
-				"username": user,
-				"role":     "mobile_admin",
-			},
-			"server": map[string]interface{}{
-				"name":          "SmartHome Go Edge Gateway",
-				"version":       "1.0.0-edge",
-				"centralOnline": rt.syncer.IsCentralOnline(),
-			},
-		})
-		return
+		if rt.database != nil {
+			u, err := rt.database.AuthenticateUser(user, pass)
+			if err != nil {
+				if rt.limiter != nil {
+					rt.limiter.RecordFail(clientIP)
+				}
+				sendJSON(w, http.StatusUnauthorized, map[string]interface{}{
+					"success": false,
+					"error":   "Invalid mobile credentials",
+				})
+				return
+			}
+			if rt.limiter != nil {
+				rt.limiter.Reset(clientIP)
+			}
+			token, _ := rt.auth.GenerateUserToken(u.Username, "mobile_admin")
+			sendJSON(w, http.StatusOK, map[string]interface{}{
+				"success": true,
+				"token":   token,
+				"user": map[string]interface{}{
+					"id":       fmt.Sprintf("usr-%d", u.ID),
+					"username": u.Username,
+					"role":     "mobile_admin",
+				},
+				"server": map[string]interface{}{
+					"name":          "SmartHome Go Edge Gateway",
+					"version":       version.Version,
+					"centralOnline": rt.syncer.IsCentralOnline(),
+				},
+			})
+			return
+		}
 	}
 
 	if path == "/api/v1/mobile/status" && r.Method == http.MethodGet {
@@ -658,7 +794,7 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 				"bind_host": rt.cfg.Server.HTTPListen,
 				"http_port": 9200,
 				"tcp_port":  2000,
-				"version":   "1.0.0-edge",
+				"version":   version.Version,
 			},
 			"mqtt": map[string]interface{}{
 				"enabled": false,
@@ -764,7 +900,7 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 		sendJSON(w, http.StatusOK, map[string]interface{}{
 			"server":        "SmartHome Edge Relay Server (Go Native ARM64/AMD64)",
-			"version":       "1.0.0-edge",
+			"version":       version.Version,
 			"uptimeSec":     int64(time.Since(rt.startTime).Seconds()),
 			"centralServer": rt.cfg.Central.URL,
 			"centralOnline": rt.syncer.IsCentralOnline(),
@@ -937,6 +1073,10 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 	// 11. Circuit Breaker Telemetry & Control
 	if (path == "/api/v1/breaker" || path == "/api/v1/breaker/status" || path == "/api/breaker/status") && r.Method == http.MethodGet {
 		b := rt.sm.GetBreaker()
+		var energySummary interface{}
+		if rt.database != nil {
+			energySummary = rt.database.GetEnergySummary(rt.cfg.Breaker.NodeID)
+		}
 		sendJSON(w, http.StatusOK, map[string]interface{}{
 			"success":       true,
 			"nodeId":        rt.cfg.Breaker.NodeID,
@@ -944,6 +1084,7 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 			"portalUrl":     "http://127.0.0.1:8085",
 			"config":        b.Config,
 			"reading":       b.Reading,
+			"energySummary": energySummary,
 			"centralOnline": rt.syncer.IsCentralOnline(),
 		})
 		return
@@ -1093,6 +1234,106 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	if path == "/api/v1/breaker/serial-clear" && r.Method == http.MethodPost {
 		sendJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+		return
+	}
+
+	// 11b. Energy Consumption & Power Analytics Endpoints (P3 / Task RS-F6)
+	if path == "/api/v1/analytics/energy/summary" && r.Method == http.MethodGet {
+		nodeID := r.URL.Query().Get("node_id")
+		if rt.database != nil {
+			summary := rt.database.GetEnergySummary(nodeID)
+			sendJSON(w, http.StatusOK, map[string]interface{}{"success": true, "summary": summary})
+			return
+		}
+		sendJSON(w, http.StatusOK, map[string]interface{}{
+			"success": true,
+			"summary": map[string]interface{}{
+				"settings": map[string]interface{}{"tariff_rate": 0.15, "currency": "$", "monthly_budget": 50.0},
+			},
+		})
+		return
+	}
+
+	if path == "/api/v1/analytics/energy/history" && r.Method == http.MethodGet {
+		rangeParam := r.URL.Query().Get("range")
+		if rangeParam == "" {
+			rangeParam = "24h"
+		}
+		nodeID := r.URL.Query().Get("node_id")
+		if rt.database != nil {
+			history := rt.database.GetEnergyHistory(rangeParam, nodeID)
+			summary := rt.database.GetEnergySummary(nodeID)
+			sendJSON(w, http.StatusOK, map[string]interface{}{
+				"success": true,
+				"range":   rangeParam,
+				"history": history,
+				"summary": summary,
+			})
+			return
+		}
+		sendJSON(w, http.StatusOK, map[string]interface{}{
+			"success": true,
+			"range":   rangeParam,
+			"history": []interface{}{},
+			"summary": map[string]interface{}{},
+		})
+		return
+	}
+
+	if path == "/api/v1/analytics/energy/settings" && r.Method == http.MethodPost {
+		var req map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			sendJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "error": "Invalid request body"})
+			return
+		}
+		if rt.database != nil {
+			updated, err := rt.database.UpdateEnergySettings(req)
+			if err != nil {
+				sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"success": false, "error": err.Error()})
+				return
+			}
+			sendJSON(w, http.StatusOK, map[string]interface{}{"success": true, "settings": updated})
+			return
+		}
+		sendJSON(w, http.StatusOK, map[string]interface{}{"success": true, "settings": req})
+		return
+	}
+
+	// 11c. OpenWrt Procd Watchdog & Health Endpoints (P3 / Task RS-F1)
+	if (path == "/api/health/watchdog" || path == "/api/v1/system/watchdog") && r.Method == http.MethodGet {
+		dbStatus := "disabled"
+		if rt.database != nil {
+			if err := rt.database.Ping(); err != nil {
+				dbStatus = "error: " + err.Error()
+			} else {
+				dbStatus = "ok"
+			}
+		}
+
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		goroutines := runtime.NumGoroutine()
+		uptimeSec := int(time.Since(rt.startTime).Seconds())
+		nodesCount := len(rt.sm.GetAllNodes())
+
+		statusCode := http.StatusOK
+		statusStr := "healthy"
+		if dbStatus != "ok" && dbStatus != "disabled" {
+			statusCode = http.StatusServiceUnavailable
+			statusStr = "degraded"
+		}
+
+		sendJSON(w, statusCode, map[string]interface{}{
+			"status":        statusStr,
+			"uptime_sec":    uptimeSec,
+			"goroutines":    goroutines,
+			"alloc_mb":      float64(m.Alloc) / 1024 / 1024,
+			"sys_mb":        float64(m.Sys) / 1024 / 1024,
+			"nodes_tracked": nodesCount,
+			"database":      dbStatus,
+			"version":       version.Version,
+			"server_mode":   "edge_relay",
+		})
 		return
 	}
 
@@ -1554,224 +1795,103 @@ func (rt *Router) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 18. Firmware & OTA Routes
+	// 18. Firmware Catalog & Upload/Download/Delete
 	if path == "/api/v1/firmware" && r.Method == http.MethodGet {
-		catalog := []map[string]interface{}{
-			{
-				"id":              1,
-				"version":         "1.6.0",
-				"filename":        "firmware-esp8266-v1.6.0.bin",
-				"hardware_type":   "ESP8266",
-				"release_channel": "LTS",
-				"file_size_bytes": 482000,
-				"is_active":       1,
-				"created_at":      "2026-11-26 00:00:00",
-			},
-			{
-				"id":              2,
-				"version":         "1.6.0",
-				"filename":        "firmware-esp01-v1.6.0.bin",
-				"hardware_type":   "ESP-01",
-				"release_channel": "LTS",
-				"file_size_bytes": 335000,
-				"is_active":       1,
-				"created_at":      "2026-11-26 00:00:00",
-			},
+		rt.handleFirmwareList(w, r)
+		return
+	}
+
+	if (path == "/api/v1/firmware/upload" || path == "/api/v1/firmware") && r.Method == http.MethodPost {
+		rt.handleFirmwareUpload(w, r)
+		return
+	}
+
+	if strings.HasPrefix(path, "/api/v1/firmware/download/") && r.Method == http.MethodGet {
+		idStr := strings.TrimPrefix(path, "/api/v1/firmware/download/")
+		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+			rt.handleFirmwareDownload(w, r, id)
+			return
 		}
-		sendJSON(w, http.StatusOK, catalog)
+	}
+
+	if strings.HasPrefix(path, "/api/v1/firmware/") && strings.HasSuffix(path, "/download") && r.Method == http.MethodGet {
+		idStr := strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/firmware/"), "/download")
+		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+			rt.handleFirmwareDownload(w, r, id)
+			return
+		}
+	}
+
+	if strings.HasPrefix(path, "/api/v1/firmware/") && r.Method == http.MethodDelete {
+		idStr := strings.TrimPrefix(path, "/api/v1/firmware/")
+		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+			rt.handleFirmwareDelete(w, r, id)
+			return
+		}
+	}
+
+	// 19. OTA Diagnostics & Pre-Check
+	if (strings.HasPrefix(path, "/api/v1/ota/node-diagnostics/") || strings.HasPrefix(path, "/api/v1/ota/diagnostics/")) && r.Method == http.MethodGet {
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		nodeID := parts[len(parts)-1]
+		rt.handleOtaNodeDiagnostics(w, r, nodeID)
 		return
 	}
 
 	if (path == "/api/v1/ota/pre-check" || path == "/api/v1/ota/precheck") && r.Method == http.MethodPost {
-		var req struct {
-			NodeID     string `json:"nodeId"`
-			FirmwareID int    `json:"firmwareId"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-
-		freeSketch := 1400000
-		fwSize := 482000
-		if req.FirmwareID == 2 {
-			freeSketch = 480000
-			fwSize = 335000
-		}
-
-		sendJSON(w, http.StatusOK, map[string]interface{}{
-			"canProceed":      true,
-			"requiresWarning": false,
-			"versionType":     "SAME",
-			"currentVersion":  "1.6.0",
-			"targetVersion":   "1.6.0",
-			"releaseChannel":  "LTS",
-			"hardwareTarget":  "ESP8266",
-			"fileSizeBytes":   fwSize,
-			"checksumMd5":     "d41d8cd98f00b204e9800998ecf8427e",
-			"checksumSha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-			"diagnostics": map[string]interface{}{
-				"flashGeometry": map[string]interface{}{
-					"freeSketchSpace": freeSketch,
-					"sketchSize":      fwSize,
-					"flashSize":       4194304,
-				},
-				"memory": map[string]interface{}{
-					"freeHeap":        28450,
-					"maxFreeBlock":    24000,
-					"heapFragPercent": 14,
-				},
-				"network": map[string]interface{}{
-					"mac":       "30:48:7D:E8:5D:5C",
-					"rssi":      -45,
-					"uptimeSec": 360,
-					"bootCount": 1,
-				},
-			},
-			"checks": []map[string]interface{}{
-				{
-					"id":      "node_connectivity",
-					"title":   "Target Node Reachable",
-					"status":  "PASS",
-					"details": "Node responding over LAN (12ms latency)",
-				},
-				{
-					"id":      "magic_byte",
-					"title":   "ESP8266 Binary Signature",
-					"status":  "PASS",
-					"details": "Magic byte 0xE9 verified (Valid ESP8266 ROM flash binary)",
-				},
-				{
-					"id":      "flash_barrier",
-					"title":   "Flash Partition Fit",
-					"status":  "PASS",
-					"details": "Binary fits safely within flash partition with margin",
-				},
-			},
-		})
+		rt.handleOtaPreCheck(w, r)
 		return
 	}
 
-	if (strings.HasPrefix(path, "/api/v1/ota/node-diagnostics/") || strings.HasPrefix(path, "/api/v1/ota/diagnostics/")) && r.Method == http.MethodGet {
+	// 20. OTA Backups & Restore
+	if path == "/api/v1/ota/backups" && r.Method == http.MethodGet {
+		rt.handleOtaBackupsList(w, r)
+		return
+	}
+
+	if strings.HasPrefix(path, "/api/v1/ota/backup/") && r.Method == http.MethodPost {
 		parts := strings.Split(strings.Trim(path, "/"), "/")
 		nodeID := parts[len(parts)-1]
-		node, ok := rt.sm.GetNode(nodeID)
-		if !ok && rt.database != nil {
-			if allNodes, err := rt.database.GetAllNodes(); err == nil {
-				for _, n := range allNodes {
-					if n.NodeID == nodeID {
-						node = &state.Node{
-							NodeID:          n.NodeID,
-							NodeName:        n.Name,
-							IP:              n.IPAddress,
-							MAC:             n.MacAddress,
-							IsOnline:        n.IsOnline,
-							RSSI:            n.RSSI,
-							FirmwareVersion: n.FirmwareVersion,
-						}
-						ok = true
-						break
-					}
-				}
-			}
-		}
-		if !ok {
-			node = &state.Node{
-				NodeID:          nodeID,
-				NodeName:        nodeID,
-				IP:              "192.168.1.26",
-				IsOnline:        false,
-				RSSI:            -55,
-				FirmwareVersion: "1.6.0",
-			}
-		}
-
-		mac := node.MAC
-		if mac == "" {
-			mac = "30:48:7D:E8:5D:5C"
-			if strings.HasPrefix(node.NodeID, "NODE-") {
-				rawMac := strings.TrimPrefix(node.NodeID, "NODE-")
-				if len(rawMac) == 12 {
-					mac = fmt.Sprintf("%s:%s:%s:%s:%s:%s", rawMac[0:2], rawMac[2:4], rawMac[4:6], rawMac[6:8], rawMac[8:10], rawMac[10:12])
-				}
-			}
-		}
-
-		isOneMb := strings.Contains(strings.ToUpper(node.NodeID), "ESP-01") || strings.Contains(strings.ToUpper(node.NodeName), "ESP-01")
-		flashTotal := 4194304
-		sketchSize := 480000
-		freeSketch := 1400000
-		if isOneMb {
-			flashTotal = 1048576
-			sketchSize = 335000
-			freeSketch = 480000
-		}
-		freeHeap := int64(29480)
-		if node.FreeHeap > 0 {
-			freeHeap = node.FreeHeap
-		}
-
-		hwType := "ESP8266 (ESP-12E/F)"
-		if isOneMb {
-			hwType = "ESP-01 (1MB)"
-		}
-
-		diag := map[string]interface{}{
-			"nodeId":          node.NodeID,
-			"nodeName":        node.NodeName,
-			"ip":              node.IP,
-			"online":          node.IsOnline,
-			"rttMs":           12,
-			"firmwareVersion": node.FirmwareVersion,
-			"hardware":        hwType,
-			"coreVersion":     "3.1.2",
-			"sdkVersion":      "2.2.2",
-			"network": map[string]interface{}{
-				"mac":       mac,
-				"rssi":      node.RSSI,
-				"wifiMode":  1,
-				"uptimeSec": node.UptimeSec,
-				"bootCount": 1,
-			},
-			"flashGeometry": map[string]interface{}{
-				"flashSize":         flashTotal,
-				"flashConfigSize":   flashTotal,
-				"sketchSize":        sketchSize,
-				"freeSketchSpace":   freeSketch,
-				"sketchPercent":     (sketchSize * 100) / flashTotal,
-				"freeSpaceMarginKb": freeSketch / 1024,
-			},
-			"memory": map[string]interface{}{
-				"freeHeap":        freeHeap,
-				"minFreeHeap":     freeHeap - 2000,
-				"maxFreeBlock":    freeHeap - 4000,
-				"heapFragPercent": 14,
-				"healthyForOta":   true,
-			},
-			"filesystem": map[string]interface{}{
-				"fsTotal":   2097152,
-				"fsUsed":    124000,
-				"fsFree":    1973152,
-				"fsPercent": 6,
-			},
-			"channels": node.Channels,
-		}
-		sendJSON(w, http.StatusOK, diag)
+		rt.handleOtaBackupNode(w, r, nodeID)
 		return
 	}
 
-	if path == "/api/v1/ota/history"  && r.Method == http.MethodGet {
-		sendJSON(w, http.StatusOK, []interface{}{})
-		return
+	if strings.HasPrefix(path, "/api/v1/ota/backups/") && strings.HasSuffix(path, "/download") && r.Method == http.MethodGet {
+		idStr := strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/ota/backups/"), "/download")
+		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+			rt.handleOtaBackupDownload(w, r, id)
+			return
+		}
 	}
 
-	if path == "/api/v1/ota/backups" && r.Method == http.MethodGet {
-		sendJSON(w, http.StatusOK, []interface{}{})
-		return
+	if strings.HasPrefix(path, "/api/v1/ota/backups/") && strings.Contains(path, "/restore/") && r.Method == http.MethodPost {
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) >= 7 {
+			backupID, err := strconv.ParseInt(parts[4], 10, 64)
+			nodeID := parts[6]
+			if err == nil {
+				rt.handleOtaBackupRestore(w, r, backupID, nodeID)
+				return
+			}
+		}
 	}
 
+	if strings.HasPrefix(path, "/api/v1/ota/backups/") && r.Method == http.MethodDelete {
+		idStr := strings.TrimPrefix(path, "/api/v1/ota/backups/")
+		if id, err := strconv.ParseInt(idStr, 10, 64); err == nil {
+			rt.handleOtaBackupDelete(w, r, id)
+			return
+		}
+	}
+
+	// 21. OTA Deploy & History
 	if path == "/api/v1/ota/deploy" && r.Method == http.MethodPost {
-		sendJSON(w, http.StatusOK, map[string]interface{}{
-			"success": true,
-			"message": "OTA deployment started",
-		})
+		rt.handleOtaDeploy(w, r)
+		return
+	}
+
+	if path == "/api/v1/ota/history" && r.Method == http.MethodGet {
+		rt.handleOtaHistory(w, r)
 		return
 	}
 
@@ -2098,7 +2218,7 @@ func (rt *Router) handleStatic(w http.ResponseWriter, r *http.Request) {
 }
 
 func sendJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
 }

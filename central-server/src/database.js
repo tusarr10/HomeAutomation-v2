@@ -533,6 +533,37 @@ class FleetDatabase {
       )
     `);
 
+    // 35. Energy & Power History Table (Long-Term Hourly/Daily Consumption & Snapshots)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS energy_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT DEFAULT (datetime('now', 'localtime')),
+        node_id TEXT NOT NULL,
+        source TEXT DEFAULT 'tuya_breaker',
+        voltage_v REAL DEFAULT 0,
+        current_a REAL DEFAULT 0,
+        power_w REAL DEFAULT 0,
+        power_factor REAL DEFAULT 1.0,
+        frequency_hz REAL DEFAULT 50.0,
+        total_energy_kwh REAL DEFAULT 0,
+        delta_energy_kwh REAL DEFAULT 0,
+        leakage_current_ma REAL DEFAULT 0,
+        temperature_c REAL DEFAULT 0,
+        interval_type TEXT DEFAULT 'raw'
+      );
+      CREATE INDEX IF NOT EXISTS idx_energy_history_time ON energy_history(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_energy_history_node ON energy_history(node_id);
+    `);
+
+    // 36. Energy Tariff & Analytics Settings
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS energy_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+      )
+    `);
+
     // Schema Migrations (backward-compatibility safe)
     try { this.db.exec(`ALTER TABLE automations ADD COLUMN description TEXT DEFAULT ''`); } catch {}
     try { this.db.exec(`ALTER TABLE automations ADD COLUMN trigger_type TEXT DEFAULT 'GPIO State Change'`); } catch {}
@@ -723,6 +754,15 @@ class FleetDatabase {
           VALUES (?, 'Master Bedroom', 'Ground', 'bed')
         `).run(defaultHome.id);
       }
+    }
+
+    // 9. Seed Default Energy Tariff Settings (if empty)
+    const energySettingsCount = this.db.prepare('SELECT COUNT(*) as count FROM energy_settings').get().count;
+    if (energySettingsCount === 0) {
+      const stmt = this.db.prepare('INSERT INTO energy_settings (key, value) VALUES (?, ?)');
+      stmt.run('tariff_rate', '0.15');
+      stmt.run('currency', '$');
+      stmt.run('monthly_budget', '50.0');
     }
   }
 
@@ -3375,6 +3415,337 @@ class FleetDatabase {
       }
     }
     return { success: true };
+  }
+
+  // =========================================================================
+  // ⚡ ENERGY & POWER CONSUMPTION ANALYTICS (P3 / CS-F1)
+  // =========================================================================
+
+  recordEnergySnapshot(data) {
+    if (!data || !data.nodeId) return null;
+    const nodeId = String(data.nodeId);
+    const source = data.source || 'tuya_breaker';
+    const voltage_v = Number(data.voltage_v) || 0;
+    const current_a = Number(data.current_a) || 0;
+    const power_w = Number(data.power_w) || 0;
+    const power_factor = Number(data.power_factor) || 1.0;
+    const frequency_hz = Number(data.frequency_hz) || 50.0;
+    let total_energy_kwh = Number(data.total_energy_kwh) || 0;
+    const leakage_current_ma = Number(data.leakage_current_ma) || 0;
+    const temperature_c = Number(data.temperature_c) || 0;
+
+    // Fetch most recent snapshot for this node
+    const prev = this.db.prepare(`
+      SELECT id, timestamp, total_energy_kwh, power_w,
+             (strftime('%s', 'now', 'localtime') - strftime('%s', timestamp)) as elapsed_sec
+      FROM energy_history
+      WHERE node_id = ?
+      ORDER BY id DESC LIMIT 1
+    `).get(nodeId);
+
+    // Calculate delta kWh and sanitize readings
+    let delta_energy_kwh = 0;
+    if (prev) {
+      const elapsed = Number(prev.elapsed_sec) || 0;
+      // Throttle recording: only save if at least 20s elapsed OR power shifted by > 25W
+      if (elapsed < 20 && Math.abs(power_w - (Number(prev.power_w) || 0)) < 25) {
+        return null;
+      }
+
+      const prevTotal = Number(prev.total_energy_kwh) || 0;
+
+      // Anomaly Filter: Detect and reject false register jumps (e.g. mock fallback 51.43 when prev was ~42.4)
+      if (prevTotal > 0 && Math.abs(total_energy_kwh - prevTotal) > 2.0 && elapsed < 300) {
+        total_energy_kwh = prevTotal;
+      }
+
+      // High-resolution active power integration: E = (P_avg * elapsed_sec) / (3600 * 1000)
+      const avgPower = (power_w + (Number(prev.power_w) || power_w)) / 2;
+      if (elapsed > 0 && avgPower > 0) {
+        delta_energy_kwh = +((avgPower * Math.min(elapsed, 300)) / 3600000).toFixed(5);
+      }
+
+      // Offline Gap Recovery: If server was offline for > 5 min, check if hardware meter advanced reasonably
+      if (elapsed > 300 && total_energy_kwh > prevTotal && prevTotal > 0) {
+        const meterDelta = total_energy_kwh - prevTotal;
+        if (meterDelta > 0 && meterDelta < 50) {
+          delta_energy_kwh = +meterDelta.toFixed(4);
+        }
+      }
+    }
+
+    const info = this.db.prepare(`
+      INSERT INTO energy_history (
+        node_id, source, voltage_v, current_a, power_w, power_factor,
+        frequency_hz, total_energy_kwh, delta_energy_kwh, leakage_current_ma,
+        temperature_c, interval_type
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'raw')
+    `).run(
+      nodeId, source, voltage_v, current_a, power_w, power_factor,
+      frequency_hz, total_energy_kwh, delta_energy_kwh, leakage_current_ma,
+      temperature_c
+    );
+
+    return { id: info.lastInsertRowid, delta_energy_kwh };
+  }
+
+  getEnergySettings() {
+    const rows = this.db.prepare(`SELECT key, value FROM energy_settings`).all();
+    const settings = {
+      tariff_rate: 0.15,
+      currency: '$',
+      monthly_budget: 50.0
+    };
+    for (const r of rows) {
+      if (r.key === 'tariff_rate') settings.tariff_rate = Number(r.value) || 0.15;
+      if (r.key === 'currency') settings.currency = r.value || '$';
+      if (r.key === 'monthly_budget') settings.monthly_budget = Number(r.value) || 50.0;
+    }
+    return settings;
+  }
+
+  updateEnergySettings(newSettings) {
+    if (!newSettings) return this.getEnergySettings();
+    const stmt = this.db.prepare(`
+      INSERT INTO energy_settings (key, value, updated_at)
+      VALUES (?, ?, datetime('now', 'localtime'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `);
+    if (newSettings.tariff_rate !== undefined) {
+      stmt.run('tariff_rate', String(newSettings.tariff_rate));
+    }
+    if (newSettings.currency !== undefined) {
+      stmt.run('currency', String(newSettings.currency));
+    }
+    if (newSettings.monthly_budget !== undefined) {
+      stmt.run('monthly_budget', String(newSettings.monthly_budget));
+    }
+    return this.getEnergySettings();
+  }
+
+  getEnergySummary(nodeId = null) {
+    const settings = this.getEnergySettings();
+
+    // Latest real-time snapshot
+    const latestQuery = nodeId
+      ? `SELECT * FROM energy_history WHERE node_id = ? ORDER BY id DESC LIMIT 1`
+      : `SELECT * FROM energy_history ORDER BY id DESC LIMIT 1`;
+    const latest = nodeId ? this.db.prepare(latestQuery).get(nodeId) : this.db.prepare(latestQuery).get();
+
+    // Today's total delta kWh
+    const todayQuery = nodeId
+      ? `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w, AVG(voltage_v) as avg_v, AVG(power_w) as avg_w
+         FROM energy_history WHERE date(timestamp) = date('now', 'localtime') AND node_id = ?`
+      : `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w, AVG(voltage_v) as avg_v, AVG(power_w) as avg_w
+         FROM energy_history WHERE date(timestamp) = date('now', 'localtime')`;
+    const today = nodeId ? this.db.prepare(todayQuery).get(nodeId) : this.db.prepare(todayQuery).get();
+
+    // Yesterday's total delta kWh
+    const yestQuery = nodeId
+      ? `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w
+         FROM energy_history WHERE date(timestamp) = date('now', 'localtime', '-1 day') AND node_id = ?`
+      : `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w
+         FROM energy_history WHERE date(timestamp) = date('now', 'localtime', '-1 day')`;
+    const yesterday = nodeId ? this.db.prepare(yestQuery).get(nodeId) : this.db.prepare(yestQuery).get();
+
+    // Rolling 24 Hours summary metrics (Mean Hourly & 24h Totals)
+    const rolling24Query = nodeId
+      ? `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w, AVG(voltage_v) as avg_v, AVG(power_w) as avg_w
+         FROM energy_history WHERE timestamp >= datetime('now', 'localtime', '-24 hours') AND node_id = ?`
+      : `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w, AVG(voltage_v) as avg_v, AVG(power_w) as avg_w
+         FROM energy_history WHERE timestamp >= datetime('now', 'localtime', '-24 hours')`;
+    const last24h = nodeId ? this.db.prepare(rolling24Query).get(nodeId) : this.db.prepare(rolling24Query).get();
+
+    // This Month's total delta kWh
+    const monthQuery = nodeId
+      ? `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w
+         FROM energy_history WHERE strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now', 'localtime') AND node_id = ?`
+      : `SELECT COALESCE(SUM(delta_energy_kwh), 0) as kwh, MAX(power_w) as peak_w
+         FROM energy_history WHERE strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now', 'localtime')`;
+    const thisMonth = nodeId ? this.db.prepare(monthQuery).get(nodeId) : this.db.prepare(monthQuery).get();
+
+    const todayKwh = +(today?.kwh || 0).toFixed(3);
+    const yesterdayKwh = +(yesterday?.kwh || 0).toFixed(3);
+    const last24hKwh = +(last24h?.kwh || 0).toFixed(3);
+    const monthKwh = +(thisMonth?.kwh || 0).toFixed(3);
+    const todayCost = +(todayKwh * settings.tariff_rate).toFixed(2);
+    const last24hCost = +(last24hKwh * settings.tariff_rate).toFixed(2);
+    const monthCost = +(monthKwh * settings.tariff_rate).toFixed(2);
+
+    const now = new Date();
+    const dayOfMonth = Math.max(1, now.getDate());
+    const projectedMonthKwh = +((monthKwh / dayOfMonth) * 30).toFixed(2);
+    const projectedMonthCost = +(projectedMonthKwh * settings.tariff_rate).toFixed(2);
+
+    return {
+      current: {
+        power_w: latest?.power_w || 0,
+        voltage_v: latest?.voltage_v || 0,
+        current_a: latest?.current_a || 0,
+        total_energy_kwh: latest?.total_energy_kwh || 0,
+        leakage_current_ma: latest?.leakage_current_ma || 0,
+        power_factor: latest?.power_factor || 1.0,
+        frequency_hz: latest?.frequency_hz || 50.0,
+        temperature_c: latest?.temperature_c || 0,
+        timestamp: latest?.timestamp || new Date().toISOString()
+      },
+      today: {
+        kwh: todayKwh,
+        cost: todayCost,
+        peak_w: today?.peak_w || 0,
+        avg_w: +(today?.avg_w || 0).toFixed(1),
+        avg_v: +(today?.avg_v || 0).toFixed(1)
+      },
+      last_24h: {
+        total_kwh: last24hKwh,
+        cost: last24hCost,
+        mean_hourly_kwh: +(last24hKwh / 24).toFixed(4),
+        peak_w: last24h?.peak_w || 0,
+        mean_power_w: +(last24h?.avg_w || 0).toFixed(1),
+        mean_voltage_v: +(last24h?.avg_v || 0).toFixed(1)
+      },
+      yesterday: {
+        kwh: yesterdayKwh,
+        cost: +(yesterdayKwh * settings.tariff_rate).toFixed(2),
+        peak_w: yesterday?.peak_w || 0
+      },
+      this_month: {
+        kwh: monthKwh,
+        cost: monthCost,
+        projected_kwh: projectedMonthKwh,
+        projected_cost: projectedMonthCost
+      },
+      settings
+    };
+  }
+
+  getEnergyHistory(range = '24h', nodeId = null) {
+    if (range === '24h') {
+      const query = nodeId
+        ? `SELECT strftime('%Y-%m-%d %H:00', timestamp) as time_slot,
+                  strftime('%H:00', timestamp) as label,
+                  ROUND(SUM(delta_energy_kwh), 3) as kwh,
+                  ROUND(AVG(power_w), 1) as avg_power_w,
+                  ROUND(MAX(power_w), 1) as peak_power_w,
+                  ROUND(AVG(voltage_v), 1) as avg_voltage_v
+           FROM energy_history
+           WHERE timestamp >= datetime('now', 'localtime', '-24 hours') AND node_id = ?
+           GROUP BY time_slot
+           ORDER BY time_slot ASC`
+        : `SELECT strftime('%Y-%m-%d %H:00', timestamp) as time_slot,
+                  strftime('%H:00', timestamp) as label,
+                  ROUND(SUM(delta_energy_kwh), 3) as kwh,
+                  ROUND(AVG(power_w), 1) as avg_power_w,
+                  ROUND(MAX(power_w), 1) as peak_power_w,
+                  ROUND(AVG(voltage_v), 1) as avg_voltage_v
+           FROM energy_history
+           WHERE timestamp >= datetime('now', 'localtime', '-24 hours')
+           GROUP BY time_slot
+           ORDER BY time_slot ASC`;
+      const rows = nodeId ? this.db.prepare(query).all(nodeId) : this.db.prepare(query).all();
+      const rowMap = new Map();
+      for (const r of rows) {
+        rowMap.set(r.time_slot, r);
+      }
+
+      // Generate continuous 24-hour timeline (from 23 hours ago up to current hour)
+      const result = [];
+      const now = new Date();
+      for (let i = 23; i >= 0; i--) {
+        const d = new Date(now.getTime() - i * 3600 * 1000);
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const h = String(d.getHours()).padStart(2, '0');
+        const slotKey = `${y}-${m}-${day} ${h}:00`;
+        const label = `${h}:00`;
+
+        if (rowMap.has(slotKey)) {
+          const existing = rowMap.get(slotKey);
+          result.push({
+            time_slot: slotKey,
+            label,
+            kwh: Number(existing.kwh) || 0,
+            avg_power_w: Number(existing.avg_power_w) || 0,
+            peak_power_w: Number(existing.peak_power_w) || 0,
+            avg_voltage_v: Number(existing.avg_voltage_v) || 0
+          });
+        } else {
+          result.push({
+            time_slot: slotKey,
+            label,
+            kwh: 0,
+            avg_power_w: 0,
+            peak_power_w: 0,
+            avg_voltage_v: 0
+          });
+        }
+      }
+      return result;
+    } else if (range === '7d' || range === '30d') {
+      const days = range === '7d' ? 7 : 30;
+      const query = nodeId
+        ? `SELECT date(timestamp) as time_slot,
+                  strftime('%m/%d', timestamp) as label,
+                  ROUND(SUM(delta_energy_kwh), 3) as kwh,
+                  ROUND(AVG(power_w), 1) as avg_power_w,
+                  ROUND(MAX(power_w), 1) as peak_power_w,
+                  ROUND(AVG(voltage_v), 1) as avg_voltage_v
+           FROM energy_history
+           WHERE timestamp >= datetime('now', 'localtime', '-${days} days') AND node_id = ?
+           GROUP BY time_slot
+           ORDER BY time_slot ASC`
+        : `SELECT date(timestamp) as time_slot,
+                  strftime('%m/%d', timestamp) as label,
+                  ROUND(SUM(delta_energy_kwh), 3) as kwh,
+                  ROUND(AVG(power_w), 1) as avg_power_w,
+                  ROUND(MAX(power_w), 1) as peak_power_w,
+                  ROUND(AVG(voltage_v), 1) as avg_voltage_v
+           FROM energy_history
+           WHERE timestamp >= datetime('now', 'localtime', '-${days} days')
+           GROUP BY time_slot
+           ORDER BY time_slot ASC`;
+      const rows = nodeId ? this.db.prepare(query).all(nodeId) : this.db.prepare(query).all();
+      const rowMap = new Map();
+      for (const r of rows) {
+        rowMap.set(r.time_slot, r);
+      }
+
+      // Generate continuous calendar days timeline
+      const result = [];
+      const now = new Date();
+      for (let i = days - 1; i >= 0; i--) {
+        const d = new Date(now.getTime() - i * 86400 * 1000);
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const slotKey = `${y}-${m}-${day}`;
+        const label = `${m}/${day}`;
+
+        if (rowMap.has(slotKey)) {
+          const existing = rowMap.get(slotKey);
+          result.push({
+            time_slot: slotKey,
+            label,
+            kwh: Number(existing.kwh) || 0,
+            avg_power_w: Number(existing.avg_power_w) || 0,
+            peak_power_w: Number(existing.peak_power_w) || 0,
+            avg_voltage_v: Number(existing.avg_voltage_v) || 0
+          });
+        } else {
+          result.push({
+            time_slot: slotKey,
+            label,
+            kwh: 0,
+            avg_power_w: 0,
+            peak_power_w: 0,
+            avg_voltage_v: 0
+          });
+        }
+      }
+      return result;
+    }
+    return [];
   }
 }
 

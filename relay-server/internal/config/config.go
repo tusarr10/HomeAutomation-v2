@@ -18,6 +18,9 @@ type Config struct {
 type ServerConfig struct {
 	TCPListen     string `json:"tcp_listen"`
 	HTTPListen    string `json:"http_listen"`
+	HTTPSListen   string `json:"https_listen"`
+	TLSCertFile   string `json:"tls_cert_file"`
+	TLSKeyFile    string `json:"tls_key_file"`
 	MetricsListen string `json:"metrics_listen"`
 }
 

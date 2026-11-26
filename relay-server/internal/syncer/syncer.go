@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"smarthome-edge/internal/config"
+	"smarthome-edge/internal/db"
 	"smarthome-edge/internal/queue"
 	"smarthome-edge/internal/state"
 	"smarthome-edge/internal/tuya"
@@ -28,6 +29,13 @@ type CentralSyncer struct {
 	lastPingEpoch   int64
 	activePortalURL string
 	tuyaClient      *tuya.Client
+	database        *db.DB
+}
+
+func (s *CentralSyncer) SetDB(d *db.DB) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.database = d
 }
 
 func NewCentralSyncer(cfg *config.Config, sm *state.StateManager, spool *queue.EventSpool, cachePath string) *CentralSyncer {
@@ -213,6 +221,27 @@ func (s *CentralSyncer) PullCentralConfig() {
 		if err := json.NewDecoder(resp.Body).Decode(&autos); err == nil && len(autos) > 0 {
 			s.sm.SetAutomations(autos)
 			log.Printf("[Central Syncer] Synchronized %d automation rules from Central Server.", len(autos))
+		}
+		_ = resp.Body.Close()
+	}
+
+	// 4. Fetch energy settings: GET /api/v1/analytics/energy/summary
+	energyURL := fmt.Sprintf("%s/api/v1/analytics/energy/summary", s.cfg.Central.URL)
+	if resp, err := s.httpClient.Get(energyURL); err == nil && resp.StatusCode == http.StatusOK {
+		var energyRes struct {
+			Success bool `json:"success"`
+			Summary struct {
+				Settings map[string]interface{} `json:"settings"`
+			} `json:"summary"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&energyRes); err == nil && energyRes.Success && len(energyRes.Summary.Settings) > 0 {
+			s.mu.RLock()
+			dbRef := s.database
+			s.mu.RUnlock()
+			if dbRef != nil {
+				_, _ = dbRef.UpdateEnergySettings(energyRes.Summary.Settings)
+				log.Printf("[Central Syncer] Synchronized electricity tariff settings from Central Server.")
+			}
 		}
 		_ = resp.Body.Close()
 	}

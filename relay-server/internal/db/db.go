@@ -220,6 +220,34 @@ func (db *DB) initSchema() error {
 		is_latest INTEGER DEFAULT 0
 	);
 
+	CREATE TABLE IF NOT EXISTS node_backups (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		node_id TEXT NOT NULL,
+		node_name TEXT,
+		firmware_version TEXT,
+		backup_type TEXT DEFAULT 'PRE_OTA',
+		backup_path TEXT NOT NULL,
+		file_size_bytes INTEGER DEFAULT 0,
+		snapshot_json TEXT,
+		created_at TEXT
+	);
+
+	CREATE TABLE IF NOT EXISTS ota_history (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		node_id TEXT NOT NULL,
+		node_name TEXT,
+		firmware_id INTEGER,
+		firmware_filename TEXT,
+		version_from TEXT,
+		version_to TEXT,
+		status TEXT DEFAULT 'PENDING',
+		backup_id INTEGER,
+		duration_ms INTEGER DEFAULT 0,
+		details TEXT,
+		error_message TEXT,
+		created_at TEXT
+	);
+
 	CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		username TEXT UNIQUE NOT NULL,
@@ -324,6 +352,31 @@ func (db *DB) initSchema() error {
 		created_at REAL NOT NULL,
 		status TEXT DEFAULT 'PENDING'
 	);
+
+	CREATE TABLE IF NOT EXISTS energy_history (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		timestamp TEXT DEFAULT (datetime('now', 'localtime')),
+		node_id TEXT NOT NULL,
+		source TEXT DEFAULT 'tuya_breaker',
+		voltage_v REAL DEFAULT 0,
+		current_a REAL DEFAULT 0,
+		power_w REAL DEFAULT 0,
+		power_factor REAL DEFAULT 1.0,
+		frequency_hz REAL DEFAULT 50.0,
+		total_energy_kwh REAL DEFAULT 0,
+		delta_energy_kwh REAL DEFAULT 0,
+		leakage_current_ma REAL DEFAULT 0,
+		temperature_c REAL DEFAULT 0,
+		interval_type TEXT DEFAULT 'raw'
+	);
+	CREATE INDEX IF NOT EXISTS idx_energy_history_time ON energy_history(timestamp);
+	CREATE INDEX IF NOT EXISTS idx_energy_history_node ON energy_history(node_id);
+
+	CREATE TABLE IF NOT EXISTS energy_settings (
+		key TEXT PRIMARY KEY,
+		value TEXT,
+		updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+	);
 	`
 
 	_, err := db.Exec(schema)
@@ -408,6 +461,14 @@ func (db *DB) seedDefaults() error {
 			VALUES ('ebf807205eb6db772fx1o7', 'Main Smart Breaker', '192.168.1.106', 'D\e~8;Uf3q/496zR', 3.5, 'breaker', 'KB-A1H-A', 1, ?, ?)
 		`, now, now)
 	}
+
+		// Seed Energy Settings
+	_, _ = db.Exec(`
+		INSERT OR IGNORE INTO energy_settings (key, value) VALUES
+		('tariff_rate', '0.15'),
+		('currency', '$'),
+		('monthly_budget', '50.0');
+	`)
 
 	return nil
 }

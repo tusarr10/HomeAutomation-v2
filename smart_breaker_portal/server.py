@@ -131,7 +131,7 @@ def get_reference_dps() -> Dict[str, Any]:
         "26": 0,
         "38": "memory",
         "40": False,
-        "101": 5143,
+        "101": 4242,
         "103": True,
         "108": True,
         "111": "KB-A1H-A  ",
@@ -211,7 +211,12 @@ def poll_device_locally() -> Dict[str, Any]:
     temperature = dps.get("114", 36)
 
     energy_raw = dps.get("101")
-    energy_kwh = round(energy_raw / 100.0, 2) if energy_raw is not None else 51.43
+    if energy_raw is not None:
+        energy_kwh = round(energy_raw / 100.0, 2)
+    elif LAST_READING and isinstance(LAST_READING.get("decoded"), dict) and LAST_READING["decoded"].get("total_energy_kwh"):
+        energy_kwh = LAST_READING["decoded"]["total_energy_kwh"]
+    else:
+        energy_kwh = 42.42
 
     apparent_va = voltage * current if voltage and current else 427.0
     pf = round(power_w / apparent_va, 3) if apparent_va and apparent_va > 0 else 0.98
@@ -290,7 +295,7 @@ LAST_READING = {
         "power_factor": 0.98,
         "frequency_hz": 50.0,
         "temperature_c": 36,
-        "total_energy_kwh": 51.43,
+        "total_energy_kwh": 42.42,
         "leakage_current_ma": int(ref_dps.get("126", 0)),
         "leakage_threshold_ma": int(ref_dps.get("132", 30)),
         "child_lock": False,
