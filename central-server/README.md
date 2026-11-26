@@ -1,103 +1,116 @@
-# SmartHome Central Management Platform (Node.js / JS Edition) 🏠⚡
+# SmartHome Central Server (`central-server/`) 🏠⚡
 
-**High-Performance Multi-Node Fleet Controller, TCP Telemetry Ingestion Engine & Real-time Web Dashboard**
+**Fleet Management Brain, High-Resolution Power Analytics & Real-Time Web Dashboard (v1.6.0)**
 
-Migrated from Python FastAPI / SQLite to pure JavaScript (Node.js 20+) with zero native build tool dependencies, native `node:sqlite`, raw TCP socket streaming, and full REST & WebSocket integration.
-
----
-
-## 🌟 Architecture & Features
-
-```
-                          ┌─────────────────────────────────────┐
-                          │     Windows Host Central Server     │
-                          │        (central_server_js)          │
-                          │                                     │
-                          │   ┌─────────────────────────────┐   │
-                          │   │   Express REST + Web UI     │   │
-                          │   │    (Port 9100 / Port 8080)  │   │
-                          │   └──────────────┬──────────────┘   │
-                          │                  │                  │
-                          │   ┌──────────────┴──────────────┐   │
-                          │   │    Unified Node Manager     │   │
-                          │   └──────┬───────────────┬──────┘   │
-                          │          │               │          │
-                          │   ┌──────┴──────┐ ┌──────┴──────┐   │
-                          │   │ TCP Server  │ │  WebSocket  │   │
-                          │   │ (Port 2000) │ │(/api/v1/ws) │   │
-                          │   └──────┬──────┘ └──────┬──────┘   │
-                          └──────────┼───────────────┼──────────┘
-                                     │               │
-        ┌────────────────────────────┴───────────────┴─────────────────────────────┐
-        │                                                                          │
-        ▼                                                                          ▼
- ┌───────────────┐                                                          ┌───────────────┐
- │ ESP8266 Node  │                                                          │ ESP8266 Node  │
- │ (192.168.1.x) │                                                          │ (192.168.1.105│
- │ Relays 1 & 2  │                                                          │ Relays & Time │
- └───────────────┘                                                          └───────────────┘
-```
-
-1. **Dual Ingestion Protocol**:
-   - **Raw TCP Sockets (Port 2000)**: Real-time framed newline/JSON telemetry streams from ESP8266 nodes.
-   - **HTTP REST Ingestion (`/api/telemetry` & `/api/node/telemetry`)**: For HTTP-configured nodes.
-2. **Bi-Directional Command Execution**:
-   - Dispatches commands immediately over LAN HTTP (`http://<node_ip>/api/gpio/state` with automatic admin session authorization).
-   - If a node is offline or LAN HTTP is unreachable, queues the command for the next TCP/HTTP heartbeat sync (`{ commands: [...] }`).
-3. **Built-in `node:sqlite` Storage**:
-   - Uses Node.js 22/24's native `node:sqlite` engine (`data/fleet.db`).
-   - Zero compilation, zero C++ build issues on Windows.
-4. **Rich Dual-API Coverage**:
-   - Full `/api/v1/...` REST API for the bundled Single-Page Application (SPA) dashboard.
-   - `/api/...` REST & Server-Sent Events (SSE) `/api/events` compatible with lightweight tools.
-   - WebSocket `/api/v1/ws` for live zero-refresh updates.
+Built with **Node.js (v22+)**, native high-performance `node:sqlite`, raw TCP socket streaming on Port `2000`, Tuya Smart Breaker local LAN bridge, and a complete Progressive Web App (PWA) dashboard on Port `9100`.
 
 ---
 
-## 🚀 Quick Start
+## 🌟 Architecture & Core Systems
 
-### 1. Run the Server
-From the project folder:
+```
+                              ┌─────────────────────────────────────┐
+                              │       Express 4.x REST Server       │
+                              │      (Port 9100 / Dual Routing)     │
+                              │  - /api/v1/... (Modern SPA & PWA)   │
+                              │  - /api/... (Lightweight Legacy API)│
+                              └──────────────┬───────────────┬──────┘
+                                             │               │
+                              ┌──────────────┴──────┐ ┌──────┴──────┐
+                              │    Node Manager     │ │  WebSocket  │
+                              │  (Fleet Operations) │ │(/api/v1/ws) │
+                              └──────────────┬──────┘ └─────────────┘
+                                             │
+                      ┌──────────────────────┼──────────────────────┐
+                      ▼                      ▼                      ▼
+           ┌─────────────────────┐┌─────────────────────┐┌─────────────────────┐
+           │     TCP Server      ││   Fleet Database    ││  Tuya Breaker Bridge│
+           │     (Port 2000)     ││    (fleet.db)       ││    (Port 8085)      │
+           │ - Framed NDJSON     ││ - 37 Relational     ││ - Electrical        │
+           │   Socket Listener   ││   SQLite Tables     ││   Telemetry Streaming
+           │ - Command ACK Queue ││ - WAL Mode / Indexes││ - Energy Snapshots  │
+           └─────────────────────┘└─────────────────────┘└─────────────────────┘
+```
+
+---
+
+## 🚀 Key Features
+
+### 1. Advanced Power & Energy Analytics (`CS-F1`)
+- **Continuous 24-Hour Timeline**: Real-time hourly profiles (`strftime('%Y-%m-%d %H:00')`) with unbroken 24-hour zero-filling, peak demand lines, and hover tooltips.
+- **Glitch-Free Trapezoidal Integration**: Calculates continuous energy consumption using active power integration:
+  $$E = \frac{P_{\text{avg}} \times \Delta t}{3,600,000}\text{ kWh}$$
+  eliminating phantom register jumps and providing 5-decimal precision.
+- **Period Mean & Summary Table Footer**: Displays 24h total energy, period mean active load (W), peak power demand (W), mean line voltage (V), and estimated tariff costs.
+- **Dynamic Tariff & Budget Management**: Configurable tariff rates, currency symbols, and monthly budget progress bars via modal.
+
+### 2. Bidirectional Relay Server Synchronization (`CS-F7` / `CS-F8`)
+- **Offline Replayed Events Ingestion (`POST /api/v1/system/sync-events`)**:
+  - Automatically receives offline events spooled on the edge router while the Central PC was powered off.
+  - Updates physical relay channel states in SQLite (`updateRelayState`), logs `relay_events`, and triggers UI broadcasts.
+- **Edge Live State Snapshot Ingestion (`eventType === "edge_snapshot"`)**:
+  - Automatically receives live status of all fleet nodes and circuit breaker contactor upon reconnect via `NodeManager.processTelemetry()`.
+- **Sync Auditing & Status (`GET /api/v1/system/sync-status`)**: Real-time health monitoring of edge router connectivity.
+
+### 3. Interactive 2D Blueprint & 3D Isometric Visualizer
+- **2D Architectural Blueprint**: Walls, bay window, spinning ceiling fans, glowing bulbs, smart TV, AC unit, and live switches with auto-scaling down to 320px mobile viewports.
+- **3D Isometric Room Visualizer**: Interactive 3D perspective stage with smooth rotation controls (`↺`, `↻`, `Reset`).
+- **In-Canvas Appliance Modal**: 15+ presets, 25+ emoji icons, and live hardware node/relay reassignment.
+- **Strict Clean Normal Mode**: Setting icons (`⚙️`) and edit tags (`✏️`) are strictly hidden in viewing mode.
+
+### 4. Progressive Web App (PWA) & Mobile Optimization
+- Standalone PWA installation on iOS and Android with `manifest.json` and offline-resilient `sw.js` asset caching.
+- Off-canvas drawer navigation (`☰`) with animated backdrop tap-to-dismiss and automatic closure upon navigation.
+
+---
+
+## 🗄️ Database Architecture (`fleet.db`)
+
+Uses Node.js's native `node:sqlite` engine with WAL journal mode. Contains **37 normalized tables**:
+
+| Category | Tables |
+|:---|:---|
+| **Fleet & Relays** | `nodes`, `relays`, `relay_events`, `sensors`, `telemetry_logs`, `device_capabilities`, `device_commands`, `command_results`, `device_configurations`, `configuration_versions`, `sync_jobs`, `node_backups` |
+| **Homes & Rooms** | `homes`, `home_members`, `rooms`, `room_members` |
+| **RBAC Security** | `users`, `roles`, `permissions`, `role_permissions`, `user_roles`, `scopes`, `user_scopes`, `user_sessions`, `device_permissions` |
+| **System & Automations**| `automations`, `audit_logs`, `system_events`, `notifications`, `firmware`, `ota_history`, `tuya_devices` |
+| **Energy & Relay Sync** | `energy_history`, `energy_settings`, `events` (Table 37: edge replayed event spool) |
+
+---
+
+## 📡 REST API & WebSocket Endpoints
+
+### 1. Energy Analytics
+- `GET /api/v1/analytics/energy/summary`: Returns current live telemetry, today's metrics, yesterday's metrics, rolling 24h mean hourly metrics, month-to-date projection, and tariff settings.
+- `GET /api/v1/analytics/energy/history?range={24h|7d|30d}`: Returns continuous, zero-filled time-series intervals with kWh, mean power (W), peak power (W), and mean voltage (V).
+- `POST /api/v1/analytics/energy/settings`: Updates electricity tariff rate, currency symbol, and monthly budget.
+
+### 2. Relay Server Synchronization
+- `POST /api/v1/system/sync-events`: Ingests offline replayed event spool from the Edge Relay Server.
+- `GET /api/v1/system/sync-events`: Returns historical log of replayed edge events.
+- `GET /api/v1/system/sync-status`: Returns live edge synchronization status, connection health, and event counts.
+
+### 3. Real-Time WebSocket
+- `ws://localhost:9100/api/v1/ws`: Bidirectional real-time stream emitting `initial_state`, `relay_state_confirmed`, `breaker_telemetry`, `fleet_update`, and notifications.
+
+---
+
+## 🛠️ Quick Start
+
+### Prerequisites
+- **Node.js `>= 22.5.0`** (required for native `node:sqlite`).
+
+### Installation & Execution
 ```powershell
-cd central_server_js
-npm start
+# Navigate to Central Server
+cd central-server
+
+# Install dependencies (production)
+npm install --omit=dev
+
+# Start Central Server with native SQLite support
+node --experimental-sqlite server.js
 ```
-Or double-click `run.bat`.
+Or double-click **`run.bat`** on Windows, or run **`./run.sh`** on Linux.
 
-### 2. Access the Dashboard
-Open your browser at:
-👉 **`http://localhost:9100`**
-
----
-
-## 🔌 Connecting NodeMCU (`192.168.1.105`)
-
-In your ESP8266's web dashboard (`http://192.168.1.105`):
-1. Navigate to **Settings** -> **Central Receiver / Fleet Telemetry**.
-2. **Receiver Mode**: Enabled.
-3. **Protocol**: `Raw TCP Socket (Stream)` or `HTTP POST`.
-4. **Server Host/IP**: Your PC's LAN IP (`192.168.1.10`).
-5. **Server Port**: `2000` (for TCP) or `9100` (for HTTP).
-6. Click **Save Settings** and **Test Connection**.
-
----
-
-## 📖 API Reference
-
-### System & Fleet
-- `GET /api/v1/system/overview` - Fleet count, online/offline nodes, relay stats.
-- `GET /api/v1/nodes` - List all registered fleet nodes with relays.
-- `GET /api/v1/nodes/:nodeId` - Detailed telemetry and history for a node.
-- `DELETE /api/v1/nodes/:nodeId` - Unregister node from fleet.
-- `POST /api/v1/nodes/:nodeId/restart` - Remotely soft-reboot microcontroller.
-
-### GPIO & Relays
-- `GET /api/v1/relays` - All relays across all fleet nodes.
-- `POST /api/v1/relays/:nodeId/:channelId/command` - Dispatch toggle / pulse / setState.
-- `POST /api/v1/relays/broadcast` - Switch all relays across rooms or nodes.
-- `GET /api/v1/relays/:nodeId/:channelId/history` - State transition event log.
-
-### Real-Time Streaming
-- `WS /api/v1/ws` - WebSocket real-time live events.
-- `GET /api/events` - Server-Sent Events (SSE) telemetry stream.
-- `POST /api/telemetry` & `POST /api/node/telemetry` - HTTP telemetry ingestion.
+Access the dashboard at **`http://localhost:9100`**.

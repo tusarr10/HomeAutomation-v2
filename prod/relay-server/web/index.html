@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0f19">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SmartHome">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>SmartHome Central Management Platform</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/assets/logo.svg">
+  <link rel="apple-touch-icon" href="/assets/logo.svg">
+  <link rel="stylesheet" href="/assets/style.css?v=2.7.0">
+</head>
+<body>
+  <!-- DEDICATED FULLSCREEN LOGIN SCREEN -->
+  <div id="login-screen" class="login-screen-overlay" style="display: none;">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="login-brand-icon">
+          <img src="/assets/logo.svg" alt="SmartHome Logo" class="login-logo-img">
+        </div>
+        <h2 class="login-title">SmartHome Platform</h2>
+        <p class="login-subtitle">Central Fleet Management & Telemetry System</p>
+        <div class="login-auth-badge">
+          <span>🔐</span> Authentication Required
+        </div>
+      </div>
+
+      <form id="login-form" class="login-form" onsubmit="handleLoginSubmit(event)">
+        <div class="form-group">
+          <label for="login-username" class="form-label">Username</label>
+          <div class="input-with-icon">
+            <span class="input-icon">👤</span>
+            <input type="text" id="login-username" class="login-input" placeholder="Username (e.g. admin)" autocomplete="username" required>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="login-password" class="form-label">Password</label>
+          <div class="input-with-icon">
+            <span class="input-icon">🔒</span>
+            <input type="password" id="login-password" class="login-input" placeholder="Password" autocomplete="current-password" required>
+            <button type="button" class="pwd-toggle-btn" onclick="toggleLoginPasswordVisibility()" title="Show/Hide Password">👁️</button>
+          </div>
+        </div>
+
+        <div id="login-error-msg" class="login-error-alert" style="display: none;"></div>
+
+        <button type="submit" id="login-submit-btn" class="login-submit-btn">
+          <span>Sign In to Dashboard</span>
+          <span class="login-btn-arrow">→</span>
+        </button>
+      </form>
+
+      <div class="login-footer">
+        <span>Protected Fleet Management System &bull; Authorized Personnel Only</span>
+      </div>
+    </div>
+  </div>
+  <!-- MOBILE SIDEBAR BACKDROP OVERLAY -->
+  <div id="sidebar-backdrop" class="sidebar-backdrop" onclick="toggleMobileSidebar(false)"></div>
+
+  <!-- SIDEBAR NAVIGATION (RBAC, LittleFS, Config Sync, Commands, Fleet) -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="brand-icon">
+        <img src="/assets/logo.svg" alt="SmartHome Logo" class="brand-logo-img">
+      </div>
+      <div style="flex: 1;">
+        <div class="brand-title">SmartHome Relay Server</div>
+        <div class="brand-sub">Edge Broker v2.0.0</div>
+      </div>
+      <button class="sidebar-close-btn" onclick="toggleMobileSidebar(false)" aria-label="Close Navigation">✕</button>
+    </div>
+
+    <ul class="nav-list">
+      <li class="nav-item active" data-view="overview">
+        <span class="nav-icon">🏠</span>
+        <span>Dashboard</span>
+      </li>
+      <li class="nav-item" data-view="nodes">
+        <span class="nav-icon">🔲</span>
+        <span>Devices</span>
+      </li>
+      <li class="nav-item" data-view="relays">
+        <span class="nav-icon">🔌</span>
+        <span>Relays & Actuators</span>
+      </li>
+      <li class="nav-item" data-view="sensors">
+        <span class="nav-icon">📡</span>
+        <span>Sensors & Telemetry</span>
+      </li>
+      <li class="nav-item" data-view="rooms-homes">
+        <span class="nav-icon">🏠</span>
+        <span>Rooms & Homes</span>
+      </li>
+      <li class="nav-item" data-view="breaker">
+        <span class="nav-icon">⚡</span>
+        <span>Smart Breaker</span>
+        <span class="status-badge badge-online" style="font-size: 9px; padding: 1px 5px; margin-left: auto;">LAN</span>
+      </li>
+      <li class="nav-item" data-view="automation">
+        <span class="nav-icon">⚙️</span>
+        <span>Automation</span>
+      </li>
+      <li class="nav-item" data-view="firmware">
+        <span class="nav-icon">☁️</span>
+        <span>OTA Updates</span>
+      </li>
+      <li class="nav-item" data-view="littlefs">
+        <span class="nav-icon">📁</span>
+        <span>File Explorer</span>
+      </li>
+      <li class="nav-item" data-view="events">
+        <span class="nav-icon">📋</span>
+        <span>Logs & Events</span>
+      </li>
+      <li class="nav-item" data-view="network">
+        <span class="nav-icon">🌐</span>
+        <span>System</span>
+      </li>
+      <li class="nav-item" data-view="users">
+        <span class="nav-icon">👥</span>
+        <span>Users & RBAC</span>
+      </li>
+      <li class="nav-item" data-view="database">
+        <span class="nav-icon">💾</span>
+        <span>Backup & Restore</span>
+      </li>
+      <li class="nav-item" data-view="settings">
+        <span class="nav-icon">🛠️</span>
+        <span>Settings</span>
+      </li>
+      <li class="nav-item" data-view="system-api">
+        <span class="nav-icon">⚡</span>
+        <span>Developer APIs</span>
+      </li>
+    </ul>
+
+    <!-- Bottom Status Pill -->
+    <div class="sidebar-footer-status">
+      <div class="sidebar-footer-dot"></div>
+      <div>
+        <div class="sidebar-footer-title">Server Running</div>
+        <div class="sidebar-footer-sub" id="sidebar-uptime">Uptime: 12d 14h 26m</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN WRAPPER -->
+  <div class="main-wrapper">
+    <header class="topbar">
+      <div class="topbar-left" style="display: flex; align-items: center; gap: 12px;">
+        <button class="mobile-menu-btn" id="mobile-menu-btn" onclick="toggleMobileSidebar()" aria-label="Toggle Navigation">
+          <span>☰</span>
+        </button>
+        <div class="dash-topbar-title-wrap">
+          <h1 class="view-title dash-topbar-title" id="view-title">Relay Server Dashboard</h1>
+          <span class="dash-topbar-sub" id="view-subtitle">SmartHome Edge Broker &bull; Local Control &bull; High Performance</span>
+        </div>
+        <span id="ws-badge" class="status-badge badge-sync" style="display: none;">
+          <span class="pulse-dot"></span> Connecting...
+        </span>
+      </div>
+
+      <div class="topbar-right" style="display: flex; align-items: center; gap: 8px;">
+        <!-- Network IP Pill -->
+        <div class="dash-pill-badge pill-network" title="Host LAN IP Address">
+          <span class="pill-icon">📶</span>
+          <span style="font-size: 11px; opacity: 0.85;">Local Network</span>
+          <span class="pill-val" id="topbar-net-ip">192.168.1.10</span>
+        </div>
+
+        <!-- Uptime Pill -->
+        <div class="dash-pill-badge pill-uptime" title="Server Continuous Uptime">
+          <span class="pill-icon">⏱️</span>
+          <span style="font-size: 11px; opacity: 0.85;">Uptime</span>
+          <span id="topbar-uptime" style="font-weight: 600;">12d 14h 26m</span>
+        </div>
+
+        <!-- CPU Pill -->
+        <div class="dash-pill-badge pill-cpu" title="CPU Utilization">
+          <span class="pill-icon">🔲</span>
+          <span style="font-size: 11px; opacity: 0.85;">CPU</span>
+          <span id="topbar-cpu" style="font-weight: 700; color: #38bdf8;">14%</span>
+        </div>
+
+        <!-- RAM Pill -->
+        <div class="dash-pill-badge pill-ram" title="RAM Utilization">
+          <span class="pill-icon">💾</span>
+          <span style="font-size: 11px; opacity: 0.85;">RAM</span>
+          <span id="topbar-ram" style="font-weight: 700; color: #818cf8;">38%</span>
+        </div>
+
+        <!-- Storage Pill -->
+        <div class="dash-pill-badge pill-storage" title="NVMe / SSD Flash Storage Allocation">
+          <span class="pill-icon">🗄️</span>
+          <span style="font-size: 11px; opacity: 0.85;">Storage</span>
+          <span id="topbar-storage" style="font-weight: 600; color: #2dd4bf;">28% (36 / 128 GB)</span>
+        </div>
+
+        <!-- Notifications Bell -->
+        <div class="topbar-notif-btn" onclick="switchView('events')" title="Live Fleet Notifications" style="cursor: pointer; position: relative; padding: 6px 10px; border-radius: 8px; background: #0f172a; border: 1px solid rgba(255,255,255,0.08); display: flex; align-items: center; justify-content: center;">
+          <span style="font-size: 15px;">🔔</span>
+          <span id="topbar-notif-count" class="badge-count" style="position: absolute; top: -3px; right: -3px; width: 8px; height: 8px; padding: 0; border-radius: 50%; background: #ef4444; border: 1.5px solid #0f172a; display: block;"></span>
+        </div>
+
+        <!-- Active User Profile Dropdown Pill -->
+        <div id="topbar-user-badge" onclick="handleUserBadgeClick()" title="Active Session | Click to manage account or sign out" style="cursor: pointer; padding: 4px 10px; border-radius: 8px; background: #0f172a; border: 1px solid rgba(255,255,255,0.08); display: flex; align-items: center; gap: 8px; transition: all 0.2s ease;">
+          <div class="dash-user-avatar" id="topbar-avatar-initial">A</div>
+          <span id="topbar-username" style="font-size: 12.5px; font-weight: 600; color: #ffffff;">Admin</span>
+          <span style="font-size: 10px; color: #64748b;">▾</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="content-area" id="content-area">
+      <!-- Dynamic View Injected Here -->
+    </main>
+  </div>
+
+  <!-- Modal Container -->
+  <div id="app-modal-container"></div>
+
+  <!-- Floating Toast Notification Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/assets/app.js?v=2.7.0"></script>
+  <script>
+    // Progressive Web App Service Worker Registration
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').then((reg) => {
+          console.log('[PWA] ServiceWorker registered with scope:', reg.scope);
+        }).catch((err) => {
+          console.warn('[PWA] ServiceWorker registration failed:', err);
+        });
+      });
+    }
+  </script>
+</body>
+</html>

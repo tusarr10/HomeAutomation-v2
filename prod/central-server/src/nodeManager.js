@@ -21,6 +21,9 @@ class NodeManager {
     this.nodeExpanderStatus = new Map(); // nodeId -> { type, detected, address, outputByte, updatedAt }
     this.nodeAuthMismatch = new Map(); // nodeId -> boolean
     this.nodeServerKeys = new Map(); // nodeId or ip -> serverKey
+    this.lastEdgeSyncEpoch = 0;
+    this.lastEdgeSnapshotEpoch = 0;
+    this.edgeSyncStats = { totalSnapshots: 0, totalEventsReplayed: 0 };
     try { this.preloadServerKeys(); } catch {}
   }
 
@@ -323,6 +326,47 @@ class NodeManager {
 
   async processTelemetry(data, clientIp = '', protocol = 'TCP') {
     this.packetsReceived++;
+
+    // Edge Live State Snapshot on PC Reconnect (Relay Server Bidirectional Sync CS-F8)
+    if (data && data.eventType === 'edge_snapshot') {
+      console.log(`[Relay Syncer] Ingesting Edge live state snapshot from ${clientIp || protocol}...`);
+      this.lastEdgeSnapshotEpoch = Math.floor(Date.now() / 1000);
+      this.edgeSyncStats.totalSnapshots++;
+
+      let updatedNodes = 0;
+      if (Array.isArray(data.nodes)) {
+        for (const node of data.nodes) {
+          if (node.nodeId) {
+            updatedNodes++;
+            this.db.setNodeOnline(node.nodeId, Boolean(node.isOnline));
+            if (node.isOnline) {
+              this.onlineNodesCache.set(node.nodeId, Date.now() / 1000);
+            }
+            if (Array.isArray(node.channels)) {
+              for (const ch of node.channels) {
+                const chId = ch.channelId !== undefined ? ch.channelId : ch.id;
+                const stateVal = (ch.state === true || ch.state === 1) ? 1 : 0;
+                this.db.updateRelayState(node.nodeId, Number(chId), stateVal);
+              }
+            }
+          }
+        }
+      }
+
+      // Update circuit breaker reading if included
+      if (data.breaker && data.breaker.reading) {
+        if (this.tuyaBridge && typeof this.tuyaBridge.updateReadingFromEdge === 'function') {
+          this.tuyaBridge.updateReadingFromEdge(data.breaker.reading, data.breaker.config);
+        } else if (this.tuyaBridge && typeof this.tuyaBridge.syncToFleet === 'function') {
+          this.tuyaBridge.syncToFleet({ reading: data.breaker.reading, config: data.breaker.config });
+        }
+      }
+
+      this.db.logSystemEvent('SYSTEM', 'RELAY_SYNC', 'INFO', `Ingested Edge live state snapshot (${updatedNodes} nodes)`);
+      this.broadcast('fleet_update', { source: 'edge_snapshot', nodesCount: updatedNodes });
+      return [];
+    }
+
     const nodeId = data.nodeId || data.node_id;
     if (!nodeId) return [];
 
@@ -1358,6 +1402,20 @@ class NodeManager {
       activeChannels: activeRelays,
       packetsReceived: this.packetsReceived,
       serverUptimeSec: uptimeSec
+    };
+  }
+
+  getEdgeSyncStatus() {
+    const now = Math.floor(Date.now() / 1000);
+    const hasRecentSnapshot = this.lastEdgeSnapshotEpoch > 0 && (now - this.lastEdgeSnapshotEpoch < 120);
+    const hasRecentSync = this.lastEdgeSyncEpoch > 0 && (now - this.lastEdgeSyncEpoch < 120);
+    return {
+      connected: hasRecentSnapshot || hasRecentSync,
+      last_snapshot_epoch: this.lastEdgeSnapshotEpoch,
+      last_sync_epoch: this.lastEdgeSyncEpoch,
+      total_snapshots: this.edgeSyncStats.totalSnapshots,
+      total_events_replayed: this.edgeSyncStats.totalEventsReplayed,
+      stored_events_count: typeof this.db.getEdgeEventsCount === 'function' ? this.db.getEdgeEventsCount() : 0
     };
   }
 

@@ -564,6 +564,22 @@ class FleetDatabase {
       )
     `);
 
+    // 37. Edge Replayed Events & Synced Event Spool (Relay Server Bidirectional Sync)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT UNIQUE,
+        event_type TEXT,
+        node_id TEXT,
+        data_json TEXT,
+        timestamp INTEGER,
+        created_at TEXT DEFAULT (datetime('now', 'localtime'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_events_event_id ON events(event_id);
+      CREATE INDEX IF NOT EXISTS idx_events_node_id ON events(node_id);
+      CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+    `);
+
     // Schema Migrations (backward-compatibility safe)
     try { this.db.exec(`ALTER TABLE automations ADD COLUMN description TEXT DEFAULT ''`); } catch {}
     try { this.db.exec(`ALTER TABLE automations ADD COLUMN trigger_type TEXT DEFAULT 'GPIO State Change'`); } catch {}
@@ -3746,6 +3762,42 @@ class FleetDatabase {
       return result;
     }
     return [];
+  }
+
+  // =========================================================================
+  // 🔄 EDGE RELAY SERVER SYNC HELPERS (CS-F7 / CS-F8)
+  // =========================================================================
+
+  recordEdgeEvent(evt) {
+    if (!evt) return null;
+    const evtId = evt.eventId || evt.event_id || `evt-relay-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const evtType = evt.type || evt.event_type || 'STATE_TRANSITION';
+    const nodeId = evt.nodeId || evt.node_id || 'SYSTEM';
+    const dataJson = typeof evt.data === 'string' ? evt.data : JSON.stringify(evt.data || {});
+    const ts = Number(evt.timestamp) || Math.floor(Date.now() / 1000);
+
+    const stmt = this.db.prepare(`
+      INSERT INTO events (event_id, event_type, node_id, data_json, timestamp, created_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))
+      ON CONFLICT(event_id) DO NOTHING
+    `);
+    const info = stmt.run(evtId, evtType, nodeId, dataJson, ts);
+    return { id: info.lastInsertRowid, inserted: info.changes > 0, eventId: evtId };
+  }
+
+  getEdgeEvents(limit = 100) {
+    const lim = Math.max(1, Math.min(Number(limit) || 100, 500));
+    return this.db.prepare(`
+      SELECT id, event_id, event_type, node_id, data_json, timestamp, created_at
+      FROM events
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(lim);
+  }
+
+  getEdgeEventsCount() {
+    const row = this.db.prepare(`SELECT COUNT(*) as count FROM events`).get();
+    return row?.count || 0;
   }
 }
 

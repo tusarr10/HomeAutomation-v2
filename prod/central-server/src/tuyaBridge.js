@@ -435,6 +435,13 @@ class TuyaBreakerBridge {
     }
   }
 
+  updateReadingFromEdge(reading, config = null) {
+    if (!reading) return;
+    this.lastReading = reading;
+    if (config) this.lastConfig = config;
+    this.syncToFleet({ reading: this.lastReading, config: this.lastConfig || this.config });
+  }
+
   getStatus() {
     let energySummary = null;
     try {
