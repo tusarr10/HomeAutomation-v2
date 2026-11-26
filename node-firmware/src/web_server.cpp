@@ -4376,7 +4376,7 @@ void WebServerManager::serveEmbeddedDashboard() {
 #if !defined(TARGET_ESP01_1M) && !defined(TARGET_ESP01_PCF8574)
 extern const char API_CATALOG_JSON[] PROGMEM = R"rawliteral({
   "title": "SmartHome ESP8266 REST API Catalog",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "endpoints": [
     {"method":"POST","path":"/api/auth/login","auth":false,"description":"Authenticate admin or paired server key","body":{"username":"admin","password":"..."}},
     {"method":"GET","path":"/api/auth/check","auth":false,"description":"Check active authentication and pairing status"},
