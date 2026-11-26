@@ -35,6 +35,7 @@ All wire APIs, database schemas, bidirectional pin synchronizations, room GUI vi
 | **CS-10**| **Interactive 2D / 3D Room GUI** | Full architectural 2D blueprint (walls, bay window, glows, fan spins) + 3D isometric view | ✅ **DONE** | Live verified: Smooth switching between 2D Blueprint, 3D Isometric, and direct appliance control. |
 | **CS-11**| **Appliance Customization & Presets** | In-canvas appliance modal (`openEditRoomApplianceModal`) with 15+ presets and 25+ emojis | ✅ **DONE** | Live verified: Custom icon, label, and live hardware node/relay reassignment. |
 | **CS-12**| **PWA & Mobile/Tablet Optimization** | `manifest.json`, `sw.js` cache, off-canvas drawer (`☰`), responsive auto-scaling stages | ✅ **DONE** | Live verified: Standalone PWA install ready; smooth drawer navigation and responsive layout on mobile (390px). |
+| **CS-13**| **Long-Term Energy Analytics & Cost**| SQLite `energy_history` & `energy_settings`, REST endpoints, SVG hourly/daily chart, tariff modal | ✅ **DONE** | Live verified: Auto-downsampling, 4 KPI cards (Today kWh, Cost, Peak W), 24h/7d/30d SVG chart, live dashboard strip. |
 
 ---
 
@@ -58,7 +59,7 @@ All firmware tasks (P0, P1, P2) are **fully implemented, compiled, and live-veri
 ## 4. PART C: Future Actionable TODO Roadmap (Separated by Subsystem)
 
 ### Central Relay Server Roadmap (`central-server/TODO.md`)
-- [ ] **CS-F1: Long-Term Power & Energy Consumption Analytics**
+- [x] **CS-F1: Long-Term Power & Energy Consumption Analytics** *(Completed & Verified)*
   - Time-series downsampling in SQLite (`energy_history`) aggregating power metrics from Tuya Breaker & Node ADC sensors into daily/monthly kWh charts.
 - [ ] **CS-F2: Configurable Electrical Safety Alarms**
   - Automation engine threshold alerts for over-voltage (> 250V), under-voltage (< 190V), and excessive leakage current (> 30mA).

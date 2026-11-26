@@ -80,14 +80,15 @@
 - [x] **Progressive Web App (PWA) Manifest, Service Worker & Mobile Off-Canvas Drawer** *(Verified)*
 - [x] **Strict Clean Normal Mode vs Edit Mode in Room GUI** *(Verified)*
 
+### P3 — Advanced Energy Analytics & Historical Reporting
+- [x] **Task CS-F1: Long-Term Power & Energy Consumption Analytics (Hourly / Daily kWh)** *(Implemented & Verified)*
+  - **Status:** Added `energy_history` and `energy_settings` SQLite tables with auto-downsampling. Implemented REST API (`GET /api/v1/analytics/energy/summary`, `GET /api/v1/analytics/energy/history`, `POST /api/v1/analytics/energy/settings`). Built interactive SVG bar charts (24h hourly, 7d/30d daily), KPI cards (Today kWh, Yesterday, Month-to-date, Projected budget), and dynamic tariff/budget editor modal in `app.js` and `style.css`. Verified with live browser testing.
+
 ---
 
 ## 3. Future Central Server Tasks & Roadmap (TODO)
 
-### P3 — Advanced Energy Analytics & Historical Reporting
-- [ ] **Task CS-F1: Long-Term Power & Energy Logging (Hourly / Daily kWh)**
-  - Implement time-series downsampling in SQLite (`energy_history` table) aggregating power readings from Tuya breaker and node ADC sensors.
-  - Render interactive weekly and monthly bar charts with cost estimation ($ / kWh).
+### P3 — Advanced Energy Analytics & Safety Automation
 - [ ] **Task CS-F2: Electrical Safety Alarm Triggers**
   - Add configurable threshold alerts in Automation engine for over-voltage (> 250V), under-voltage (< 190V), high leakage current (> 30mA), and power spikes.
 

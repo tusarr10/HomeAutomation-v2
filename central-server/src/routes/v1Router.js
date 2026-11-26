@@ -2726,6 +2726,41 @@ function createV1Router(nodeManager, db) {
     }
   });
 
+  // =========================================================================
+  // ⚡ ENERGY CONSUMPTION & POWER ANALYTICS ENDPOINTS (P3 / CS-F1)
+  // =========================================================================
+
+  router.get('/analytics/energy/summary', authenticateUser(db), (req, res) => {
+    try {
+      const nodeId = req.query.node_id || null;
+      const summary = db.getEnergySummary(nodeId);
+      res.json({ success: true, summary });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.get('/analytics/energy/history', authenticateUser(db), (req, res) => {
+    try {
+      const range = req.query.range || '24h';
+      const nodeId = req.query.node_id || null;
+      const history = db.getEnergyHistory(range, nodeId);
+      const summary = db.getEnergySummary(nodeId);
+      res.json({ success: true, range, history, summary });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/analytics/energy/settings', requirePermission(db, 'system:config'), (req, res) => {
+    try {
+      const updated = db.updateEnergySettings(req.body);
+      res.json({ success: true, settings: updated });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  });
+
   return router;
 }
 

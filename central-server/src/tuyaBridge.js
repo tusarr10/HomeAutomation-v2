@@ -206,6 +206,22 @@ class TuyaBreakerBridge {
       }
     }
 
+    // 2.5 Record Long-Term Energy & Power History Snapshot (P3 / CS-F1)
+    if (typeof this.db.recordEnergySnapshot === 'function') {
+      this.db.recordEnergySnapshot({
+        nodeId: this.nodeId,
+        source: 'tuya_breaker',
+        voltage_v: Number(decoded.voltage_v) || 0,
+        current_a: Number(decoded.current_a) || 0,
+        power_w: Number(decoded.power_w) || 0,
+        power_factor: Number(decoded.power_factor) || 1.0,
+        frequency_hz: Number(decoded.frequency_hz) || 50.0,
+        total_energy_kwh: Number(decoded.total_energy_kwh) || 0,
+        leakage_current_ma: Number(decoded.leakage_current_ma) || 0,
+        temperature_c: Number(decoded.temperature_c) || 0
+      });
+    }
+
     // 3. Serial Packet Stream Logging
     const now = new Date();
     const timeStr = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0');
@@ -412,12 +428,20 @@ class TuyaBreakerBridge {
   }
 
   getStatus() {
+    let energySummary = null;
+    try {
+      if (typeof this.db.getEnergySummary === 'function') {
+        energySummary = this.db.getEnergySummary(this.nodeId);
+      }
+    } catch (e) {}
+
     return {
       nodeId: this.nodeId,
       macAddress: this.macAddress,
       portalUrl: this.portalUrl,
       config: this.lastConfig,
-      reading: this.lastReading
+      reading: this.lastReading,
+      energySummary
     };
   }
 
