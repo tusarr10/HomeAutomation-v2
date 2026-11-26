@@ -2135,6 +2135,70 @@ function createV1Router(nodeManager, db) {
     res.json(db.getAuditLogs(limit, category));
   });
 
+  // =========================================================================
+  // 🔄 RELAY SERVER BIDIRECTIONAL SYNC (CS-F7 / CS-F8)
+  // =========================================================================
+
+  // POST /api/v1/system/sync-events - Ingests replayed offline events from Relay Server
+  router.post('/system/sync-events', (req, res) => {
+    const { source = 'relay_edge_broker', events = [] } = req.body || {};
+    if (!Array.isArray(events) || events.length === 0) {
+      return res.json({ success: true, count: 0 });
+    }
+
+    console.log(`[Relay Syncer] Received ${events.length} offline events from ${source}`);
+    nodeManager.lastEdgeSyncEpoch = Math.floor(Date.now() / 1000);
+
+    let inserted = 0;
+    for (const evt of events) {
+      try {
+        const resRec = db.recordEdgeEvent(evt);
+        if (resRec && resRec.inserted) {
+          inserted++;
+          nodeManager.edgeSyncStats.totalEventsReplayed++;
+
+          const evtType = evt.type || evt.event_type;
+          const nodeId = evt.nodeId || evt.node_id;
+
+          // Apply state transitions to fleet state in SQLite
+          if (evtType === 'RELAY_TRANSITION' && evt.data) {
+            const chId = evt.data.channelId !== undefined ? evt.data.channelId : evt.data.channel;
+            const newState = evt.data.newState !== undefined ? evt.data.newState : (evt.data.state ? 1 : 0);
+            if (nodeId && chId !== undefined) {
+              db.updateRelayState(nodeId, Number(chId), newState ? 1 : 0);
+              db.logRelayEvent(nodeId, Number(chId), null, newState ? 1 : 0, 'RELAY_SYNC');
+            }
+          } else if (evtType === 'BREAKER_TRIP' || evtType === 'BREAKER_SWITCH') {
+            const contactState = evt.data?.switch_state ?? false;
+            db.updateRelayState('NODE-30487DE85D5C', 1, contactState ? 1 : 0);
+          }
+        }
+      } catch (err) {
+        // Skip duplicate or malformed events
+      }
+    }
+
+    db.logSystemEvent('SYSTEM', 'RELAY_SYNC', 'INFO', `Synchronized ${inserted} replayed offline events from ${source}`);
+    nodeManager.broadcast('fleet_update', { source: 'sync_events', count: inserted });
+
+    res.json({ success: true, count: inserted });
+  });
+
+  // GET /api/v1/system/sync-events - Audit replayed edge events
+  router.get('/system/sync-events', (req, res) => {
+    const limit = Number(req.query.limit) || 100;
+    const events = typeof db.getEdgeEvents === 'function' ? db.getEdgeEvents(limit) : [];
+    res.json({ success: true, count: events.length, events });
+  });
+
+  // GET /api/v1/system/sync-status - Check status of bidirectional edge sync
+  router.get('/system/sync-status', (req, res) => {
+    const status = typeof nodeManager.getEdgeSyncStatus === 'function'
+      ? nodeManager.getEdgeSyncStatus()
+      : { connected: false };
+    res.json({ success: true, sync: status });
+  });
+
 
   // --- Enhanced System & Broker Settings API ---
   router.get('/system/settings', authenticateUser(db), (req, res) => {

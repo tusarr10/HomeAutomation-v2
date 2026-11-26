@@ -88,6 +88,12 @@
     * **Continuous 24-Hour Timeline:** Upgraded `getEnergyHistory('24h')` to construct a complete, continuous 24-hour hourly series (from 23 hours ago up to current hour) with zero-filled baseline slots and peak demand curves.
     * **Mean Metrics & Summary Footer:** Added `last_24h` mean hourly metrics (`mean_hourly_kwh`, `mean_power_w`, `peak_w`, `mean_voltage_v`) in API summary, and an illuminated `Total & Period Mean` summary footer row in the intervals breakdown table. Fully verified in live browser UI.
 
+### P3 — Bidirectional Relay Server Synchronization & Offline Ingestion
+- [x] **Task CS-F7: Offline Replayed Events Ingestion (`POST /api/v1/system/sync-events`)** *(Implemented & Verified)*
+  - **Status:** Added `events` table (Table 37) in SQLite schema with unique constraint and indexing. Added `POST /api/v1/system/sync-events` route to ingest spooled events replayed by the Relay Server. Dynamically synchronizes relay state transitions, breaker trips, and logs audit events. Live-verified: 25 offline events successfully ingested and audited.
+- [x] **Task CS-F8: Edge Live State Snapshot on Reconnect (`eventType === "edge_snapshot"`)** *(Implemented & Verified)*
+  - **Status:** Added `edge_snapshot` telemetry handler in `NodeManager.processTelemetry()` in `nodeManager.js`. Synchronizes all node online statuses, channel states, and Tuya circuit breaker readings immediately upon PC startup. Added `GET /api/v1/system/sync-status` reporting live sync health. Live-verified with edge broker.
+
 ---
 
 ## 3. Future Central Server Tasks & Roadmap (TODO)

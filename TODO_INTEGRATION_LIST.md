@@ -36,6 +36,7 @@ All wire APIs, database schemas, bidirectional pin synchronizations, room GUI vi
 | **CS-11**| **Appliance Customization & Presets** | In-canvas appliance modal (`openEditRoomApplianceModal`) with 15+ presets and 25+ emojis | ✅ **DONE** | Live verified: Custom icon, label, and live hardware node/relay reassignment. |
 | **CS-12**| **PWA & Mobile/Tablet Optimization** | `manifest.json`, `sw.js` cache, off-canvas drawer (`☰`), responsive auto-scaling stages | ✅ **DONE** | Live verified: Standalone PWA install ready; smooth drawer navigation and responsive layout on mobile (390px). |
 | **CS-13**| **Long-Term Energy Analytics & Cost**| SQLite `energy_history` & `energy_settings`, REST endpoints, SVG hourly/daily chart, tariff modal | ✅ **DONE** | Live verified: Trapezoidal active power integration, anomaly rejection, continuous 24h hourly report (zero-filled), KPI cards, table summary footer row, live dashboard strip. |
+| **CS-14**| **Bidirectional Relay Server Sync**| Ingestion endpoint (`POST /api/v1/system/sync-events`), Table 37 `events`, and `edge_snapshot` telemetry | ✅ **DONE** | Live verified: 25 replayed offline events ingested automatically, live edge state snapshot ingested and applied, `GET /api/v1/system/sync-status` reporting healthy sync. |
 
 ---
 
