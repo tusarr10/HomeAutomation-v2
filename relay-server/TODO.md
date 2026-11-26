@@ -1,7 +1,7 @@
 # Relay Server Feature Documentation & Actionable Roadmap (`relay-server/`)
 
 > **Binary:** `smarthome-edge` (Go native static binary, ARM64 OpenWrt & AMD64 Windows)  
-> **Role:** Complete Autonomous SmartHome Server on Edge Router (MediaTek Filogic 830 MT7986A Jio AX6000), embedded pure-Go SQLite database (`fleet_edge.db`), full 17-view Web UI (Port 9200), dedicated Mobile APIs (`/api/v1/mobile/*`), and two-way upstream Central Server sync.  
+> **Role:** Complete Autonomous SmartHome Server on Edge Router (MediaTek Filogic 830 MT7986A Jio AX6000), embedded pure-Go SQLite database (`fleet_edge.db`), full 17-view Web UI (Port 9200), dedicated Mobile APIs (`/api/v1/mobile/*`), direct Tuya socket bridge (Port 6668), and two-way upstream Central Server sync.  
 > **Current Version:** v1.2.0  
 > **Status:** All core edge broker, database, web dashboard, mobile API, and sync modules are 100% complete & verified.
 
@@ -60,9 +60,10 @@
 
 ---
 
-### 1.6 Native Tuya Protocol v3.5 Direct Socket
+### 1.6 Native Tuya Protocol v3.5 Direct Socket & Electrical Metrology
 - Direct AES-128-ECB socket to Wi-Fi smart circuit breaker on port 6668.
-- Real-time electrical telemetry polling (V, A, W, Hz, mA, °C) and contactor control (DP 108).
+- Real-time electrical telemetry polling (V, A, W, Hz, mA, °C), forward cumulative energy DP 101 (0.01 kWh resolution), and contactor control (DP 108).
+- Strict software interlock safeguarding the breaker from accidental toggling during automation or batch operations.
 
 ---
 
@@ -93,6 +94,12 @@
 - [ ] **Task RS-F4: Rate Limiting & IP Brute-Force Guard**
   - Implement in-memory token bucket rate limiting on `/api/v1/mobile/login` to prevent credential brute-forcing over local Wi-Fi or VPN connections.
 
-### P5 — Offline Spooling & Telemetry Downsampling
+### P5 — Offline Spooling, Flash Safety & Edge Energy Analytics
 - [ ] **Task RS-F5: Compressed Telemetry Spooling for Long WAN Outages**
   - When the Central Server is unreachable for extended periods (> 24 hours), gzip-compress spooled electrical and sensor events in `offline_sync_spool` to minimize flash storage writes on the router's NAND flash.
+- [ ] **Task RS-F6: Autonomous Edge Energy Analytics & Flash-Safe RAM Logging**
+  - Implement in-memory circular ring buffer for 30-second power integration ($E = \frac{P \times \Delta t}{3,600,000}$) to compute local Today kWh and 24h hourly stats without frequent flash writes.
+  - Flush hourly aggregated buckets to SQLite `energy_history` only once per hour to preserve router NAND flash endurance.
+  - Expose `/api/v1/analytics/energy/summary` and `/api/v1/analytics/energy/history` directly on Relay Server for standalone offline analytics.
+- [ ] **Task RS-F7: Two-Way Edge-to-Central Energy History Sync**
+  - When Relay Server operates during WAN outages, sync the edge-calculated hourly energy summaries back to Central Server upon link restoration.
