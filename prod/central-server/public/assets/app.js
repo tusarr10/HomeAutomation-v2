@@ -4933,7 +4933,23 @@ function renderRoomsAndHomesView(homes, rooms, nodes, relays = cachedRelaysList)
   };
 
   const getRelaysForRoom = (roomName) => {
-    return (relays || []).filter(r => (r.room || '').toLowerCase() === (roomName || '').toLowerCase());
+    const targetRoom = (roomName || '').trim().toLowerCase();
+    return (relays || []).filter(r => {
+      const relayRoom = (r.room || '').trim().toLowerCase();
+      if (relayRoom && relayRoom !== 'general') {
+        return relayRoom === targetRoom;
+      }
+      const parentNode = (nodes || []).find(n => n.node_id === r.node_id);
+      if (parentNode && (parentNode.room || '').trim().toLowerCase() === targetRoom) {
+        const func = (r.function || '').toLowerCase();
+        const name = (r.name || '').toLowerCase();
+        if (func.includes('voltage') || func.includes('breaker') || name.includes('voltage') || name.includes('breaker')) {
+          return false;
+        }
+        return true;
+      }
+      return false;
+    });
   };
 
   // Filter homes if user selected a single home
@@ -5235,11 +5251,28 @@ function switchRoomViewMode(mode) {
 function renderActiveRoomGui(room, home, relays, nodes) {
   const container = document.getElementById("content-area");
 
-  // Filter relays mapped to this room (either by relay.room or parent node.room)
+  // Filter relays strictly mapped to this room
   const roomRelays = (relays || []).filter(r => {
-    if ((r.room || '').toLowerCase() === (room.name || '').toLowerCase()) return true;
+    const relayRoom = (r.room || '').trim().toLowerCase();
+    const currentRoomName = (room.name || '').trim().toLowerCase();
+
+    // 1. If relay explicitly belongs to this room
+    if (relayRoom && relayRoom === currentRoomName) return true;
+
+    // 2. If relay explicitly belongs to another specific room or common area, DO NOT include here
+    if (relayRoom && relayRoom !== 'general' && relayRoom !== currentRoomName) {
+      return false;
+    }
+
+    // 3. Fallback to parent node room ONLY if relay has no specific room or is 'general'
     const parentNode = (nodes || []).find(n => n.node_id === r.node_id);
-    if (parentNode && (parentNode.room_id === room.id || (parentNode.room || '').toLowerCase() === (room.name || '').toLowerCase())) {
+    if (parentNode && (parentNode.room_id === room.id || (parentNode.room || '').trim().toLowerCase() === currentRoomName)) {
+      // Do not include pure home common/mains meters in individual room appliances
+      const func = (r.function || '').toLowerCase();
+      const name = (r.name || '').toLowerCase();
+      if (func.includes('voltage') || func.includes('breaker') || name.includes('voltage') || name.includes('breaker')) {
+        return false;
+      }
       return true;
     }
     return false;
