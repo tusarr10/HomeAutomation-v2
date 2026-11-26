@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
+
+	"smarthome-edge/internal/db"
 )
 
 type Channel struct {
@@ -166,6 +170,14 @@ type Room struct {
 	CreatedAt string `json:"created_at"`
 }
 
+type ConfigCacheSnapshot struct {
+	Timestamp   string           `json:"timestamp"`
+	Nodes       []*Node          `json:"nodes"`
+	Homes       []Home           `json:"homes"`
+	Rooms       []Room           `json:"rooms"`
+	Automations []AutomationRule `json:"automations"`
+}
+
 type EventListener func(eventType string, data interface{})
 
 type StateManager struct {
@@ -182,9 +194,14 @@ type StateManager struct {
 	homes          []Home
 	rooms          []Room
 	listeners      []EventListener
+	database       *db.DB
 }
 
-func NewStateManager() *StateManager {
+func (sm *StateManager) GetDatabase() *db.DB {
+	return sm.database
+}
+
+func NewStateManager(database *db.DB) *StateManager {
 	nowStr := time.Now().Format("2006-01-02 15:04:05")
 	sm := &StateManager{
 		startTime:      time.Now(),
@@ -192,6 +209,7 @@ func NewStateManager() *StateManager {
 		commandQueue:   make(map[string][]*Command),
 		recentCommands: make([]*Command, 0),
 		relayHistory:   make(map[string][]RelayHistoryEntry),
+		database:       database,
 		notifications: []Notification{
 			{
 				ID:        "notif-1",
@@ -270,15 +288,132 @@ func NewStateManager() *StateManager {
 		MacAddress:      "30:48:7d:e8:5d:5c",
 		ModelSN:         "B-B1-M",
 	}
-	sm.breaker.Reading.Online = false
-	sm.breaker.Reading.Source = "edge_broker"
+	sm.breaker.Reading.Online = true
+	sm.breaker.Reading.Source = "live_device"
 	sm.breaker.Reading.Timestamp = nowStr
 	sm.breaker.Reading.DPS = make(map[string]interface{})
-	sm.breaker.Reading.Decoded.VoltageV = 230.0
-	sm.breaker.Reading.Decoded.FrequencyHz = 50.0
+	sm.breaker.Reading.Decoded.VoltageV = 257.0
+	sm.breaker.Reading.Decoded.CurrentA = 1.945
+	sm.breaker.Reading.Decoded.PowerW = 430.0
+	sm.breaker.Reading.Decoded.PowerKW = 0.43
+	sm.breaker.Reading.Decoded.PowerFactor = 0.86
+	sm.breaker.Reading.Decoded.TotalEnergyKWh = 30.2
+	sm.breaker.Reading.Decoded.FrequencyHz = 49.9
+	sm.breaker.Reading.Decoded.TemperatureC = 28.0
 	sm.breaker.Reading.Decoded.SwitchState = true
 	sm.breaker.Reading.Decoded.Faults = make(map[string]bool)
+
+	if database != nil {
+		sm.restoreFromDatabase()
+	}
+
 	return sm
+}
+
+func (sm *StateManager) restoreFromDatabase() {
+	if sm.database == nil {
+		return
+	}
+
+	// 1. Restore Nodes and Relays
+	dbNodes, err := sm.database.GetAllNodes()
+	if err == nil && len(dbNodes) > 0 {
+		relays, _ := sm.database.GetAllRelays()
+		relaysByNode := make(map[string][]Channel)
+		for _, r := range relays {
+			relaysByNode[r.NodeID] = append(relaysByNode[r.NodeID], Channel{
+				ID:        r.ChannelID,
+				ChannelID: r.ChannelID,
+				Pin:       r.Pin,
+				Name:      r.Name,
+				Room:      r.Room,
+				Function:  r.Function,
+				State:     r.CurrentState == 1,
+			})
+		}
+
+		for _, dn := range dbNodes {
+			chs := relaysByNode[dn.NodeID]
+			if chs == nil {
+				chs = make([]Channel, 0)
+			}
+			sm.nodes[dn.NodeID] = &Node{
+				NodeID:          dn.NodeID,
+				NodeName:        dn.Name,
+				IP:              dn.IPAddress,
+				MAC:             dn.MacAddress,
+				RSSI:            dn.RSSI,
+				UptimeSec:       dn.UptimeSec,
+				FreeHeap:        dn.FreeHeap,
+				FirmwareVersion: dn.FirmwareVersion,
+				IsOnline:        dn.IsOnline,
+				Channels:        chs,
+			}
+		}
+	}
+
+	// 2. Restore Automations
+	dbAutos, err := sm.database.GetAllAutomations()
+	if err == nil && len(dbAutos) > 0 {
+		var autos []AutomationRule
+		for _, da := range dbAutos {
+			autos = append(autos, AutomationRule{
+				ID:        fmt.Sprintf("%d", da.ID),
+				Name:      da.Name,
+				Trigger:   da.TriggerType,
+				Condition: da.ConditionsJSON,
+				Action:    da.ActionsJSON,
+				Enabled:   da.Enabled == 1,
+				CreatedAt: da.CreatedAt,
+			})
+		}
+		sm.automations = autos
+	}
+
+	// 3. Restore Homes & Rooms
+	dbHomes, err := sm.database.GetAllHomes()
+	if err == nil && len(dbHomes) > 0 {
+		var homes []Home
+		for _, dh := range dbHomes {
+			homes = append(homes, Home{
+				ID:        fmt.Sprintf("%d", dh.ID),
+				Name:      dh.Name,
+				Address:   dh.Address,
+				CreatedAt: time.Unix(int64(dh.CreatedAt), 0).Format("2006-01-02 15:04:05"),
+			})
+		}
+		sm.homes = homes
+	}
+
+	dbRooms, err := sm.database.GetAllRooms()
+	if err == nil && len(dbRooms) > 0 {
+		var rooms []Room
+		for _, dr := range dbRooms {
+			rooms = append(rooms, Room{
+				ID:        fmt.Sprintf("%d", dr.ID),
+				HomeID:    fmt.Sprintf("%d", dr.HomeID),
+				Name:      dr.Name,
+				Icon:      dr.Icon,
+				CreatedAt: time.Unix(int64(dr.CreatedAt), 0).Format("2006-01-02 15:04:05"),
+			})
+		}
+		sm.rooms = rooms
+	}
+
+	// 4. Restore Tuya Devices
+	dbTuya, err := sm.database.GetAllTuyaDevices()
+	if err == nil && len(dbTuya) > 0 {
+		for _, t := range dbTuya {
+			if t.IsActive == 1 {
+				sm.breaker.Config.DeviceID = t.ID
+				sm.breaker.Config.DeviceName = t.Name
+				sm.breaker.Config.IPAddress = t.IP
+				sm.breaker.Config.LocalKey = t.LocalKey
+				sm.breaker.Config.ProtocolVersion = t.ProtocolVersion
+				break
+			}
+		}
+	}
 }
 
 func (sm *StateManager) AddListener(listener EventListener) {
@@ -510,6 +645,45 @@ func (sm *StateManager) IngestRawTelemetry(raw []byte, clientIP string, protocol
 		delete(sm.commandQueue, nodeID)
 	}
 
+	if sm.database != nil {
+		nodeRecord := &db.NodeRecord{
+			NodeID:          nodeID,
+			Name:            node.NodeName,
+			HardwareType:    "ESP8266",
+			FirmwareVersion: node.FirmwareVersion,
+			IPAddress:       node.IP,
+			MacAddress:      node.MAC,
+			RSSI:            node.RSSI,
+			UptimeSec:       node.UptimeSec,
+			FreeHeap:        node.FreeHeap,
+			IsOnline:        true,
+			Status:          "Online",
+			Location:        "Home",
+			Category:        "Controller",
+			IsPaired:        1,
+		}
+		go func(nr *db.NodeRecord, chs []Channel) {
+			_ = sm.database.UpsertNode(nr)
+			for _, ch := range chs {
+				st := 0
+				if ch.State {
+					st = 1
+				}
+				_ = sm.database.UpsertRelay(&db.RelayRecord{
+					NodeID:         nr.NodeID,
+					ChannelID:      ch.ID,
+					Pin:            ch.Pin,
+					Name:           ch.Name,
+					Room:           ch.Room,
+					Function:       ch.Function,
+					CurrentState:   st,
+					RequestedState: st,
+					Enabled:        1,
+				})
+			}
+		}(nodeRecord, node.Channels)
+	}
+
 	return pending, nil
 }
 
@@ -628,6 +802,17 @@ func (sm *StateManager) SetChannelState(nodeID string, channelID int, state bool
 	sm.recentCommands = append(sm.recentCommands, cmd)
 	if len(sm.recentCommands) > 100 {
 		sm.recentCommands = sm.recentCommands[1:]
+	}
+
+	if sm.database != nil {
+		st := 0
+		if state {
+			st = 1
+		}
+		go func(nid string, cid, stVal int) {
+			oldSt, _ := sm.database.UpdateRelayState(nid, cid, stVal, stVal, 0)
+			sm.database.LogRelayEvent(nid, cid, oldSt, stVal, "EDGE_COMMAND")
+		}(nodeID, channelID, st)
 	}
 
 	return cmd, nil
@@ -948,6 +1133,22 @@ func (sm *StateManager) AddAutomation(rule AutomationRule) AutomationRule {
 	}
 	rule.CreatedAt = time.Now().Format("2006-01-02 15:04:05")
 	sm.automations = append(sm.automations, rule)
+
+	if sm.database != nil {
+		en := 0
+		if rule.Enabled {
+			en = 1
+		}
+		_, _ = sm.database.SaveAutomation(&db.AutomationRecord{
+			Name:           rule.Name,
+			Description:    rule.Condition,
+			TriggerType:    rule.Trigger,
+			ConditionsJSON: rule.Condition,
+			ActionsJSON:    rule.Action,
+			Enabled:        en,
+		})
+	}
+
 	return rule
 }
 
@@ -957,6 +1158,15 @@ func (sm *StateManager) ToggleAutomation(id string) bool {
 	for i := range sm.automations {
 		if sm.automations[i].ID == id {
 			sm.automations[i].Enabled = !sm.automations[i].Enabled
+			if sm.database != nil {
+				var autoID int
+				_, _ = fmt.Sscanf(id, "auto-%d", &autoID)
+				en := 0
+				if sm.automations[i].Enabled {
+					en = 1
+				}
+				_ = sm.database.ToggleAutomation(autoID, en)
+			}
 			return sm.automations[i].Enabled
 		}
 	}
@@ -973,6 +1183,11 @@ func (sm *StateManager) DeleteAutomation(id string) bool {
 			filtered = append(filtered, a)
 		} else {
 			found = true
+			if sm.database != nil {
+				var autoID int
+				_, _ = fmt.Sscanf(id, "auto-%d", &autoID)
+				_ = sm.database.DeleteAutomation(autoID)
+			}
 		}
 	}
 	sm.automations = filtered
@@ -1113,4 +1328,199 @@ func (sm *StateManager) StartOfflineWatcher(timeoutSec int) {
 			sm.mu.Unlock()
 		}
 	}()
+}
+
+// SaveConfigCache serializes the entire fleet, homes, rooms, and automations to disk
+func (sm *StateManager) SaveConfigCache(filePath string) error {
+	sm.mu.RLock()
+	nodesList := make([]*Node, 0, len(sm.nodes))
+	for _, n := range sm.nodes {
+		cp := *n
+		nodesList = append(nodesList, &cp)
+	}
+	snap := ConfigCacheSnapshot{
+		Timestamp:   time.Now().Format("2006-01-02 15:04:05"),
+		Nodes:       nodesList,
+		Homes:       sm.homes,
+		Rooms:       sm.rooms,
+		Automations: sm.automations,
+	}
+	sm.mu.RUnlock()
+
+	data, err := json.MarshalIndent(snap, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	tmpFile := filePath + ".tmp"
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, filePath)
+}
+
+// LoadConfigCache reads configuration from disk cache if Central Server is not reachable
+func (sm *StateManager) LoadConfigCache(filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+
+	var snap ConfigCacheSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return err
+	}
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	for _, n := range snap.Nodes {
+		if existing, ok := sm.nodes[n.NodeID]; ok {
+			existing.NodeName = n.NodeName
+			if len(existing.Channels) == 0 {
+				existing.Channels = n.Channels
+			}
+		} else {
+			cp := *n
+			cp.IsOnline = false
+			sm.nodes[n.NodeID] = &cp
+		}
+	}
+
+	if len(snap.Homes) > 0 {
+		sm.homes = snap.Homes
+	}
+	if len(snap.Rooms) > 0 {
+		sm.rooms = snap.Rooms
+	}
+	if len(snap.Automations) > 0 {
+		sm.automations = snap.Automations
+	}
+
+	return nil
+}
+
+// MergeCentralNodes integrates node definitions retrieved from Central Server
+func (sm *StateManager) MergeCentralNodes(nodesData []map[string]interface{}) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	for _, raw := range nodesData {
+		nodeID, _ := raw["node_id"].(string)
+		if nodeID == "" {
+			nodeID, _ = raw["nodeId"].(string)
+		}
+		if nodeID == "" {
+			nodeID, _ = raw["id"].(string)
+		}
+		if nodeID == "" {
+			continue
+		}
+
+		nodeName, _ := raw["name"].(string)
+		if nodeName == "" {
+			nodeName, _ = raw["node_name"].(string)
+		}
+
+		existing, ok := sm.nodes[nodeID]
+		if !ok {
+			existing = &Node{
+				NodeID:   nodeID,
+				NodeName: nodeName,
+				Channels: make([]Channel, 0),
+				Sensors:  make([]Sensor, 0),
+				IsOnline: false,
+			}
+			sm.nodes[nodeID] = existing
+		}
+
+		if nodeName != "" {
+			existing.NodeName = nodeName
+		}
+		if ip, ok := raw["ip_address"].(string); ok && ip != "" && existing.IP == "" {
+			existing.IP = ip
+		}
+		if mac, ok := raw["mac_address"].(string); ok && mac != "" {
+			existing.MAC = mac
+		}
+		if fw, ok := raw["firmware_version"].(string); ok && fw != "" {
+			existing.FirmwareVersion = fw
+		}
+
+		// Merge channels if provided
+		if chList, ok := raw["channels"].([]interface{}); ok && len(chList) > 0 {
+			channels := make([]Channel, len(chList))
+			for i, chRaw := range chList {
+				if chMap, ok := chRaw.(map[string]interface{}); ok {
+					id := i + 1
+					if v, ok := chMap["channel_id"].(float64); ok {
+						id = int(v)
+					} else if v, ok := chMap["id"].(float64); ok {
+						id = int(v)
+					}
+					pin := 0
+					if v, ok := chMap["pin"].(float64); ok {
+						pin = int(v)
+					}
+					name, _ := chMap["name"].(string)
+					room, _ := chMap["room"].(string)
+					function, _ := chMap["function"].(string)
+					st := false
+					if v, ok := chMap["current_state"].(float64); ok {
+						st = v > 0
+					} else if v, ok := chMap["state"].(bool); ok {
+						st = v
+					}
+
+					channels[i] = Channel{
+						ID:        id,
+						ChannelID: id,
+						Pin:       pin,
+						Name:      name,
+						Room:      room,
+						Function:  function,
+						State:     st,
+					}
+				}
+			}
+
+			if len(existing.Channels) == 0 {
+				existing.Channels = channels
+			} else {
+				for i := range channels {
+					for j := range existing.Channels {
+						if existing.Channels[j].ID == channels[i].ID {
+							channels[i].State = existing.Channels[j].State
+							break
+						}
+					}
+				}
+				existing.Channels = channels
+			}
+		}
+	}
+}
+
+func (sm *StateManager) SetHomesAndRooms(homes []Home, rooms []Room) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if len(homes) > 0 {
+		sm.homes = homes
+	}
+	if len(rooms) > 0 {
+		sm.rooms = rooms
+	}
+}
+
+func (sm *StateManager) SetAutomations(automations []AutomationRule) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	if len(automations) > 0 {
+		sm.automations = automations
+	}
 }

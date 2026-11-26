@@ -1,0 +1,303 @@
+{
+  "timestamp": "2026-11-26 02:17:03",
+  "nodes": [
+    {
+      "nodeId": "NODE-BCDDC223386C",
+      "nodeName": "SmartHome-ESP8266-4MB",
+      "ip": "192.168.1.26",
+      "mac": "BC:DD:C2:23:38:6C",
+      "rssi": -41,
+      "uptimeSec": 246,
+      "freeHeap": 24200,
+      "firmwareVersion": "1.6.0",
+      "isOnline": false,
+      "lastSeenEpoch": 0,
+      "channels": [
+        {
+          "id": 1,
+          "channelId": 1,
+          "pin": 5,
+          "name": "Living Room Light",
+          "room": "Living Room",
+          "function": "Light",
+          "state": false
+        },
+        {
+          "id": 2,
+          "channelId": 2,
+          "pin": 4,
+          "name": "Bedroom Fan",
+          "room": "Living Room",
+          "function": "fan",
+          "state": false
+        },
+        {
+          "id": 3,
+          "channelId": 3,
+          "pin": 2,
+          "name": "Test",
+          "room": "Hall",
+          "function": "Light",
+          "state": true
+        }
+      ],
+      "sensors": null
+    },
+    {
+      "nodeId": "NODE-68C63AF67479",
+      "nodeName": "SmartHome-Node",
+      "ip": "192.168.1.27",
+      "mac": "68:C6:3A:F6:74:79",
+      "rssi": -37,
+      "uptimeSec": 638,
+      "freeHeap": 24288,
+      "firmwareVersion": "1.6.0",
+      "isOnline": false,
+      "lastSeenEpoch": 0,
+      "channels": [
+        {
+          "id": 1,
+          "channelId": 1,
+          "pin": 5,
+          "name": "Living Room Light",
+          "room": "Bedroom",
+          "function": "Light",
+          "state": true
+        },
+        {
+          "id": 2,
+          "channelId": 2,
+          "pin": 4,
+          "name": "Bedroom Fan",
+          "room": "Bedroom",
+          "function": "Fan",
+          "state": false
+        },
+        {
+          "id": 3,
+          "channelId": 3,
+          "pin": 14,
+          "name": "d5",
+          "room": "Bedroom",
+          "function": "Light",
+          "state": false
+        },
+        {
+          "id": 4,
+          "channelId": 4,
+          "pin": 12,
+          "name": "d6",
+          "room": "Bedroom",
+          "function": "Light",
+          "state": false
+        },
+        {
+          "id": 5,
+          "channelId": 5,
+          "pin": 13,
+          "name": "d7",
+          "room": "Bedroom",
+          "function": "Light",
+          "state": false
+        }
+      ],
+      "sensors": null
+    },
+    {
+      "nodeId": "NODE-8C4F00565D72",
+      "nodeName": "SmartHome-Node",
+      "ip": "192.168.1.28",
+      "mac": "8C:4F:00:56:5D:72",
+      "rssi": -33,
+      "uptimeSec": 15934,
+      "freeHeap": 17824,
+      "firmwareVersion": "1.6.0",
+      "isOnline": true,
+      "lastSeenEpoch": 0,
+      "channels": [
+        {
+          "id": 1,
+          "channelId": 1,
+          "pin": 100,
+          "name": "PCF Relay 1",
+          "room": "Dining",
+          "function": "Relay",
+          "state": false
+        },
+        {
+          "id": 2,
+          "channelId": 2,
+          "pin": 101,
+          "name": "PCF Relay 2",
+          "room": "Dining",
+          "function": "Relay",
+          "state": false
+        },
+        {
+          "id": 3,
+          "channelId": 3,
+          "pin": 102,
+          "name": "PCF Relay 3",
+          "room": "Dining",
+          "function": "Relay",
+          "state": false
+        },
+        {
+          "id": 4,
+          "channelId": 4,
+          "pin": 103,
+          "name": "PCF Relay 4",
+          "room": "Dining",
+          "function": "Relay",
+          "state": false
+        },
+        {
+          "id": 5,
+          "channelId": 5,
+          "pin": 104,
+          "name": "PCF Relay 5",
+          "room": "Dining",
+          "function": "Relay",
+          "state": false
+        },
+        {
+          "id": 6,
+          "channelId": 6,
+          "pin": 105,
+          "name": "PCF Relay 6",
+          "room": "Dining",
+          "function": "Relay",
+          "state": false
+        },
+        {
+          "id": 7,
+          "channelId": 7,
+          "pin": 106,
+          "name": "PCF Relay 7",
+          "room": "Dining",
+          "function": "Relay",
+          "state": false
+        },
+        {
+          "id": 8,
+          "channelId": 8,
+          "pin": 107,
+          "name": "PCF Relay 8",
+          "room": "Dining",
+          "function": "Relay",
+          "state": false
+        },
+        {
+          "id": 9,
+          "channelId": 9,
+          "pin": 16,
+          "name": "Balcony Exhaust Fan",
+          "room": "Balcony",
+          "function": "Fan",
+          "state": false
+        },
+        {
+          "id": 10,
+          "channelId": 10,
+          "pin": 14,
+          "name": "Living Room IR RX",
+          "room": "Living Room",
+          "function": "IR Receiver",
+          "state": true
+        },
+        {
+          "id": 11,
+          "channelId": 11,
+          "pin": 13,
+          "name": "Living Room IR TX",
+          "room": "Living Room",
+          "function": "IR Transmitter",
+          "state": false
+        },
+        {
+          "id": 12,
+          "channelId": 12,
+          "pin": 17,
+          "name": "Mains Voltage ADC",
+          "room": "Mains",
+          "function": "AC RMS Voltage Sensor",
+          "state": false
+        }
+      ],
+      "sensors": null
+    },
+    {
+      "nodeId": "NODE-30487DE85D5C",
+      "nodeName": "Wi-Fi Smart Circuit Breaker (Main)",
+      "ip": "192.168.1.25",
+      "mac": "30:48:7d:e8:5d:5c",
+      "rssi": -55,
+      "uptimeSec": 5670,
+      "freeHeap": 48120,
+      "firmwareVersion": "v3.5",
+      "isOnline": true,
+      "lastSeenEpoch": 0,
+      "channels": [
+        {
+          "id": 1,
+          "channelId": 1,
+          "pin": 103,
+          "name": "Main Circuit Breaker",
+          "room": "Main DB",
+          "function": "Circuit Breaker",
+          "state": true
+        }
+      ],
+      "sensors": null
+    }
+  ],
+  "homes": [
+    {
+      "id": "home-primary",
+      "name": "Primary Residence",
+      "address": "Main Local Network",
+      "created_at": "2026-11-26 00:45:37"
+    }
+  ],
+  "rooms": [
+    {
+      "id": "room-living",
+      "home_id": "home-primary",
+      "name": "Living Room",
+      "icon": "couch",
+      "created_at": "2026-11-26 00:45:37"
+    },
+    {
+      "id": "room-kitchen",
+      "home_id": "home-primary",
+      "name": "Kitchen",
+      "icon": "utensils",
+      "created_at": "2026-11-26 00:45:37"
+    },
+    {
+      "id": "room-bedroom",
+      "home_id": "home-primary",
+      "name": "Bedroom",
+      "icon": "bed",
+      "created_at": "2026-11-26 00:45:37"
+    },
+    {
+      "id": "room-hallway",
+      "home_id": "home-primary",
+      "name": "Hallway",
+      "icon": "door-open",
+      "created_at": "2026-11-26 00:45:37"
+    }
+  ],
+  "automations": [
+    {
+      "id": "auto-breaker-overload",
+      "name": "Circuit Breaker High Load Safety Trip",
+      "trigger": "breaker.power_w \u003e 8000",
+      "condition": "breaker.switch_state == true",
+      "action": "notify('High load warning on main circuit breaker')",
+      "enabled": true,
+      "created_at": "2026-11-26 00:45:37"
+    }
+  ]
+}

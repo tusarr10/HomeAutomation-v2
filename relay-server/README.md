@@ -73,6 +73,7 @@ relay-server/
 ├── build_windows.bat        <-- Compiles for Windows local testing
 ├── run.bat                  <-- Runs locally on Windows
 ├── IMPLEMENTATION.md        <-- Full technical implementation specification
+├── TODO.md                  <-- Edge broker feature status & roadmap
 └── go.mod
 ```
 

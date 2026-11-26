@@ -12,6 +12,7 @@ import (
 
 	"smarthome-edge/internal/auth"
 	"smarthome-edge/internal/config"
+	"smarthome-edge/internal/db"
 	"smarthome-edge/internal/httpapi"
 	"smarthome-edge/internal/queue"
 	"smarthome-edge/internal/state"
@@ -37,9 +38,23 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// 2. Initialize Subsystems
-	stateMgr := state.NewStateManager()
+	// 2. Open Embedded Pure-Go SQLite Database
+	dbPath := filepath.Join(cfg.Storage.DataDir, "fleet_edge.db")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		log.Fatalf("Failed to open SQLite database at %s: %v", dbPath, err)
+	}
+	defer database.Close()
+	log.Printf("[SQLite DB] Initialized embedded database at: %s", dbPath)
+
+	// 3. Initialize Subsystems with SQLite DB
+	stateMgr := state.NewStateManager(database)
 	stateMgr.StartOfflineWatcher(cfg.Protocol.OfflineTimeoutSeconds)
+
+	cacheFile := filepath.Join(cfg.Storage.DataDir, "config_cache.json")
+	if err := stateMgr.LoadConfigCache(cacheFile); err == nil {
+		log.Printf("[State Manager] Loaded cached fleet configuration from %s", cacheFile)
+	}
 
 	spool, err := queue.NewEventSpool(cfg.Storage.DataDir, cfg.Storage.EventQueueMaxMB)
 	if err != nil {
@@ -54,7 +69,7 @@ func main() {
 		wsHub.BroadcastEvent(eventType, data)
 	})
 
-	centralSyncer := syncer.NewCentralSyncer(cfg, stateMgr)
+	centralSyncer := syncer.NewCentralSyncer(cfg, stateMgr, spool, cacheFile)
 	centralSyncer.Start()
 
 	// 3. Start TCP Gateway (Port 2000 / 2001)
@@ -67,7 +82,7 @@ func main() {
 	// 4. Start HTTP & WebSocket Server (Port 9200)
 	webDir := findWebDir(*configPath)
 	log.Printf("[Web UI] Serving static files from: %s", webDir)
-	httpRouter := httpapi.NewRouter(cfg, stateMgr, authenticator, wsHub, centralSyncer, spool, webDir)
+	httpRouter := httpapi.NewRouter(cfg, stateMgr, authenticator, wsHub, centralSyncer, spool, webDir, database)
 
 	httpServer := &http.Server{
 		Addr:    cfg.Server.HTTPListen,

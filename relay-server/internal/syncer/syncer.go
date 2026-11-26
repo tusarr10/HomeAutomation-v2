@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"smarthome-edge/internal/config"
+	"smarthome-edge/internal/queue"
 	"smarthome-edge/internal/state"
 	"smarthome-edge/internal/tuya"
 )
@@ -20,6 +21,8 @@ type CentralSyncer struct {
 	mu              sync.RWMutex
 	cfg             *config.Config
 	sm              *state.StateManager
+	spool           *queue.EventSpool
+	cachePath       string
 	httpClient      *http.Client
 	isCentralAlive  bool
 	lastPingEpoch   int64
@@ -27,7 +30,7 @@ type CentralSyncer struct {
 	tuyaClient      *tuya.Client
 }
 
-func NewCentralSyncer(cfg *config.Config, sm *state.StateManager) *CentralSyncer {
+func NewCentralSyncer(cfg *config.Config, sm *state.StateManager, spool *queue.EventSpool, cachePath string) *CentralSyncer {
 	portalURL := cfg.Breaker.PortalURL
 	if portalURL == "" {
 		portalURL = "http://192.168.1.10:8085"
@@ -40,8 +43,10 @@ func NewCentralSyncer(cfg *config.Config, sm *state.StateManager) *CentralSyncer
 	}
 
 	return &CentralSyncer{
-		cfg: cfg,
-		sm:  sm,
+		cfg:       cfg,
+		sm:        sm,
+		spool:     spool,
+		cachePath: cachePath,
 		httpClient: &http.Client{
 			Timeout: time.Duration(cfg.Central.TimeoutMS) * time.Millisecond,
 		},
@@ -65,6 +70,12 @@ func (s *CentralSyncer) setActivePortalURL(url string) {
 func (s *CentralSyncer) Start() {
 	if s.cfg.Central.Enabled {
 		go s.healthCheckLoop()
+		go func() {
+			time.Sleep(2 * time.Second)
+			if s.IsCentralOnline() {
+				s.PullCentralConfig()
+			}
+		}()
 	}
 	if s.cfg.Breaker.Enabled {
 		go s.breakerPollLoop()
@@ -106,6 +117,7 @@ func (s *CentralSyncer) checkHealth() {
 		s.isCentralAlive = true
 		if !wasAlive {
 			log.Printf("[Central Syncer] Central Server (%s) is ONLINE. Telemetry streaming active.", s.cfg.Central.URL)
+			go s.onCentralReconnected()
 		}
 	} else {
 		if resp != nil {
@@ -114,6 +126,156 @@ func (s *CentralSyncer) checkHealth() {
 		s.isCentralAlive = false
 		if wasAlive {
 			log.Printf("[Central Syncer] Central Server (%s) went OFFLINE. Operating in standalone edge mode.", s.cfg.Central.URL)
+		}
+	}
+}
+
+// onCentralReconnected coordinates two-way synchronization when Central Server comes online
+func (s *CentralSyncer) onCentralReconnected() {
+	log.Printf("[Central Syncer] Central Server reconnected. Starting two-way reconciliation...")
+	s.flushOfflineSpool()
+	s.pushLiveStateSnapshot()
+	s.PullCentralConfig()
+}
+
+// PullCentralConfig bootstraps master device definitions, homes, rooms and automations from Central Server
+func (s *CentralSyncer) PullCentralConfig() {
+	if !s.cfg.Central.Enabled || !s.IsCentralOnline() {
+		return
+	}
+
+	log.Printf("[Central Syncer] Pulling master device & room configurations from Central Server (%s)...", s.cfg.Central.URL)
+
+	// 1. Fetch nodes: GET /api/v1/nodes
+	nodesURL := fmt.Sprintf("%s/api/v1/nodes", s.cfg.Central.URL)
+	if resp, err := s.httpClient.Get(nodesURL); err == nil && resp.StatusCode == http.StatusOK {
+		var nodes []map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&nodes); err == nil && len(nodes) > 0 {
+			s.sm.MergeCentralNodes(nodes)
+			log.Printf("[Central Syncer] Merged %d node configurations from Central Server.", len(nodes))
+		}
+		_ = resp.Body.Close()
+	}
+
+	// 2. Fetch homes: GET /api/v1/homes
+	homesURL := fmt.Sprintf("%s/api/v1/homes", s.cfg.Central.URL)
+	var fetchedHomes []state.Home
+	var fetchedRooms []state.Room
+
+	if resp, err := s.httpClient.Get(homesURL); err == nil && resp.StatusCode == http.StatusOK {
+		var rawHomes []struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Address string `json:"address"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&rawHomes); err == nil {
+			for _, h := range rawHomes {
+				homeID := h.ID
+				if homeID == "" {
+					homeID = "home-primary"
+				}
+				fetchedHomes = append(fetchedHomes, state.Home{
+					ID:      homeID,
+					Name:    h.Name,
+					Address: h.Address,
+				})
+
+				// Fetch rooms for this home: GET /api/v1/homes/:homeId/rooms
+				roomsURL := fmt.Sprintf("%s/api/v1/homes/%s/rooms", s.cfg.Central.URL, homeID)
+				if rResp, rErr := s.httpClient.Get(roomsURL); rErr == nil && rResp.StatusCode == http.StatusOK {
+					var rawRooms []struct {
+						ID   string `json:"id"`
+						Name string `json:"name"`
+						Icon string `json:"icon"`
+					}
+					if err := json.NewDecoder(rResp.Body).Decode(&rawRooms); err == nil {
+						for _, rm := range rawRooms {
+							fetchedRooms = append(fetchedRooms, state.Room{
+								ID:     rm.ID,
+								HomeID: homeID,
+								Name:   rm.Name,
+								Icon:   rm.Icon,
+							})
+						}
+					}
+					_ = rResp.Body.Close()
+				}
+			}
+			s.sm.SetHomesAndRooms(fetchedHomes, fetchedRooms)
+		}
+		_ = resp.Body.Close()
+	}
+
+	// 3. Fetch automations: GET /api/v1/automations
+	autoURL := fmt.Sprintf("%s/api/v1/automations", s.cfg.Central.URL)
+	if resp, err := s.httpClient.Get(autoURL); err == nil && resp.StatusCode == http.StatusOK {
+		var autos []state.AutomationRule
+		if err := json.NewDecoder(resp.Body).Decode(&autos); err == nil && len(autos) > 0 {
+			s.sm.SetAutomations(autos)
+			log.Printf("[Central Syncer] Synchronized %d automation rules from Central Server.", len(autos))
+		}
+		_ = resp.Body.Close()
+	}
+
+	// 4. Persist updated configuration snapshot to local disk cache
+	if s.cachePath != "" {
+		if err := s.sm.SaveConfigCache(s.cachePath); err == nil {
+			log.Printf("[Central Syncer] Successfully saved configuration cache to %s", s.cachePath)
+		} else {
+			log.Printf("[Central Syncer] Warning: Failed to save config cache: %v", err)
+		}
+	}
+}
+
+// flushOfflineSpool replays any offline spooled events to Central Server
+func (s *CentralSyncer) flushOfflineSpool() {
+	if s.spool == nil || !s.cfg.Central.Enabled || !s.IsCentralOnline() {
+		return
+	}
+
+	events, err := s.spool.ReadRecent(100)
+	if err != nil || len(events) == 0 {
+		return
+	}
+
+	log.Printf("[Central Syncer] Replaying %d offline events to Central Server...", len(events))
+	endpoint := fmt.Sprintf("%s/api/v1/system/sync-events", s.cfg.Central.URL)
+	payload, err := json.Marshal(map[string]interface{}{
+		"source": "relay_edge_broker",
+		"events": events,
+	})
+	if err == nil {
+		req, _ := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		if resp, err := s.httpClient.Do(req); err == nil && resp != nil {
+			_ = resp.Body.Close()
+		}
+	}
+}
+
+// pushLiveStateSnapshot sends the current in-memory status of all nodes and breaker to Central Server
+func (s *CentralSyncer) pushLiveStateSnapshot() {
+	if !s.cfg.Central.Enabled || !s.IsCentralOnline() {
+		return
+	}
+
+	nodes := s.sm.GetAllNodes()
+	breaker := s.sm.GetBreaker()
+
+	snapshot := map[string]interface{}{
+		"eventType": "edge_snapshot",
+		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
+		"nodes":     nodes,
+		"breaker":   breaker,
+	}
+
+	payload, err := json.Marshal(snapshot)
+	if err == nil {
+		endpoint := fmt.Sprintf("%s/api/telemetry", s.cfg.Central.URL)
+		req, _ := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		if resp, err := s.httpClient.Do(req); err == nil && resp != nil {
+			_ = resp.Body.Close()
 		}
 	}
 }
