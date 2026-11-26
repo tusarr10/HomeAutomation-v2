@@ -1,7 +1,7 @@
 # SmartHome Node Firmware (`node-firmware/`) — Audit, Features & Actionable Roadmap
 
 **Target Hardware:** NodeMCU 1.0 ESP8266 4MB + PCF8574 I2C Expander (`esp8266_4m` & `nodemcu_pcf8574`)  
-**Firmware Version:** v1.6.0  
+**Firmware Version:** v1.7.0  
 **Current Fleet Device:** `NODE-8C4F00565D72` at `192.168.1.28`  
 **Status:** All core P0, P1, and P2 firmware milestone tasks are 100% complete, compiled, and live-verified.
 

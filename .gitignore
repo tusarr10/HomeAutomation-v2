@@ -16,6 +16,11 @@ package-lock.json.log
 *.elf
 *.hex
 
+# Always track production release bundle (including .bin firmware images inside prod/)
+!prod/
+!prod/**
+!prod/**/*.bin
+
 # Databases & local state
 *.db
 *.db-shm

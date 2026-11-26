@@ -1,0 +1,2 @@
+firmware-nodemcu_pcf8574-v1.7.0.bin | size=533904 bytes (521.39 KB) | md5=5884da5ad9f93cf9869b8f91e27ef2f4 | sha256=ac2450e9967d6f20f3d1f6ed211afac2f04fc1c994546d70ce703720ea8e4011
+littlefs-nodemcu_pcf8574-v1.7.0.bin | size=2072576 bytes (2024.00 KB) | md5=b41fd0ca6189fcfbf4f710af311df60d | sha256=5c898a8105ef59c84ad420b3080eac0805343ed8ab8d80e01256b74ddc8e3f42
