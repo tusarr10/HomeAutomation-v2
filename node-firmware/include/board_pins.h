@@ -17,7 +17,7 @@ struct PinSafetyInfo {
 // =============================================================================
 #if defined(TARGET_ESP01_1M)
 #define FIRMWARE_NAME           "SmartHome-ESP01"
-#define FIRMWARE_VERSION        "1.6.0"
+#define FIRMWARE_VERSION        "1.7.0"
 #define HARDWARE_TARGET         "ESP8266 ESP-01 / ESP-01S (1MB)"
 #define DEFAULT_AP_SSID         "SmartHome-ESP01"
 
@@ -49,7 +49,7 @@ static const PinSafetyInfo PIN_SAFETY_MAP[] = {
 // =============================================================================
 #elif defined(TARGET_ESP01_PCF8574)
 #define FIRMWARE_NAME           "SmartHome-ESP01-PCF8574"
-#define FIRMWARE_VERSION        "1.6.0"
+#define FIRMWARE_VERSION        "1.7.0"
 #define HARDWARE_TARGET         "ESP8266 ESP-01 + PCF8574T (1MB)"
 #define DEFAULT_AP_SSID         "SmartHome-ESP01-PCF8574"
 
@@ -96,7 +96,7 @@ static const PinSafetyInfo PIN_SAFETY_MAP[] = {
 // =============================================================================
 #elif defined(TARGET_NODEMCU_PCF8574)
 #define FIRMWARE_NAME           "SmartHome-NodeMCU-PCF8574"
-#define FIRMWARE_VERSION        "1.6.0"
+#define FIRMWARE_VERSION        "1.7.0"
 #define HARDWARE_TARGET         "ESP8266 NodeMCU + PCF8574T"
 #define DEFAULT_AP_SSID         "SmartHome-NodeMCU-PCF8574"
 
@@ -150,7 +150,7 @@ static const PinSafetyInfo PIN_SAFETY_MAP[] = {
 // =============================================================================
 #elif defined(TARGET_ESP32)
 #define FIRMWARE_NAME           "SmartHome-ESP32"
-#define FIRMWARE_VERSION        "1.6.0"
+#define FIRMWARE_VERSION        "1.7.0"
 #define HARDWARE_TARGET         "ESP32 Dev Module"
 #define DEFAULT_AP_SSID         "SmartHome-ESP32"
 
@@ -177,7 +177,7 @@ static const PinSafetyInfo PIN_SAFETY_MAP[] = {
 #define TARGET_ESP8266_4M       1
 #endif
 #define FIRMWARE_NAME           "SmartHome-NodeMCU"
-#define FIRMWARE_VERSION        "1.6.0"
+#define FIRMWARE_VERSION        "1.7.0"
 #define HARDWARE_TARGET         "ESP8266 (ESP-12E/F) NodeMCU"
 #define DEFAULT_AP_SSID         "SmartHome-Setup"
 
