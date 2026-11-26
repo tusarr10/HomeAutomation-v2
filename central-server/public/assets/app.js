@@ -1012,14 +1012,65 @@ function getApplianceIcon(iconKey) {
   return getIconForAppliance('', '', iconKey);
 }
 
+function getOnlineQuickRelaysCount(homeId) {
+  let list = (dashFleetRelays || []).slice();
+
+  // 1. Exclude sensors so relay control strictly displays switchable actuators & breakers
+  list = list.filter(r => {
+    if (typeof isSensorChannel === 'function' && isSensorChannel(r)) return false;
+    return true;
+  });
+
+  // 2. Strictly filter to ONLY relays belonging to ONLINE nodes or active breaker
+  list = list.filter(r => {
+    const parentNode = (dashFleetNodes || []).find(n => n.node_id === r.node_id);
+    if (!parentNode) {
+      const isBreaker = (r.function && r.function.toLowerCase().includes('breaker')) ||
+                        (r.name && r.name.toLowerCase().includes('circuit breaker')) ||
+                        (r.node_id && r.node_id.includes('30487D'));
+      return isBreaker;
+    }
+    return Boolean(parentNode.is_online ?? parentNode.isOnline ?? (parentNode.status && parentNode.status.toLowerCase() === 'online'));
+  });
+
+  // 3. Home scope filter
+  if (homeId && homeId !== 'all') {
+    const targetHomeId = Number(homeId);
+    const targetHome = (dashFleetHomes || []).find(h => h.id === targetHomeId);
+    const homeName = targetHome ? (targetHome.name || '').toLowerCase() : '';
+
+    list = list.filter(r => {
+      const parentNode = (dashFleetNodes || []).find(n => n.node_id === r.node_id);
+      if (parentNode && parentNode.home_id === targetHomeId) return true;
+      if (homeName && r.room && r.room.toLowerCase().includes(homeName)) return true;
+      if (targetHomeId === 1 && (!parentNode || !parentNode.home_id)) return true;
+      return false;
+    });
+  }
+
+  return list.length;
+}
+
 function onQuickRelayHomeChange(val) {
   quickRelaySelectedHome = val;
   quickRelayCurrentPage = 1;
   refreshQuickRelaysView();
-  const opt = document.querySelector('#quick-relay-home-select option[value="all"]');
-  if (opt) {
-    opt.textContent = `All Homes (${getFilteredQuickRelays().length})`;
+  updateQuickRelayHomeDropdownCounts();
+}
+
+function updateQuickRelayHomeDropdownCounts() {
+  const select = document.getElementById('quick-relay-home-select');
+  if (!select) return;
+  const allOpt = select.querySelector('option[value="all"]');
+  if (allOpt) {
+    allOpt.textContent = `All Homes (${getOnlineQuickRelaysCount('all')})`;
   }
+  (dashFleetHomes || []).forEach(h => {
+    const opt = select.querySelector(`option[value="${h.id}"]`);
+    if (opt) {
+      opt.textContent = `${h.name} (${getOnlineQuickRelaysCount(h.id)})`;
+    }
+  });
 }
 
 function onQuickRelayPageChange(newPage) {
@@ -1051,12 +1102,25 @@ function refreshQuickRelaysView() {
 function getFilteredQuickRelays() {
   let list = (dashFleetRelays || []).slice();
 
-  // Exclude sensors so relay control strictly displays actuators & breakers
+  // 1. Exclude sensors so relay control strictly displays switchable actuators & breakers
   list = list.filter(r => {
     if (typeof isSensorChannel === 'function' && isSensorChannel(r)) return false;
     return true;
   });
 
+  // 2. Strictly filter to ONLY relays belonging to ONLINE nodes or active breaker
+  list = list.filter(r => {
+    const parentNode = (dashFleetNodes || []).find(n => n.node_id === r.node_id);
+    if (!parentNode) {
+      const isBreaker = (r.function && r.function.toLowerCase().includes('breaker')) ||
+                        (r.name && r.name.toLowerCase().includes('circuit breaker')) ||
+                        (r.node_id && r.node_id.includes('30487D'));
+      return isBreaker;
+    }
+    return Boolean(parentNode.is_online ?? parentNode.isOnline ?? (parentNode.status && parentNode.status.toLowerCase() === 'online'));
+  });
+
+  // 3. Home scope filter
   if (quickRelaySelectedHome !== 'all') {
     const targetHomeId = Number(quickRelaySelectedHome);
     const targetHome = (dashFleetHomes || []).find(h => h.id === targetHomeId);
@@ -1103,7 +1167,8 @@ function renderQuickRelaysGridHtml() {
 
   if (meta.totalItems === 0) {
     return `<div style="grid-column: span 2; padding: 32px; text-align: center; color: #64748b; font-size: 12px;">
-      No relay channels registered for this home.
+      <span style="font-size: 20px; display: block; margin-bottom: 6px;">🔌</span>
+      No active relay channels available for currently online devices in this home.
     </div>`;
   }
 
@@ -1792,8 +1857,8 @@ async function loadOverview() {
               <div style="display: flex; align-items: center; gap: 6px;">
                 <label style="font-size: 11px; color: #94a3b8; font-weight: 500;">Home:</label>
                 <select id="quick-relay-home-select" class="filter-select" onchange="onQuickRelayHomeChange(this.value)" style="padding: 4px 10px; font-size: 11.5px; background: #0f172a; color: #f1f5f9; border: 1px solid #334155; border-radius: 6px; cursor: pointer;">
-                  <option value="all" ${quickRelaySelectedHome === 'all' ? 'selected' : ''}>All Homes (${getFilteredQuickRelays().length})</option>
-                  ${dashFleetHomes.map(h => `<option value="${h.id}" ${quickRelaySelectedHome == h.id ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
+                  <option value="all" ${quickRelaySelectedHome === 'all' ? 'selected' : ''}>All Homes (${getOnlineQuickRelaysCount('all')})</option>
+                  ${dashFleetHomes.map(h => `<option value="${h.id}" ${quickRelaySelectedHome == h.id ? 'selected' : ''}>${escapeHtml(h.name)} (${getOnlineQuickRelaysCount(h.id)})</option>`).join('')}
                 </select>
               </div>
             </div>
