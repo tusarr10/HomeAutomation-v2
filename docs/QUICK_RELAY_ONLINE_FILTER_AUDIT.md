@@ -29,6 +29,12 @@
   1. Stale / deleted GPIO pins (pins 1, 5, 7, 8 on `NODE-8C4F00565D72`) remained in the SQLite database `relays` table.
   2. The room appliance filter had a fallback clause `if (parentNode.room_id === room.id) return true;` that bypassed channel-level room assignments, causing channels belonging to Dining (`Balcony Exhaust Fan`) and Shared Utilities (`Mains Voltage ADC`) to be aggregated into Living Room.
 
+### Issue D: Quick Relay Consecutive Toggle Failure (Second Click Without Refresh)
+- **Symptom**: After clicking a relay button in **Relay Control (Quick)** (e.g. `PCF Relay 4` from `OFF` to `ON`), clicking it a second time would NOT toggle it back to `OFF` unless the page was refreshed.
+- **Root Cause**: 
+  1. In `updateRelayUiState()`, `qbtn.className` and `qbtn.textContent` were updated, but `qbtn.setAttribute('onclick', ...)` was omitted. Consequently, the inline `onclick` handler remained stuck with the stale parameter (e.g. `onclick="toggleRealQuickRelay('NODE...', 4, false)"`).
+  2. In `toggleRealQuickRelay()`, `nextState = !currentState` was blindly calculated from the caller's argument without inspecting the live DOM or in-memory state. Consecutive clicks repeatedly re-sent `state: true`.
+
 ---
 
 ## 2. Technical Fixes Implemented
@@ -124,6 +130,20 @@ WHERE node_id = 'NODE-8C4F00565D72'
 ```
 Verified against physical LittleFS `/api/gpio` on ESP8266 node `NODE-8C4F00565D72`:
 - Active channels: 2 (`L-Fan`), 3 (`Tube Light`), 4 (`Ceiling Fan`), 9 (`Balcony Exhaust Fan`), 10 (`Chandelier Ambient Light`), 11 (`Night Light`), 12 (`Mains Voltage ADC`).
+
+### 2.6 Dynamic State Resolution & Dynamic Inline Onclick Updates
+To guarantee continuous and instant toggling without page refresh:
+1. In `updateRelayUiState()`:
+   ```javascript
+   const qbtn = document.getElementById(`quick-relay-btn-${nodeId}-${channelId}`);
+   if (qbtn) {
+     qbtn.className = `dash-relay-toggle-btn ${boolState ? 'btn-on' : 'btn-off'}`;
+     qbtn.textContent = boolState ? 'ON' : 'OFF';
+     qbtn.setAttribute('onclick', `toggleRealQuickRelay('${nodeId}', ${channelId}, ${boolState})`);
+   }
+   ```
+2. In `toggleRealQuickRelay()`:
+   Dynamically inspect the live DOM button (`classList.contains('btn-on')`) and in-memory cache to resolve `effectiveCurrentState`. This ensures that even if rapid clicks occur before an animation completes, the calculation `nextState = !effectiveCurrentState` is always correct and never gets desynchronized.
 
 ---
 

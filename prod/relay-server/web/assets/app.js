@@ -625,6 +625,7 @@ function updateRelayUiState(nodeId, channelId, state) {
   if (qbtn) {
     qbtn.className = `dash-relay-toggle-btn ${boolState ? 'btn-on' : 'btn-off'}`;
     qbtn.textContent = boolState ? 'ON' : 'OFF';
+    qbtn.setAttribute('onclick', `toggleRealQuickRelay('${nodeId}', ${channelId}, ${boolState})`);
   }
 
   // 3. Room subview elements
@@ -1248,13 +1249,27 @@ function renderQuickRelaysPaginationHtml() {
 }
 
 async function toggleRealQuickRelay(nodeId, channelId, currentState) {
-  const nextState = !currentState;
+  // Determine effective current state dynamically from DOM / memory to protect against stale parameters
+  let effectiveCurrentState = currentState;
+  const qbtn = document.getElementById(`quick-relay-btn-${nodeId}-${channelId}`);
+  const rel = (dashFleetRelays || []).find(r => r.node_id === nodeId && r.channel_id == channelId);
+
+  if (qbtn) {
+    if (qbtn.classList.contains('btn-on') || qbtn.textContent.trim().toUpperCase() === 'ON') {
+      effectiveCurrentState = true;
+    } else if (qbtn.classList.contains('btn-off') || qbtn.textContent.trim().toUpperCase() === 'OFF') {
+      effectiveCurrentState = false;
+    }
+  } else if (rel && rel.current_state != null) {
+    effectiveCurrentState = Boolean(rel.current_state);
+  }
+
+  const nextState = !effectiveCurrentState;
 
   // 1. INSTANT OPTIMISTIC DOM UPDATE ACROSS ALL VIEWS (ZERO DELAY)
   updateRelayUiState(nodeId, channelId, nextState);
 
   // In-memory update
-  const rel = (dashFleetRelays || []).find(r => r.node_id === nodeId && r.channel_id == channelId);
   const name = rel ? rel.name : `Relay ${channelId}`;
 
   // Log entry in dashboard
@@ -1277,13 +1292,15 @@ async function toggleRealQuickRelay(nodeId, channelId, currentState) {
     });
     const result = await res.json();
     if (result.success) {
-      showToast(`Relay "${name}" switched ${nextState ? 'ON' : 'OFF'}`, "success");
+      const confirmedState = (result.state !== undefined) ? Boolean(result.state) : nextState;
+      updateRelayUiState(nodeId, channelId, confirmedState);
+      showToast(`Relay "${name}" switched ${confirmedState ? 'ON' : 'OFF'}`, "success");
     } else {
-      updateRelayUiState(nodeId, channelId, currentState);
+      updateRelayUiState(nodeId, channelId, effectiveCurrentState);
       showToast(`Error: ${result.error || 'Failed to switch relay'}`, "error");
     }
   } catch (err) {
-    updateRelayUiState(nodeId, channelId, currentState);
+    updateRelayUiState(nodeId, channelId, effectiveCurrentState);
     showToast(`Network error: ${err.message}`, "error");
   }
 }
