@@ -89,7 +89,10 @@ class TuyaBreakerBridge {
   }
 
   spawnPollerService() {
-    const pythonScript = path.join(__dirname, '..', '..', 'smart_breaker_portal', 'server.py');
+    let pythonScript = path.join(__dirname, '..', '..', 'smart_breaker_portal', 'server.py');
+    if (!fs.existsSync(pythonScript)) {
+      pythonScript = path.join(__dirname, '..', '..', '..', 'smart_breaker_portal', 'server.py');
+    }
     if (!fs.existsSync(pythonScript)) {
       console.warn(`[TuyaBridge] Python poller script not found at ${pythonScript}`);
       return;
