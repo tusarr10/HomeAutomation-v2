@@ -735,9 +735,13 @@ function updateRelayUiState(nodeId, channelId, state) {
 }
 
 function updateNodeUiStatus(nodeId, isOnline, rssi) {
-  const n = (fleetData.nodes || []).find(node => node.node_id === nodeId);
+  if (!nodeId) return;
+  const n = (fleetData.nodes || []).find(node => node.node_id === nodeId || node.nodeId === nodeId || node.id === nodeId);
   if (n) {
-    if (isOnline !== undefined) n.is_online = isOnline;
+    if (isOnline !== undefined) {
+      n.is_online = Boolean(isOnline);
+      n.status = isOnline ? 'Online' : 'Offline';
+    }
     if (rssi !== undefined) n.rssi = rssi;
   }
   const dashPill = document.getElementById(`dash-node-status-${nodeId}`);
@@ -765,8 +769,10 @@ function handleLiveEvent(type, data) {
     // Zero-flicker targeted DOM update
     updateRelayUiState(data.node_id, data.channel_id, data.new_state);
   } else if (type === "node_status") {
-    // Zero-flicker targeted node status update
-    updateNodeUiStatus(data.node_id, data.is_online, data.rssi);
+    // Zero-flicker targeted node status update (supports both snake_case and camelCase)
+    const nid = data.node_id || data.nodeId || data.id;
+    const isOnline = data.is_online !== undefined ? Boolean(data.is_online) : (data.isOnline !== undefined ? Boolean(data.isOnline) : false);
+    updateNodeUiStatus(nid, isOnline, data.rssi);
   } else if (type === "telemetry_update" || type === "poll_cycle_completed" || type === "sensor_event" || type === "sensor_telemetry") {
     if (currentView === "telemetry") appendTelemetryLog(data);
     // Silent in-place metrics refresh without wiping DOM
@@ -1797,19 +1803,21 @@ async function loadOverview() {
                 </thead>
                 <tbody id="dash-device-table-body">
                   ${dashFleetNodes.map((n, idx) => {
+                    const nid = n.node_id || n.nodeId || n.id;
+                    const isOnline = Boolean(n.is_online ?? n.isOnline ?? (n.status && n.status.toLowerCase() === 'online'));
                     let typeName = n.hardware_type || 'ESP8266';
-                    if (n.node_id && n.node_id.includes('30487D')) typeName = 'Tuya Breaker';
+                    if (nid && nid.includes('30487D')) typeName = 'Tuya Breaker';
                     const ip = n.ip || n.ip_address || '192.168.1.25';
                     return `
-                      <tr id="dash-node-row-${n.node_id}">
+                      <tr id="dash-node-row-${nid}">
                         <td style="color: #64748b; font-weight: 600;">${idx + 1}</td>
-                        <td style="font-weight: 600; color: #ffffff;">${escapeHtml(n.name || n.node_id)}</td>
+                        <td style="font-weight: 600; color: #ffffff;">${escapeHtml(n.name || n.node_name || nid)}</td>
                         <td>
                           <span class="type-pill ${typeName.toLowerCase().replace(/[^a-z0-9]/g, '')}">
                             ${typeName}
                           </span>
                         </td>
-                        <td style="color: #94a3b8;">${escapeHtml(n.room || 'General')}</td>
+                        <td style="color: #94a3b8;">${escapeHtml(n.room || n.room_name || 'General')}</td>
                         <td style="font-family: monospace;">
                           <a href="http://${ip}" target="_blank" style="color: #38bdf8; text-decoration: none; display: inline-flex; align-items: center; gap: 3px;">
                             <span>${escapeHtml(ip)}</span>
@@ -1819,15 +1827,15 @@ async function loadOverview() {
                         <td>
                           <div class="signal-cell">
                             <span>📶</span>
-                            <span id="dash-node-rssi-${n.node_id}">${n.rssi || -55} dBm</span>
+                            <span id="dash-node-rssi-${nid}">${n.rssi || -55} dBm</span>
                           </div>
                         </td>
                         <td>
-                          <span id="dash-node-status-${n.node_id}" class="${n.is_online ? 'status-pill-online' : 'status-pill-offline'}">
-                            ${n.is_online ? 'Online' : 'Offline'}
+                          <span id="dash-node-status-${nid}" class="${isOnline ? 'status-pill-online' : 'status-pill-offline'}">
+                            ${isOnline ? 'Online' : 'Offline'}
                           </span>
                         </td>
-                        <td id="dash-node-lastseen-${n.node_id}" style="color: #94a3b8;">${n.is_online ? 'Live' : 'Offline'}</td>
+                        <td id="dash-node-lastseen-${nid}" style="color: #94a3b8;">${isOnline ? 'Live' : 'Offline'}</td>
                       </tr>
                     `;
                   }).join('')}
@@ -2374,7 +2382,7 @@ function renderDevicesRows(nodes) {
     }
 
     const isBreaker = (n.node_id || '').includes('30487D') || hw.includes('breaker');
-    const isOnline = Boolean(n.is_online);
+    const isOnline = Boolean(n.is_online ?? n.isOnline ?? (n.status && n.status.toLowerCase() === 'online'));
     const rssi = n.rssi != null ? n.rssi : -52;
     const signalColor = rssi >= -60 ? '#10b981' : (rssi >= -75 ? '#f59e0b' : '#ef4444');
     const nodeIp = n.ip_address || n.ip || '';

@@ -648,9 +648,12 @@ func (sm *StateManager) IngestRawTelemetry(raw []byte, clientIP string, protocol
 
 	if !wasOnline {
 		sm.emit("node_status", map[string]interface{}{
-			"nodeId":   nodeID,
-			"isOnline": true,
-			"name":     node.NodeName,
+			"nodeId":    nodeID,
+			"node_id":   nodeID,
+			"isOnline":  true,
+			"is_online": true,
+			"status":    "Online",
+			"name":      node.NodeName,
 		})
 	}
 
@@ -1420,13 +1423,37 @@ func (sm *StateManager) StartOfflineWatcher(timeoutSec int) {
 				if node.IsOnline && now-node.LastSeenEpoch > int64(timeoutSec) {
 					node.IsOnline = false
 					sm.emit("node_status", map[string]interface{}{
-						"nodeId":   nodeID,
-						"isOnline": false,
-						"name":     node.NodeName,
+						"nodeId":    nodeID,
+						"node_id":   nodeID,
+						"isOnline":  false,
+						"is_online": false,
+						"status":    "Offline",
+						"name":      node.NodeName,
 					})
 				}
 			}
 			sm.mu.Unlock()
+
+			if sm.database != nil {
+				expired, _ := sm.database.CheckAndExpireOfflineNodes(timeoutSec)
+				for _, id := range expired {
+					sm.mu.Lock()
+					name := id
+					if n, ok := sm.nodes[id]; ok {
+						n.IsOnline = false
+						name = n.NodeName
+					}
+					sm.mu.Unlock()
+					sm.emit("node_status", map[string]interface{}{
+						"nodeId":    id,
+						"node_id":   id,
+						"isOnline":  false,
+						"is_online": false,
+						"status":    "Offline",
+						"name":      name,
+					})
+				}
+			}
 		}
 	}()
 }
@@ -1639,6 +1666,36 @@ func (sm *StateManager) MergeCentralNodes(nodesData []map[string]interface{}) {
 				}
 				_ = sm.database.SyncNodeRelays(nodeID, relayRecords)
 			}
+		}
+
+		if sm.database != nil {
+			isOnlineVal := false
+			if v, ok := raw["is_online"].(bool); ok {
+				isOnlineVal = v
+			} else if v, ok := raw["isOnline"].(bool); ok {
+				isOnlineVal = v
+			}
+			stStr := "Offline"
+			if isOnlineVal {
+				stStr = "Online"
+			}
+			if existing.IsOnline {
+				isOnlineVal = true
+				stStr = "Online"
+			}
+			nr := &db.NodeRecord{
+				NodeID:          nodeID,
+				Name:            existing.NodeName,
+				HardwareType:    "ESP8266",
+				FirmwareVersion: existing.FirmwareVersion,
+				IPAddress:       existing.IP,
+				MacAddress:      existing.MAC,
+				IsOnline:        isOnlineVal,
+				Status:          stStr,
+				Category:        "Controller",
+				Location:        "Home",
+			}
+			_ = sm.database.UpsertNode(nr)
 		}
 	}
 }

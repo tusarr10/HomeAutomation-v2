@@ -360,6 +360,49 @@ func (db *DB) UpsertNode(n *NodeRecord) error {
 	return err
 }
 
+func (db *DB) SetNodeOnline(nodeID string, isOnline bool) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	status := "Offline"
+	onlineVal := 0
+	if isOnline {
+		status = "Online"
+		onlineVal = 1
+	}
+
+	_, err := db.Exec("UPDATE nodes SET is_online = ?, status = ? WHERE node_id = ?", onlineVal, status, nodeID)
+	return err
+}
+
+func (db *DB) CheckAndExpireOfflineNodes(timeoutSec int) ([]string, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	nowEpoch := float64(time.Now().Unix())
+	rows, err := db.Query("SELECT node_id FROM nodes WHERE is_online = 1 AND (? - last_seen_epoch) > ?", nowEpoch, float64(timeoutSec))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var expired []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil && id != "" {
+			expired = append(expired, id)
+		}
+	}
+
+	if len(expired) > 0 {
+		for _, id := range expired {
+			_, _ = db.Exec("UPDATE nodes SET is_online = 0, status = 'Offline' WHERE node_id = ?", id)
+		}
+	}
+
+	return expired, nil
+}
+
 // ------------------- Relays -------------------
 
 func (db *DB) GetAllRelays() ([]RelayRecord, error) {

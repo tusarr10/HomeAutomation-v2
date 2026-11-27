@@ -107,6 +107,9 @@ func (s *CentralSyncer) healthCheckLoop() {
 
 	for range ticker.C {
 		s.checkHealth()
+		if s.IsCentralOnline() {
+			s.pushLiveStateSnapshot()
+		}
 	}
 }
 
