@@ -485,6 +485,10 @@ let fleetData = {
 // --- INITIALIZATION ---
 document.addEventListener("DOMContentLoaded", async () => {
   setupNavigation();
+  const netEl = document.getElementById('topbar-net-ip');
+  if (netEl && window.location.hostname) {
+    netEl.textContent = window.location.hostname;
+  }
   const isAuthenticated = await checkCurrentUser();
   if (isAuthenticated) {
     hideLoginScreen();
@@ -500,6 +504,19 @@ document.addEventListener("DOMContentLoaded", async () => {
   setInterval(() => {
     if (currentUser) checkUnreadNotifications();
   }, 25000);
+  // Continuous 3s fallback poller for live breaker & overview telemetry
+  setInterval(() => {
+    if (currentUser) {
+      if (currentView === "overview") {
+        updateOverviewTelemetrySilently();
+      } else if (currentView === "breaker") {
+        fetchWithAuth(`${API_BASE}/breaker/status`)
+          .then(r => r.json())
+          .then(d => { if (d && d.success) updateBreakerDom(d); })
+          .catch(() => {});
+      }
+    }
+  }, 3000);
 });
 
 // --- NAVIGATION ---
@@ -771,7 +788,7 @@ function handleLiveEvent(type, data) {
     if (currentView === "config-sync") loadConfigSync();
   } else if (type === "littlefs_synced") {
     if (currentView === "littlefs") refreshLittlefsList();
-  } else if (type === "breaker_telemetry") {
+  } else if (type === "breaker_telemetry" || type === "breaker_update") {
     if (currentView === "breaker") {
       updateBreakerDom(data);
     }
@@ -1365,7 +1382,7 @@ async function updateOverviewTelemetrySilently() {
 function updateBreakerTilesSilently(breakerRes) {
   if (!breakerRes) return;
   const reading = breakerRes.reading || breakerRes;
-  const dec = reading.decoded || {};
+  const dec = breakerRes.decoded || reading.decoded || (reading.voltage_v != null ? reading : {});
 
   const vEl = document.getElementById('breaker-val-voltage');
   if (vEl && dec.voltage_v != null) vEl.textContent = dec.voltage_v;
@@ -13283,8 +13300,9 @@ async function handleSaveTariffSettings(e) {
 
 function updateBreakerDom(data) {
   latestBreakerData = data;
-  const dec = data.decoded || {};
-  const isOnline = Boolean(data.isOnline !== false);
+  const reading = data.reading || data;
+  const dec = data.decoded || reading.decoded || (reading.voltage_v != null ? reading : {});
+  const isOnline = Boolean(data.isOnline !== false && reading.online !== false);
   const switchState = Boolean(dec.switch_state);
 
   const statusBadge = document.getElementById("breaker-online-badge");

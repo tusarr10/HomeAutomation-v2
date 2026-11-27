@@ -1388,7 +1388,20 @@ func (sm *StateManager) UpdateBreaker(b BreakerData) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.breaker = b
-	sm.emit("breaker_update", b)
+
+	payload := map[string]interface{}{
+		"nodeId":        b.Config.DeviceID,
+		"isOnline":      b.Reading.Online,
+		"timestamp":     b.Reading.Timestamp,
+		"config":        b.Config,
+		"reading":       b.Reading,
+		"decoded":       b.Reading.Decoded,
+		"dps":           b.Reading.DPS,
+		"source":        b.Reading.Source,
+	}
+
+	sm.emit("breaker_telemetry", payload)
+	sm.emit("breaker_update", payload)
 }
 
 func (sm *StateManager) GetBreaker() BreakerData {

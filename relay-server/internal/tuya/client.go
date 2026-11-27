@@ -188,15 +188,23 @@ func (c *Client) readExpected(expectedCmd uint32, timeout time.Duration) (uint32
 		}
 
 		if cmd == CmdStatus {
-			var st struct {
-				Data struct {
-					DPS map[string]interface{} `json:"dps"`
-				} `json:"data"`
-			}
 			idx := bytes.IndexByte(payload, '{')
 			if idx >= 0 {
-				if err := json.Unmarshal(payload[idx:], &st); err == nil && st.Data.DPS != nil {
-					for k, v := range st.Data.DPS {
+				var stWithData struct {
+					Data struct {
+						DPS map[string]interface{} `json:"dps"`
+					} `json:"data"`
+				}
+				if err := json.Unmarshal(payload[idx:], &stWithData); err == nil && stWithData.Data.DPS != nil {
+					for k, v := range stWithData.Data.DPS {
+						c.cachedDPS[k] = v
+					}
+				}
+				var stFlat struct {
+					DPS map[string]interface{} `json:"dps"`
+				}
+				if err := json.Unmarshal(payload[idx:], &stFlat); err == nil && stFlat.DPS != nil {
+					for k, v := range stFlat.DPS {
 						c.cachedDPS[k] = v
 					}
 				}
