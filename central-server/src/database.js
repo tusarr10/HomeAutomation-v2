@@ -1476,7 +1476,13 @@ class FleetDatabase {
 
   setNodeOnline(nodeId, isOnline) {
     const status = isOnline ? 'Online' : 'Offline';
-    this.db.prepare('UPDATE nodes SET is_online = ?, status = ? WHERE node_id = ?').run(isOnline ? 1 : 0, status, nodeId);
+    if (isOnline) {
+      const nowEpoch = Date.now() / 1000;
+      const nowStr = new Date().toISOString();
+      this.db.prepare('UPDATE nodes SET is_online = 1, status = ?, last_seen_epoch = ?, last_seen_str = ? WHERE node_id = ?').run(status, nowEpoch, nowStr, nodeId);
+    } else {
+      this.db.prepare('UPDATE nodes SET is_online = 0, status = ? WHERE node_id = ?').run(status, nodeId);
+    }
   }
 
   // === RELAY METHODS ===

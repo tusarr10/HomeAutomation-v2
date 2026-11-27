@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -1392,8 +1393,13 @@ func (sm *StateManager) UpdateBreaker(b BreakerData) {
 	defer sm.mu.Unlock()
 	sm.breaker = b
 
+	breakerNodeID := b.Config.DeviceID
+	if breakerNodeID == "" {
+		breakerNodeID = "NODE-30487DE85D5C"
+	}
+
 	payload := map[string]interface{}{
-		"nodeId":        b.Config.DeviceID,
+		"nodeId":        breakerNodeID,
 		"isOnline":      b.Reading.Online,
 		"timestamp":     b.Reading.Timestamp,
 		"config":        b.Config,
@@ -1405,6 +1411,23 @@ func (sm *StateManager) UpdateBreaker(b BreakerData) {
 
 	sm.emit("breaker_telemetry", payload)
 	sm.emit("breaker_update", payload)
+
+	if sm.database != nil {
+		_ = sm.database.SetNodeOnline("30487D", b.Reading.Online)
+	}
+
+	stStr := "Offline"
+	if b.Reading.Online {
+		stStr = "Online"
+	}
+	sm.emit("node_status", map[string]interface{}{
+		"nodeId":    breakerNodeID,
+		"node_id":   breakerNodeID,
+		"isOnline":  b.Reading.Online,
+		"is_online": b.Reading.Online,
+		"status":    stStr,
+		"name":      b.Config.DeviceName,
+	})
 }
 
 func (sm *StateManager) GetBreaker() BreakerData {
@@ -1669,6 +1692,29 @@ func (sm *StateManager) MergeCentralNodes(nodesData []map[string]interface{}) {
 		}
 
 		if sm.database != nil {
+			if strings.Contains(strings.ToUpper(nodeID), "30487D") || strings.Contains(strings.ToLower(nodeID), "breaker") {
+				hwType := "Tuya Smart Breaker (Single Phase + Earth Leakage)"
+				isOnlineVal := sm.breaker.Reading.Online
+				stStr := "Offline"
+				if isOnlineVal {
+					stStr = "Online"
+				}
+				nr := &db.NodeRecord{
+					NodeID:          nodeID,
+					Name:            existing.NodeName,
+					HardwareType:    hwType,
+					FirmwareVersion: "v3.5",
+					IPAddress:       existing.IP,
+					MacAddress:      existing.MAC,
+					IsOnline:        isOnlineVal,
+					Status:          stStr,
+					Category:        "Controller",
+					Location:        "Home",
+				}
+				_ = sm.database.UpsertNode(nr)
+				continue
+			}
+
 			isOnlineVal := false
 			if v, ok := raw["is_online"].(bool); ok {
 				isOnlineVal = v

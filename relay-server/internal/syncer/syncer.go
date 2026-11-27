@@ -310,13 +310,38 @@ func (s *CentralSyncer) pushLiveStateSnapshot() {
 		return
 	}
 
-	nodes := s.sm.GetAllNodes()
+	var nodesList []interface{}
+	s.mu.RLock()
+	d := s.database
+	s.mu.RUnlock()
+
+	if d != nil {
+		if dbNodes, err := d.GetAllNodes(); err == nil && len(dbNodes) > 0 {
+			for _, dn := range dbNodes {
+				nodesList = append(nodesList, map[string]interface{}{
+					"nodeId":    dn.NodeID,
+					"node_id":   dn.NodeID,
+					"name":      dn.Name,
+					"ip":        dn.IPAddress,
+					"isOnline":  dn.IsOnline,
+					"is_online": dn.IsOnline,
+					"channels":  dn.Channels,
+				})
+			}
+		}
+	}
+	if len(nodesList) == 0 {
+		for _, n := range s.sm.GetAllNodes() {
+			nodesList = append(nodesList, n)
+		}
+	}
+
 	breaker := s.sm.GetBreaker()
 
 	snapshot := map[string]interface{}{
 		"eventType": "edge_snapshot",
 		"timestamp": time.Now().Format("2006-01-02 15:04:05"),
-		"nodes":     nodes,
+		"nodes":     nodesList,
 		"breaker":   breaker,
 	}
 

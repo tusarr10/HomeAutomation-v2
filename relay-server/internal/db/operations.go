@@ -369,9 +369,13 @@ func (db *DB) SetNodeOnline(nodeID string, isOnline bool) error {
 	if isOnline {
 		status = "Online"
 		onlineVal = 1
+		nowEpoch := float64(time.Now().Unix())
+		nowStr := time.Now().UTC().Format(time.RFC3339)
+		_, err := db.Exec("UPDATE nodes SET is_online = 1, status = ?, last_seen_epoch = ?, last_seen_str = ? WHERE node_id = ? OR node_id LIKE '%' || ?", status, nowEpoch, nowStr, nodeID, nodeID)
+		return err
 	}
 
-	_, err := db.Exec("UPDATE nodes SET is_online = ?, status = ? WHERE node_id = ?", onlineVal, status, nodeID)
+	_, err := db.Exec("UPDATE nodes SET is_online = ?, status = ? WHERE node_id = ? OR node_id LIKE '%' || ?", onlineVal, status, nodeID, nodeID)
 	return err
 }
 
@@ -380,7 +384,13 @@ func (db *DB) CheckAndExpireOfflineNodes(timeoutSec int) ([]string, error) {
 	defer db.mu.Unlock()
 
 	nowEpoch := float64(time.Now().Unix())
-	rows, err := db.Query("SELECT node_id FROM nodes WHERE is_online = 1 AND (? - last_seen_epoch) > ?", nowEpoch, float64(timeoutSec))
+	rows, err := db.Query(`
+		SELECT node_id FROM nodes 
+		WHERE is_online = 1 
+		  AND (? - last_seen_epoch) > ?
+		  AND node_id NOT LIKE '%30487D%'
+		  AND hardware_type NOT LIKE '%Breaker%'
+	`, nowEpoch, float64(timeoutSec))
 	if err != nil {
 		return nil, err
 	}
